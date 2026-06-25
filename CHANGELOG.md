@@ -1,4 +1,4 @@
-# H96 Max V58 — Unofficial Armbian v2 — Changelog
+ # H96 Max V58 — Unofficial Armbian v2 — Changelog
 
 Built on Armbian 26.05 / Ubuntu 26.04 Resolute, BSP kernel 6.1.x-rk3588-ophub.
 
@@ -6,7 +6,7 @@ Built on Armbian 26.05 / Ubuntu 26.04 Resolute, BSP kernel 6.1.x-rk3588-ophub.
 
 ## v2 *(current)*
 
-The second public release. The headline is a working **LightDM** plus a fully-offline
+# WORKING **LightDM** plus a fully-offline
 desktop and gaming stack.
 
 ### LightDM fix
