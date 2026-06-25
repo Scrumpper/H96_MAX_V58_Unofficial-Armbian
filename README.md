@@ -1,4 +1,4 @@
-# *H96 Max V58 — Unofficial Armbian v001*
+# *H96 Max V58 — Unofficial Armbian 
 
 > ***Device:*** *H96 Max V58 (Rockchip RK3588, 8 GB RAM, 64 GB eMMC)*
 > ***Base OS:*** *Armbian 26.x / Ubuntu 26.04 Resolute*
