@@ -1,5 +1,9 @@
 # *H96 Max V58 — Unofficial Armbian 
 
+## NEWEST VERSION:
+https://github.com/Scrumpper/H96_MAX_V58_Unofficial-Armbian/releases/tag/H96-MAX-V58_Unofficial-Armbian_v2
+
+
 > ***Device:*** *H96 Max V58 (Rockchip RK3588, 8 GB RAM, 64 GB eMMC)*
 > ***Base OS:*** *Armbian 26.x / Ubuntu 26.04 Resolute*
 > ***Status:*** *Unofficial / community-built — not affiliated with the Armbian project*
@@ -72,7 +76,6 @@ Built on top of the official **Armbian Rock 5B image** (same RK3588 SoC family, 
 
 ## *First-boot pipeline*
 
-> ***Ethernet required*** — Ubuntu packages download during first-boot setup (~150–250 MB). box64 and box86 are bundled in the image and install offline. After first boot the box runs fully standalone.
 
 Everything runs automatically — no console, no interaction needed:
 
@@ -86,7 +89,7 @@ Everything runs automatically — no console, no interaction needed:
 8. `--ignore-gpu-blocklist` baked into Chromium config
 9. *On GNOME install:* at-spi2-core, lpadmin group, GDM settings auto-applied
 
-*First boot takes ~10–15 minutes. Box reboots itself. SSH available within ~30 seconds of first power-on.*
+*First boot takes ~5-10 minutes. Box reboots itself. SSH available within ~30 seconds of first power-on.*
 
 ---
 
@@ -111,7 +114,7 @@ rkdeveloptool wl 0 H96-MAX-V58_Unofficial-Armbian_v001.img
 rkdeveloptool rd
 ```
 
-> ⚠️ **DO NOT unplug the box during first boot.** First boot runs apt installs — pulling power mid-install can corrupt the package state. Wait for the **automatic reboot** (the box reboots itself when done, ~10–15 min). That reboot is your signal that first boot is complete and it is safe to power cycle.
+> ⚠️ **DO NOT unplug the box during first boot.** First boot runs apt installs — pulling power mid-install can corrupt the package state. Wait for the **automatic reboot** (the box reboots itself when done, ~5–10 min). That reboot is your signal that first boot is complete and it is safe to power cycle. THE BOTTOM LIGHT ON THE BOX WILL FLASH ON REBOOT.
 >
 > ***After the automatic reboot:*** *if HDMI has no signal, hard power cycle (unplug/replug). The BSP HDMI PHY requires a cold start to re-sync with the TV after a soft reboot.*
 
