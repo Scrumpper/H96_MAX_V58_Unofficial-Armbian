@@ -1,166 +1,92 @@
-# *H96 Max V58 — Unofficial Armbian 
+```
+██╗  ██╗ █████╗  ██████╗    ███╗   ███╗ █████╗ ██╗  ██╗    ██╗   ██╗███████╗ █████╗
+██║  ██║██╔══██╗██╔═════╝    ████╗ ████║██╔══██╗╚██╗██╔╝    ██║   ██║██╔════╝██╔══██╗
+███████║╚██████║███████╗     ██╔████╔██║███████║ ╚███╔╝     ██║   ██║███████╗╚█████╔╝
+██╔══██║ ╚═══██║██╔═══██╗    ██║╚██╔╝██║██╔══██║ ██╔██╗     ╚██╗ ██╔╝╚════██║██╔══██╗
+██║  ██║ █████╔╝╚██████╔╝    ██║ ╚═╝ ██║██║  ██║██╔╝ ██╗     ╚████╔╝ ███████║╚█████╔╝
+╚═╝  ╚═╝ ╚════╝  ╚═════╝     ╚═╝     ╚═╝╚═╝  ╚═╝╚═╝  ╚═╝      ╚═══╝  ╚══════╝ ╚════╝
 
-## NEWEST VERSION:
-https://github.com/Scrumpper/H96_MAX_V58_Unofficial-Armbian/releases/tag/H96-MAX-V58_Unofficial-Armbian_v2
-
-
-> ***Device:*** *H96 Max V58 (Rockchip RK3588, 8 GB RAM, 64 GB eMMC)*
-> ***Base OS:*** *Armbian 26.x / Ubuntu 26.04 Resolute*
-> ***Status:*** *Unofficial / community-built — not affiliated with the Armbian project*
-
----
-
-## *What is this*
-
-A ready-to-flash Armbian image for the H96 Max V58 Android TV box. Boots headless with SSH on first power-on. Installs a full performance/emulation stack and auto-configures all 7 supported desktops during first boot — no manual steps required after flashing.
-
-Built on top of the official **Armbian Rock 5B image** (same RK3588 SoC family, same BSP kernel). All H96 Max V58 hardware-specific customisation is applied by the build scripts on top.
-
----
-
-## *Hardware*
-
-| | |
-|---|---|
-| SoC | Rockchip RK3588 |
-| CPU | 4× Cortex-A76 @ 2208 MHz + 4× Cortex-A55 @ 1800 MHz |
-| GPU | ARM Mali-G610 MP4 (Valhall) — Vulkan 1.3, OpenGL ES 3.2 |
-| RAM | 8 GB LPDDR4X |
-| Storage | 64 GB eMMC |
-| HDMI | HDMI 2.1 (DW-HDMI-QP) — 4K@60 confirmed |
-| Network | Gigabit Ethernet |
-| Kernel | BSP 6.1.x-rk3588-ophub |
-
----
-
-## *What's included*
-
-**Boots headless by default** — `multi-user.target`, SSH open on first power-on
-
-| Feature | Detail |
-|---|---|
-| Mali G610 GPU blobs | EGL · GBM · GLES · Vulkan 1.3 (g13p0 + g24p0) |
-| Hardware video decode | Rockchip MPP — H.264, H.265, VP9, AV1 up to 8K |
-| HDMI resolutions | 480p → 576p → 720p → 1080p → 2K → 4K@60 via firmware EDID |
-| x86_64 emulation | box64 (bundled offline) |
-| x86 32-bit emulation | box86 (bundled offline) |
-| Power profiles | Performance · Balanced · Power Saver — D-Bus daemon, GNOME/KDE quick-settings |
-| Desktop support | 7 desktops auto-configure on install via `armbian-config` |
-| Audio | PipeWire + PulseAudio bridge (pipewire-pulse) — HDMI audio out |
-| Monitoring | `h96-bench` — live CPU/GPU/thermal snapshot + stress test |
-| SSH | `root` / `1234` |
-
-**Wine not included** — install after first boot: `apt install wine wine64`
-
----
-
-## *Desktops*
-
-*None installed by default. Install via `armbian-config → System → Desktop`.*
-
-| Desktop | Display manager | Session | Video playback |
-|---|---|---|---|
-| GNOME | GDM | Wayland | Good |
-| KDE Plasma | SDDM | Wayland | Jerky — KWin software compositor is CPU-heavy |
-| Cinnamon | LightDM | X11 + ShadowFB | **Best** |
-| XFCE | LightDM | X11 + ShadowFB | **Best** |
-| MATE | LightDM | X11 + ShadowFB | **Best** |
-| i3 | LightDM | X11 + ShadowFB | **Best** |
-| Enlightenment | LightDM | X11 + ShadowFB | **Best** |
-
-*X11 desktops use ShadowFB — the lightest compositing path on this BSP kernel. YouTube and video play smoothly. KDE's KWin compositor runs entirely in software (llvmpipe) and is noticeably heavier.*
-
-*Each desktop auto-configures (display manager, session files, groups, accessibility, lpadmin) the moment its package lands — no manual steps.*
-
----
-
-## *First-boot pipeline*
-
-
-Everything runs automatically — no console, no interaction needed:
-
-1. Root filesystem expanded to full eMMC
-2. SSH host keys regenerated (unique per device)
-3. H96 branding written, immutable flag set
-4. EDID firmware rebuilt into initramfs
-5. box64 + box86 installed from bundled offline debs
-6. Ubuntu packages from repos: gamemode, irqbalance, vulkan-tools, xserver-xorg-core, slick-greeter, pipewire-pulse, pavucontrol, DXVK
-7. Mali G610 GPU blobs linked, Vulkan ICD configured, Rockchip MPP installed
-8. `--ignore-gpu-blocklist` baked into Chromium config
-9. *On GNOME install:* at-spi2-core, lpadmin group, GDM settings auto-applied
-
-*First boot takes ~5-10 minutes. Box reboots itself. SSH available within ~30 seconds of first power-on.*
-
----
-
-## *Flashing*
-
-**Requires:** Linux host · `rkdeveloptool` · USB-A to USB-A cable (male both ends)
-
-```bash
-# First-time: put box in Maskrom mode
-# Power off → hold Maskrom pinhole (underside) → plug USB-A into box USB2 port → release
-
-# Reflashing from Armbian — SSH in and run:
-# reboot loader
-
-# Verify device is detected:
-rkdeveloptool ld
-# Expected: DevNo=1  Vid=0x2207,Pid=0x350b  Maskrom  (or Loader)
-
-# Decompress and flash:
-xz -d H96-MAX-V58_Unofficial-Armbian_v001.img.xz
-rkdeveloptool wl 0 H96-MAX-V58_Unofficial-Armbian_v001.img
-rkdeveloptool rd
+     U N O F F I C I A L   A R M B I A N   ·   v3   ·   OPEN GPU  +  WiFi 6
+     ────────────────────────────────────────────────────────────────────────
+      Rockchip RK3588  ·  Mali-G610  ·  open Panthor + Mesa  ·  PCIe WiFi 6
 ```
 
-> ⚠️ **DO NOT unplug the box during first boot.** First boot runs apt installs — pulling power mid-install can corrupt the package state. Wait for the **automatic reboot** (the box reboots itself when done, ~5–10 min). That reboot is your signal that first boot is complete and it is safe to power cycle. THE BOTTOM LIGHT ON THE BOX WILL FLASH ON REBOOT.
->
-> ***After the automatic reboot:*** *if HDMI has no signal, hard power cycle (unplug/replug). The BSP HDMI PHY requires a cold start to re-sync with the TV after a soft reboot.*
+<div align="center">
 
-*See [FLASHING.md](FLASHING.md) for full step-by-step guide including Maskrom mode, troubleshooting, and SHA256 verification.*
+`RK3588` · `Mali-G610` · `Panthor DRM` · `Mesa 26.1.4` · `PanVK Vulkan 1.4` · `WiFi 6 + Ethernet` · `~5s boot`
 
----
+</div>
 
-## *HDMI — why a firmware EDID is used*
+## **WIFI WORKS**
 
-The BSP `dwhdmi-rockchip` driver collapses the DDC I²C bus at boot — the kernel can never read a real EDID from the TV. Without an EDID the display is black.
 
-Fix: `drm.edid_firmware=HDMI-A-1:edid/h96-hdmi-multi.bin` in armbianEnv.txt. The kernel serves a hand-crafted 256-byte EDID from the initramfs, bypassing all I²C reads. The EDID covers 480p → 4K@60 and declares RGB-only output — YCbCr flags cause the BSP encoder to switch colour space, which produces a black screen on most TVs.
+## ⚡ Before → After
 
----
-
-## *Known limitations*
-
-| | |
-|---|---|
-| **WiFi** | BCM43455 chip present, not supported. Ethernet only. |
-| **Bluetooth** | Not configured. |
-| **Desktop compositing** | Software only. BSP Mali blobs — no Panfrost/Panthor. GNOME (Mutter/Cairo) and KDE (KWin) run llvmpipe; X11 desktops use ShadowFB. |
-| **KDE / KWin performance** | KWin's software compositor is CPU-heavy without GPU acceleration — video playback and window animations are noticeably slower than on X11 desktops. Use Cinnamon, XFCE, or MATE for smoother video. |
-| **CPU max clock** | DTB caps Cortex-A76 at 2208 MHz. Physical max 2.4 GHz unavailable. |
-| **Night light** | BSP DRM doesn't expose `gamma_lut_size`. Toggle shows a brightness shift but no warm colour shift. |
-| **HDMI after soft reboot** | BSP HDMI PHY doesn't drop the HPD line on `reboot` — TV may not re-sync. Hard power cycle (unplug/replug) always works. |
-| **Browser video** | `--ignore-gpu-blocklist` baked in — WebGL initialises. VLC plays everything via Rockchip MPP. |
-| **Front panel / IR** | No driver in BSP kernel. |
+| | Old vendor-blob builds | **v3 — open Panthor** |
+|---|---|---|
+| **Desktop compositing** | ❌ llvmpipe (software), CPU-bound | ✅ **Mali-G610 Panfrost — real GPU** |
+| **Cursor** | flickery software cursor | ✅ **hardware cursor plane** |
+| **Night light** | ❌ unavailable | ✅ **works** (needs compositing) |
+| **Vulkan** | closed blob, DXVK hard-fails | ✅ **PanVK, open, Vulkan 1.4** |
+| **GPU clock** | 800 MHz | ✅ **1000 MHz** (+22%, thermally safe) |
+| **Boot** | 12–22 s, dirty `--failed` | ✅ **~5 s, `--failed` empty** |
+| **Boot log** | ~370 noise lines | ✅ **phantom-codec spam silenced** |
 
 ---
 
-## *Credits*
+## 🎬 Hardware video — YouTube at ~1.5% CPU
 
-| Component | Credit |
-|---|---|
-| Base image | [Armbian for Rock 5B](https://www.armbian.com/rock-5b/) — Armbian Project |
-| BSP kernel | [ophub/kernel](https://github.com/ophub/kernel) |
-| Desktop tooling | [armbian-config](https://github.com/armbian/configng) |
-| x86_64 emulation | [box64](https://github.com/ptitSeb/box64) — ptitSeb · debs by [ryanfortner](https://github.com/ryanfortner/box64-debs) |
-| x86 32-bit emulation | [box86](https://github.com/ptitSeb/box86) — ptitSeb · debs by [ryanfortner](https://github.com/ryanfortner/box86-debs) |
-| LightDM greeter | [slick-greeter](https://github.com/linuxmint/slick-greeter) — Linux Mint team |
-| Windows layer | [Wine](https://www.winehq.org) + [DXVK](https://github.com/doitsujin/dxvk) |
-| Hardware decode | [Rockchip MPP](https://github.com/rockchip-linux/mpp) |
-| Mali blobs | ARM Ltd. (g13p0 EGL/GBM/GLES, g24p0 Vulkan) |
-| Build tooling | [Claude Code](https://claude.ai/code) — Anthropic |
+
+- **YouTube & in-browser video are hardware-decoded** through the RK3588 VPU — **not** the browser's CPU decoder. It "works""... with a pre-installed chromium extension/player stream:  https://github.com/woodruffw/ff2mpv
+- Hit **"play in mpv"** (the **ff2mpv** button) in chromium add-ons:
+  **mpv** with **Rockchip MPP** hardware decode: **H.264 / HEVC / VP9**, up to 1080p, at **~1.5% CPU**.
+
+
+```
+┌────────────────────────────────────────────────────────────┐
+│  browser video (software decode) ........ ~20%+ CPU, hot    │
+│  ▶ "play in mpv"  (rkmpp / RK3588 VPU) ... ~1.5% CPU, cool  │
+└────────────────────────────────────────────────────────────┘
+```
 
 ---
 
-*Unofficial build — use at your own risk. Tested on real hardware.*
+## 🖥️ Open-GPU composited desktop
+
+- **KDE Plasma & GNOME composite on the GPU** — renderer reports **`Mali-G610 MC4 (Panfrost)`**, OpenGL ES, Mesa **26.1.4**. No more `llvmpipe` software fallback.
+- **Hardware cursor plane** — smooth pointer, flicker gone.
+- **Night light / blue-light filter works** (it depends on compositing — now that the GPU composites, it lights up).
+- Fully **open source**: Panthor DRM kernel driver + Mesa Panfrost userspace. No closed Mali blob shadowing the loader.
+
+---
+
+## 🎮 GPU gaming — open Vulkan, no blob
+
+- **PanVK** — the **open-source Vulkan** driver on Mali-G610, **Vulkan 1.4** (Mesa 26.1.4). `vulkaninfo` enumerates `Mali-G610 (panvk)`.
+- **`h96-game-mode`** launcher: **box64 + wine (wow64) + stripped-DXVK** in a nested compositor — the community-standard RK3588 gaming pattern. Desktop stays on Panfrost/X11; the game gets PanVK per-process.
+- **GPU runs at 1000 MHz** under load (validated ~57 °C peak).
+- **Steam** ships as an **opt-in, experimental** one-command installer (`h96-install-steam`, box86/box64 recipe) — nothing Steam-related is pre-baked.
+
+> 🔎 Steam **snap** can't see this GPU (pressure-vessel breaks the driver mmap) — Canonical-layer limitation, not the image. Get steam with: `h96-game-mode` (native arm64 PanVK).
+
+
+---
+
+## 🛜 Onboard WiFi — WiFi 6, and Ethernet at the same time
+
+- The radio is a **Broadcom BCM43752 / AP6275P — 802.11ax "WiFi 6", dual-band — on PCIe** 
+```
+Internets: lspci → Broadcom BCM43752 802.11ax [14e4:449d]   ·   wlan0 up   ·   eth0 up   ·  
+```
+
+---
+
+## 💾 Flash it
+
+```bash
+# grab the compressed image (~1.4 GB), decompress, then flash over USB-USB CABLE
+xz -dk H96-MAX-V58_Unofficial-Armbian_v3.img.xz
+rkdeveloptool wl 0 H96-MAX-V58_Unofficial-Armbian_v3.img
+```
+
+
