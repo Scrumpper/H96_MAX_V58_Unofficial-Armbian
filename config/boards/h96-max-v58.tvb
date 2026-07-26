@@ -1,0 +1,24 @@
+# H96 Max V58 (Rockchip RK3588, Mali-G610) — TV box
+#
+# Community "TV box" board file for the Armbian build framework. It reuses the
+# generic rockchip-rk3588 family and points the boot FDT at the board device
+# tree shipped in this repo (patch/kernel/rk3588-h96-max-v58.dts).
+#
+# Install: copy this file into  <armbian-build>/config/boards/
+#          and the .dts into the kernel's rockchip dts dir (see README).
+BOARD_NAME="H96 Max V58"
+BOARDFAMILY="rockchip-rk3588"
+BOARD_MAINTAINER=""
+KERNEL_TARGET="edge"
+KERNEL_TEST_TARGET="edge"
+FULL_DESKTOP="yes"
+BOOT_LOGO="desktop"
+BOOT_FDT_FILE="rockchip/rk3588-h96-max-v58.dtb"
+BOOT_SCENARIO="spl-blobs"
+BOOTBRANCH_BOARD="tag:v2024.10"
+BOOTPATCHDIR="v2024.10"
+DDR_BLOB="rk35/rk3588_ddr_lp4_2112MHz_lp5_2736MHz_v1.16.bin"
+BL31_BLOB="rk35/rk3588_bl31_v1.45.elf"
+DEFAULT_CONSOLE="serial"
+SERIALCON="ttyS2"
+# eMMC is the internal storage; there is no SD slot exposed as bootable on most units.

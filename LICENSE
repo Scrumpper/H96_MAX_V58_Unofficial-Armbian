@@ -1,0 +1,29 @@
+H96 Max V58 Armbian board support — License
+===========================================
+
+SPDX-License-Identifier: GPL-2.0-only
+
+This repository contains kernel device trees, a kernel-adjacent C daemon, board
+support scripts, and documentation for running Armbian on the H96 Max V58
+(Rockchip RK3588). All code and device trees in this repository are licensed
+under the GNU General Public License, version 2.
+
+    This program is free software; you can redistribute it and/or modify it
+    under the terms of the GNU General Public License version 2 as published by
+    the Free Software Foundation.
+
+    This program is distributed in the hope that it will be useful, but WITHOUT
+    ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
+    FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License for
+    more details.
+
+The full text of the GNU General Public License version 2 is available at:
+    https://www.gnu.org/licenses/old-licenses/gpl-2.0.txt
+
+The device tree in patch/kernel/ is derived from Rockchip RK3588 vendor sources
+(GPL-2.0). Panfrost/PanVK/Mesa, the Panthor kernel driver, Armbian, and the
+Linux kernel are the property of their respective authors under their own
+licenses. See CREDITS.md.
+
+This is an unofficial, community effort. It is not affiliated with, endorsed by,
+or supported by Armbian, Rockchip, or the H96 manufacturer. No warranty.

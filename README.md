@@ -1,92 +1,159 @@
-```
-██╗  ██╗ █████╗  ██████╗    ███╗   ███╗ █████╗ ██╗  ██╗    ██╗   ██╗███████╗ █████╗
-██║  ██║██╔══██╗██╔═════╝    ████╗ ████║██╔══██╗╚██╗██╔╝    ██║   ██║██╔════╝██╔══██╗
-███████║╚██████║███████╗     ██╔████╔██║███████║ ╚███╔╝     ██║   ██║███████╗╚█████╔╝
-██╔══██║ ╚═══██║██╔═══██╗    ██║╚██╔╝██║██╔══██║ ██╔██╗     ╚██╗ ██╔╝╚════██║██╔══██╗
-██║  ██║ █████╔╝╚██████╔╝    ██║ ╚═╝ ██║██║  ██║██╔╝ ██╗     ╚████╔╝ ███████║╚█████╔╝
-╚═╝  ╚═╝ ╚════╝  ╚═════╝     ╚═╝     ╚═╝╚═╝  ╚═╝╚═╝  ╚═╝      ╚═══╝  ╚══════╝ ╚════╝
+# H96 Max V58 — Armbian board support (RK3588)
 
-     U N O F F I C I A L   A R M B I A N   ·   v3   ·   OPEN GPU  +  WiFi 6
-     ────────────────────────────────────────────────────────────────────────
-      Rockchip RK3588  ·  Mali-G610  ·  open Panthor + Mesa  ·  PCIe WiFi 6
-```
+Board bring-up **sources** for running Armbian on the **H96 Max V58** TV box
+(Rockchip **RK3588**, Mali-G610) with an **open GPU** stack: the Panthor kernel
+driver + Mesa (Panfrost/PanVK), hardware video, onboard WiFi 6, and a working
+front-panel display.
 
-<div align="center">
+This repository exists so anyone can **inspect the source and build a matching
+image themselves** with the official Armbian build framework — rather than
+downloading a pre-built image. Everything here (device tree, overlays, the
+front-panel driver, board config, BSP scripts) is provided as source under
+GPL-2.0. See [`LICENSE`](LICENSE) and [`CREDITS.md`](CREDITS.md).
 
-`RK3588` · `Mali-G610` · `Panthor DRM` · `Mesa 26.1.4` · `PanVK Vulkan 1.4` · `WiFi 6 + Ethernet` · `~5s boot`
-
-</div>
-
-## **WIFI WORKS**
-
-
-## ⚡ Before → After
-
-| | Old vendor-blob builds | **v3 — open Panthor** |
-|---|---|---|
-| **Desktop compositing** | ❌ llvmpipe (software), CPU-bound | ✅ **Mali-G610 Panfrost — real GPU** |
-| **Cursor** | flickery software cursor | ✅ **hardware cursor plane** |
-| **Night light** | ❌ unavailable | ✅ **works** (needs compositing) |
-| **Vulkan** | closed blob, DXVK hard-fails | ✅ **PanVK, open, Vulkan 1.4** |
-| **GPU clock** | 800 MHz | ✅ **1000 MHz** (+22%, thermally safe) |
-| **Boot** | 12–22 s, dirty `--failed` | ✅ **~5 s, `--failed` empty** |
-| **Boot log** | ~370 noise lines | ✅ **phantom-codec spam silenced** |
+> **Unofficial.** Not affiliated with, endorsed by, or supported by Armbian,
+> Rockchip, or the H96 manufacturer. It runs well on our test unit but comes with
+> **no warranty**. Always keep a recovery plan before overwriting your device.
 
 ---
 
-## 🎬 Hardware video — YouTube at ~1.5% CPU
+## Hardware status
 
-
-- **YouTube & in-browser video are hardware-decoded** through the RK3588 VPU — **not** the browser's CPU decoder. It "works""... with a pre-installed chromium extension/player stream:  https://github.com/woodruffw/ff2mpv
-- Hit **"play in mpv"** (the **ff2mpv** button) in chromium add-ons:
-  **mpv** with **Rockchip MPP** hardware decode: **H.264 / HEVC / VP9**, up to 1080p, at **~1.5% CPU**.
-
-
-```
-┌────────────────────────────────────────────────────────────┐
-│  browser video (software decode) ........ ~20%+ CPU, hot    │
-│  ▶ "play in mpv"  (rkmpp / RK3588 VPU) ... ~1.5% CPU, cool  │
-└────────────────────────────────────────────────────────────┘
-```
-
----
-
-## 🖥️ Open-GPU composited desktop
-
-- **KDE Plasma & GNOME composite on the GPU** — renderer reports **`Mali-G610 MC4 (Panfrost)`**, OpenGL ES, Mesa **26.1.4**. No more `llvmpipe` software fallback.
-- **Hardware cursor plane** — smooth pointer, flicker gone.
-- **Night light / blue-light filter works** (it depends on compositing — now that the GPU composites, it lights up).
-- Fully **open source**: Panthor DRM kernel driver + Mesa Panfrost userspace. No closed Mali blob shadowing the loader.
+| Component | Status | Notes |
+|---|:---:|---|
+| CPU (8-core RK3588) | ✅ | |
+| Mali-G610 GPU | ✅ | Open **Panthor** + Mesa (Panfrost GLES / PanVK Vulkan 1.4); GPU-composited desktop |
+| Hardware video decode | ✅ | Rockchip MPP + mpv (VPU) |
+| Ethernet | ✅ | |
+| WiFi 6 (BCM43752 / AP6275P) | ✅ | **PCIe**, runs simultaneously with Ethernet |
+| Bluetooth | ✅ | BCM UART |
+| HDMI + audio | ✅ | |
+| Front-panel VFD | ✅ | TM1650 — clock + status icons (`h96-vfd`) |
+| IR remote | ✅ | `gpio-ir-receiver` overlay, learn with `ir-keytable` |
+| eMMC storage | ✅ | |
 
 ---
 
-## 🎮 GPU gaming — open Vulkan, no blob
+## Repository layout
 
-- **PanVK** — the **open-source Vulkan** driver on Mali-G610, **Vulkan 1.4** (Mesa 26.1.4). `vulkaninfo` enumerates `Mali-G610 (panvk)`.
-- **`h96-game-mode`** launcher: **box64 + wine (wow64) + stripped-DXVK** in a nested compositor — the community-standard RK3588 gaming pattern. Desktop stays on Panfrost/X11; the game gets PanVK per-process.
-- **GPU runs at 1000 MHz** under load (validated ~57 °C peak).
-- **Steam** ships as an **opt-in, experimental** one-command installer (`h96-install-steam`, box86/box64 recipe) — nothing Steam-related is pre-baked.
-
-> 🔎 Steam **snap** can't see this GPU (pressure-vessel breaks the driver mmap) — Canonical-layer limitation, not the image. Get steam with: `h96-game-mode` (native arm64 PanVK).
-
-
----
-
-## 🛜 Onboard WiFi — WiFi 6, and Ethernet at the same time
-
-- The radio is a **Broadcom BCM43752 / AP6275P — 802.11ax "WiFi 6", dual-band — on PCIe** 
 ```
-Internets: lspci → Broadcom BCM43752 802.11ax [14e4:449d]   ·   wlan0 up   ·   eth0 up   ·  
+config/
+  boards/h96-max-v58.tvb          Armbian board file (TV-box class)
+  kernel-h96-max-v58.config       kernel .config fragment (Panthor, VPU, IR, PCIe)
+patch/
+  kernel/rk3588-h96-max-v58.dts   board device tree (the core hardware source)
+  overlays/h96-max-v58-gpio-ir.dts  IR receiver overlay (gpio-ir-receiver)
+packages/
+  bsp/h96-max-v58/
+    src/h96-vfd.c                 front-panel VFD daemon source (+ Makefile)
+    systemd/h96-vfd.service       unit for the daemon
+    environment.d-h96-gpu.conf    GLES/EGL env so the desktop composites on the GPU
+docs/
+  DEVICE-TREE-CHANGES.md          every DT change vs the stock vendor DTB, explained
+CHANGELOG.md  CREDITS.md  LICENSE
 ```
 
 ---
 
-## 💾 Flash it
+## Building an image with the Armbian framework
+
+These sources plug into the standard [Armbian build system](https://github.com/armbian/build).
+The device tree carries the hardware enablement; the rest is board config + BSP.
 
 ```bash
-# grab the compressed image (~1.4 GB), decompress, then flash over USB-USB CABLE
-xz -dk H96-MAX-V58_Unofficial-Armbian_v3.img.xz
-rkdeveloptool wl 0 H96-MAX-V58_Unofficial-Armbian_v3.img
+# 1. Get the Armbian build framework
+git clone --depth=1 https://github.com/armbian/build armbian-build
+cd armbian-build
+
+# 2. Add this board
+cp  /path/to/this-repo/config/boards/h96-max-v58.tvb   config/boards/
+
+# 3. Add the device tree to the RK3588 kernel dts dir (edge/mainline kernel).
+#    Also add it to that dir's Makefile (dtb-$(CONFIG_ARCH_ROCKCHIP) += rk3588-h96-max-v58.dtb).
+#    The Armbian way to do this reproducibly is a userpatch that drops the .dts in:
+mkdir -p userpatches
+cp  /path/to/this-repo/patch/kernel/rk3588-h96-max-v58.dts   userpatches/
+
+# 4. (optional) merge the kernel config fragment for Panthor/VPU/IR/PCIe
+cat /path/to/this-repo/config/kernel-h96-max-v58.config >> userpatches/linux-rockchip-rk3588-edge.config  # or use KERNELCONFIG
+
+# 5. Build (desktop image, edge kernel)
+./compile.sh  BOARD=h96-max-v58  BRANCH=edge  RELEASE=noble \
+              BUILD_DESKTOP=yes  BUILD_MINIMAL=no  KERNEL_CONFIGURE=no
 ```
 
+The output image lands in `output/images/`. Flash it (see **Flashing** below).
 
+> **Note on the device tree.** `patch/kernel/rk3588-h96-max-v58.dts` is a
+> **decompile of the stock Android vendor DTB** that was then edited for a clean,
+> open-GPU Armbian (hence the `rockchip,rk3588-nvr-demo-v10-android` compatible and
+> numeric phandles). It is included exactly as it is used — it is the real, working
+> source. `docs/DEVICE-TREE-CHANGES.md` documents every change so it can be re-applied
+> onto a mainline `rk3588.dtsi` if you prefer a from-scratch DTS.
+
+---
+
+## Device-tree changes
+
+Full detail in [`docs/DEVICE-TREE-CHANGES.md`](docs/DEVICE-TREE-CHANGES.md). In short:
+
+- **Open GPU:** `gpu-supply` + `&cru CLK_GPU` + a 1000 MHz OPP; Panthor binding.
+- **HW cursor plane:** `cursor-win-id = <0>` on `vp0`.
+- **WiFi 6 on PCIe:** enable `pcie2x1l0`, disable the vestigial `&sdio` template.
+- **Tidy boot:** disable unused `es8311`/`i2s0`, drop the noisy serial `dmas`.
+
+Build the DTBs standalone if you just want those:
+
+```bash
+dtc -@ -I dts -O dtb -o rk3588-h96-max-v58.dtb   patch/kernel/rk3588-h96-max-v58.dts
+dtc -@ -I dts -O dtb -o h96-max-v58-gpio-ir.dtbo patch/overlays/h96-max-v58-gpio-ir.dts
+```
+
+---
+
+## Front-panel VFD (`h96-vfd`)
+
+The front panel is a **TM1650** bit-banged over GPIO3. The daemon shows the clock
+and lights the Ethernet / WiFi / USB / play icons from live state.
+
+```bash
+cd packages/bsp/h96-max-v58/src
+make                              # native (on the board), or:  make CROSS=aarch64-linux-gnu-
+sudo install -m0755 h96-vfd /usr/local/sbin/h96-vfd
+sudo install -m0644 ../systemd/h96-vfd.service /etc/systemd/system/
+sudo systemctl enable --now h96-vfd
+```
+
+## IR remote
+
+```bash
+dtc -@ -I dts -O dtb -o h96-max-v58-gpio-ir.dtbo patch/overlays/h96-max-v58-gpio-ir.dts
+sudo cp h96-max-v58-gpio-ir.dtbo /boot/overlay-user/
+# add to /boot/armbianEnv.txt:   user_overlays=h96-max-v58-gpio-ir
+sudo reboot
+# then learn your remote:
+ir-keytable            # shows the gpio_ir_recv device
+ir-keytable -p nec -t  # press buttons -> scancodes
+```
+
+## Open-GPU desktop
+
+For KDE/GNOME to composite on the GPU (not fall back to software `llvmpipe`),
+append `packages/bsp/h96-max-v58/environment.d-h96-gpu.conf` to `/etc/environment`.
+Do **not** install the `libmali` blob packages — they shadow Mesa's EGL/Vulkan.
+
+---
+
+## Flashing
+
+The RK3588 flashes over USB with **`rkdeveloptool`** in Maskrom mode (hold the
+recessed reset pin while connecting USB), or with Rockchip's RKDevTool GUI on
+Windows. Write the Armbian image (`.img`) to the eMMC. This is standard RK3588
+procedure and is not specific to this repo.
+
+---
+
+## License & credits
+
+GPL-2.0-only. See [`LICENSE`](LICENSE) and [`CREDITS.md`](CREDITS.md). Built on
+Armbian, the Linux kernel, Rockchip's BSP, Panthor, and Mesa.

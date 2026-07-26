@@ -1,0 +1,14 @@
+[Unit]
+Description=H96 Max V58 front-panel VFD (clock + status icons)
+After=multi-user.target
+
+[Service]
+# Bit-bangs the TM1650 front panel over GPIO3 via /dev/mem + /dev/gpiochip3.
+# Keeps ONE fd open for the life of the process (re-opening the panel device
+# resets the box). Persistent daemon; restarted if it dies.
+ExecStart=/usr/local/sbin/h96-vfd
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

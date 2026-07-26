@@ -1,0 +1,69 @@
+/dts-v1/;
+/plugin/;
+
+/*
+ * H96 Max V58 - switch IR from the rockchip BSP remotectl driver to the
+ * mainline gpio-ir-receiver (rc-core), so any NEC remote can be learned with
+ * a userspace ir-keytable text file (no DTB rebuild per remote).
+ *
+ * IR receiver pin: GPIO0_D4 (bank 0, line 0x1c), mux func 0 = GPIO input.
+ * The stock/BSP node reused PWM3 (pwm@fd8b0030, label "pwm3") on this same pin.
+ *
+ * Build (self-contained, plain dtc):
+ *   dtc -@ -I dts -O dtb -o h96-gpio-ir.dtbo h96-gpio-ir-v3.dts
+ * Apply on the box (test):
+ *   cp h96-gpio-ir.dtbo /boot/overlay-user/
+ *   # in /boot/armbianEnv.txt add/append:  user_overlays=h96-gpio-ir
+ *   reboot
+ * Verify:
+ *   ls /sys/class/rc/            # rc0 should now exist
+ *   ir-keytable                  # shows the gpio_ir_recv device + protocols
+ *   ir-keytable -p nec -t        # press buttons -> prints scancodes
+ */
+
+/ {
+	/* 1. Release the BSP IR driver so it stops owning PWM3 / GPIO0_D4 */
+	fragment@0 {
+		target = <&pwm3>;
+		__overlay__ {
+			status = "disabled";
+		};
+	};
+
+	/* 2. Standard gpio-ir-receiver on GPIO0_D4 */
+	fragment@1 {
+		target-path = "/";
+		__overlay__ {
+			ir_receiver: ir-receiver {
+				compatible = "gpio-ir-receiver";
+				/* &gpio0, line 0x1c (D4), GPIO_ACTIVE_LOW(1) - IR
+				 * demod output idles high, pulses low. If decoding
+				 * comes out inverted, change the 1 to 0. */
+				gpios = <&gpio0 0x1c 1>;
+				pinctrl-names = "default";
+				pinctrl-0 = <&ir_recv_pin>;
+				/* Optional: auto-load a keymap at boot once written
+				 * to /lib/udev/rc_keymaps or /etc/rc_keymaps and
+				 * referenced in /etc/rc_maps.cfg.
+				 * linux,rc-map-name = "rc-h96tv"; */
+				status = "okay";
+			};
+		};
+	};
+
+	/* 3. Pin config: GPIO0_D4 as plain GPIO input.
+	 * rockchip,pins = <bank pin func &pull_cfg>
+	 *   bank=0x00, pin=0x1c (D4), func=0x00 (GPIO), pull = none
+	 * (IR receiver modules drive push-pull; pull-none avoids contention.
+	 *  If the line floats, switch &pcfg_pull_none -> &pcfg_pull_up.) */
+	fragment@2 {
+		target = <&pinctrl>;
+		__overlay__ {
+			gpio-ir {
+				ir_recv_pin: ir-recv-pin {
+					rockchip,pins = <0x00 0x1c 0x00 &pcfg_pull_none>;
+				};
+			};
+		};
+	};
+};
