@@ -1,4 +1,4 @@
-# H96 Max V58 — Armbian board support (RK3588)
+# H96 Max V58 Armbian board support (RK3588)
 
 Board bring-up **sources** for running Armbian on the **H96 Max V58** TV box
 (Rockchip **RK3588**, Mali-G610) with an **open GPU** stack: the Panthor kernel
@@ -6,14 +6,23 @@ driver + Mesa (Panfrost/PanVK), hardware video, onboard WiFi 6, and a working
 front-panel display.
 
 This repository exists so anyone can **inspect the source and build a matching
-image themselves** with the official Armbian build framework — rather than
+image themselves** with the official Armbian build framework, rather than
 downloading a pre-built image. Everything here (device tree, overlays, the
 front-panel driver, board config, BSP scripts) is provided as source under
 GPL-2.0. See [`LICENSE`](LICENSE) and [`CREDITS.md`](CREDITS.md).
 
 > **Unofficial.** Not affiliated with, endorsed by, or supported by Armbian,
-> Rockchip, or the H96 manufacturer. It runs well on our test unit but comes with
-> **no warranty**. Always keep a recovery plan before overwriting your device.
+> Rockchip, or the H96 manufacturer. It has been tested only on our own unit and
+> comes with **no warranty**. Always keep a recovery plan before overwriting your device.
+
+> **Scope: this repo covers hardware bring-up (kernel, device tree, front-panel
+> daemon) up through v3.1.** It does not include the desktop-completeness and
+> reliability fixes from v3.2 and later: WiFi connection tooling, Bluetooth
+> audio quality, Discover/software-install authentication, the gaming stack, and
+> related first-boot automation. Compiling from these sources today reproduces
+> the v3/v3.1 feature set: open GPU, onboard WiFi 6, hardware video, and the
+> front-panel display. For the current v3.2 feature set, use the pre-built
+> release images until that userspace layer is published here as well.
 
 ---
 
@@ -28,9 +37,17 @@ GPL-2.0. See [`LICENSE`](LICENSE) and [`CREDITS.md`](CREDITS.md).
 | WiFi 6 (BCM43752 / AP6275P) | ✅ | **PCIe**, runs simultaneously with Ethernet |
 | Bluetooth | ✅ | BCM UART |
 | HDMI + audio | ✅ | |
-| Front-panel VFD | ✅ | TM1650 — clock + status icons (`h96-vfd`) |
+| Front-panel VFD | ✅ | TM1650, clock + status icons (`h96-vfd`) |
 | IR remote | ✅ | `gpio-ir-receiver` overlay, learn with `ir-keytable` |
 | eMMC storage | ✅ | |
+
+> **Note on Ethernet.** The onboard RTL8211F PHY may spend an extended time attempting
+> Gigabit auto-negotiation before downshifting to 100Mbps, so the link can take minutes
+> to become usable after boot while the system itself reaches multi-user in about 7
+> seconds. The kernel logs `Downshift occurred from negotiated speed 1Gbps to actual
+> speed 100Mbps, check cabling!`. Measured at 26 s, 128 s and 190 s across boots on one
+> unit. Try a different cable or switch port first; `ethtool -s eth0 speed 100 duplex
+> full autoneg off` skips Gigabit negotiation at the cost of capping the port.
 
 ---
 
@@ -48,6 +65,7 @@ packages/
     src/h96-vfd.c                 front-panel VFD daemon source (+ Makefile)
     systemd/h96-vfd.service       unit for the daemon
     environment.d-h96-gpu.conf    GLES/EGL env so the desktop composites on the GPU
+    brcm4362a2_firmware/          BCM4362A2.hcd - vendor Bluetooth firmware blob
 docs/
   DEVICE-TREE-CHANGES.md          every DT change vs the stock vendor DTB, explained
 CHANGELOG.md  CREDITS.md  LICENSE
@@ -59,6 +77,11 @@ CHANGELOG.md  CREDITS.md  LICENSE
 
 These sources plug into the standard [Armbian build system](https://github.com/armbian/build).
 The device tree carries the hardware enablement; the rest is board config + BSP.
+
+Following the steps below produces a v3.1-equivalent image: open GPU, onboard
+WiFi 6, hardware video, and the front-panel display, all working. It does not
+include any v3.2-and-later fix, since none of those touch the kernel, device
+tree, or BSP package this repo publishes.
 
 ```bash
 # 1. Get the Armbian build framework
@@ -85,10 +108,10 @@ cat /path/to/this-repo/config/kernel-h96-max-v58.config >> userpatches/linux-roc
 The output image lands in `output/images/`. Flash it (see **Flashing** below).
 
 > **Note on the device tree.** `patch/kernel/rk3588-h96-max-v58.dts` is a
-> **decompile of the stock Android vendor DTB** that was then edited for a clean,
+> **decompile of the stock Android vendor DTB** that was then edited for an
 > open-GPU Armbian (hence the `rockchip,rk3588-nvr-demo-v10-android` compatible and
-> numeric phandles). It is included exactly as it is used — it is the real, working
-> source. `docs/DEVICE-TREE-CHANGES.md` documents every change so it can be re-applied
+> numeric phandles). It is included exactly as it is used, and is the source the
+> released images are built from. `docs/DEVICE-TREE-CHANGES.md` documents every change so it can be re-applied
 > onto a mainline `rk3588.dtsi` if you prefer a from-scratch DTS.
 
 ---
@@ -100,7 +123,8 @@ Full detail in [`docs/DEVICE-TREE-CHANGES.md`](docs/DEVICE-TREE-CHANGES.md). In 
 - **Open GPU:** `gpu-supply` + `&cru CLK_GPU` + a 1000 MHz OPP; Panthor binding.
 - **HW cursor plane:** `cursor-win-id = <0>` on `vp0`.
 - **WiFi 6 on PCIe:** enable `pcie2x1l0`, disable the vestigial `&sdio` template.
-- **Tidy boot:** disable unused `es8311`/`i2s0`, drop the noisy serial `dmas`.
+- **Reduced boot output:** disable unused `es8311`/`i2s0`, drop the serial `dmas`
+  that emitted repeated errors.
 
 Build the DTBs standalone if you just want those:
 
@@ -140,7 +164,7 @@ ir-keytable -p nec -t  # press buttons -> scancodes
 
 For KDE/GNOME to composite on the GPU (not fall back to software `llvmpipe`),
 append `packages/bsp/h96-max-v58/environment.d-h96-gpu.conf` to `/etc/environment`.
-Do **not** install the `libmali` blob packages — they shadow Mesa's EGL/Vulkan.
+Do **not** install the `libmali` blob packages: they shadow Mesa's EGL/Vulkan.
 
 ---
 

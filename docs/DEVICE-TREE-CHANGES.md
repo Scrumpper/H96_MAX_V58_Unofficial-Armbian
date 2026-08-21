@@ -1,9 +1,9 @@
-# Device-tree changes — H96 Max V58 (RK3588)
+# Device-tree changes for the H96 Max V58 (RK3588)
 
 `patch/kernel/rk3588-h96-max-v58.dts` is the board device tree. It began as a
-**decompile of the stock Android vendor DTB** (`dtc -I dtb -O dts`) — hence the
-`rockchip,rk3588-nvr-demo-v10-android` compatible and the numeric phandles — and
-was then edited for a clean, open-GPU Armbian. It is included as-is because it is
+**decompile of the stock Android vendor DTB** (`dtc -I dtb -O dts`), which is why it carries the
+`rockchip,rk3588-nvr-demo-v10-android` compatible and the numeric phandles. It
+was then edited for an open-GPU Armbian build. It is included as-is because it is
 the exact, working source; the changes below are what differ from the stock DTB.
 
 If you prefer a mainline-style DTS, the same nodes can be applied on top of a
@@ -19,21 +19,21 @@ mainline `rk3588.dtsi`; the values here are the reference.
   vendor `mali` blob binding.
 
 ## 2. Hardware cursor plane (no flicker)
-- **`cursor-win-id = <0>`** on video-port `vp0` so the compositor gets a real
-  hardware cursor plane instead of a flickering software cursor.
+- **`cursor-win-id = <0>`** on video-port `vp0` so the compositor gets a
+  hardware cursor plane instead of a software cursor.
 
-## 3. Onboard WiFi 6 — PCIe, not SDIO
+## 3. Onboard WiFi 6: PCIe, not SDIO
 The onboard wireless is a **BCM43752 / AP6275P (802.11ax)** on **PCIe**, sharing
 nothing with Ethernet (they run simultaneously):
-- **`pcie2x1l0`** enabled — 3-region `reg`, `reset-gpio`, `vpcie` kept always-on,
+- **`pcie2x1l0`** enabled: 3-region `reg`, `reset-gpio`, `vpcie` kept always-on,
   and a `gpio0`-line-20 hog to hold the enable line.
 - The vestigial **`&sdio`** node (an `ap6255` SDIO template that this board does
   not use) is **disabled** so it can't grab pins.
 - Pair with the vendor **`bcmdhd` PCIe** module + the stock PCIe firmware, or with
   mainline `brcmfmac` + the matching BCM43752 firmware/nvram.
 
-## 4. Quiet / tidy boot
-- **`es8311@18`** codec node and the **`i2s0` sound** card disabled — the board
+## 4. Reduced boot output
+- **`es8311@18`** codec node and the **`i2s0` sound** card disabled: the board
   has no analog audio out; leaving them enabled prints codec errors at boot.
 - **`serial@febc0000`**: `dmas` dropped (the Bluetooth UART stays functional; the
   DMA channel reference produced noise).

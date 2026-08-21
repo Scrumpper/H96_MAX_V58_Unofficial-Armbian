@@ -1,4 +1,4 @@
-// h96-vfd — H96 Max V58 front-panel VFD daemon (Armbian).
+// h96-vfd: H96 Max V58 front-panel VFD daemon (Armbian).
 // Reverse-engineered from the stock Android kernel "fddis" driver:
 //   TM1650 protocol, MSB-first, 5us/half-clock, bit-banged on GPIO3 registers.
 //   CLK=GPIO3_C7 (line23/bit23)  DAT=GPIO3_D0 (line24/bit24)  base 0xfec40000.

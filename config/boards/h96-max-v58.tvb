@@ -1,4 +1,4 @@
-# H96 Max V58 (Rockchip RK3588, Mali-G610) — TV box
+# H96 Max V58 (Rockchip RK3588, Mali-G610) TV box
 #
 # Community "TV box" board file for the Armbian build framework. It reuses the
 # generic rockchip-rk3588 family and points the boot FDT at the board device
