@@ -2,6 +2,40 @@
 
 Versions refer to the board-support/image revisions this repo reproduces.
 
+## v3.3 (released as a pre-built image; the boot argument below IS reproducible here)
+
+An efficiency pass on top of v3.2. Most of it is root filesystem configuration and so is
+not reproducible from this repo, with **one exception that is**: the HDMI boot argument.
+
+- **HDMI EDID retry storm removed (boot argument, applies to builds from this repo).**
+  This board does not route the HDMI DDC lines through to the display controller, so the
+  kernel's attempt to read the monitor's EDID can never succeed. It retried 18 times on
+  every boot before giving up, then used the resolution already set in the boot
+  configuration anyway. Measured cost: 18 timeouts, and kernel startup time of 4.26s.
+
+  Add this to `extraargs` in `/boot/armbianEnv.txt`:
+
+  ```
+  drm.edid_firmware=HDMI-A-1:edid/1920x1080.bin
+  ```
+
+  `edid/1920x1080.bin` is one of the EDID blobs compiled into the kernel
+  (`drivers/gpu/drm/drm_edid_load.c`), so no firmware file is loaded and there is no root
+  filesystem or initramfs dependency. The kernel confirms this by logging
+  `Got built-in EDID`, not `external`. Result: 18 timeouts drop to 1, and kernel startup
+  time drops to 2.58s.
+
+  Note there is no `ddc-i2c-bus` property on the HDMI node to fix instead; the driver uses
+  an internal DDC controller. This is a boot argument, not a device tree change.
+
+  Setting a resolution still works exactly as before. `video=HDMI-A-1:...` overrides the
+  forced EDID: verified by booting `video=HDMI-A-1:1280x720@60` alongside it, which set the
+  display controller clock to 74440000 and advertised 1280x720.
+
+The remaining v3.3 changes are root filesystem only and are not reproducible from this
+repo: the CPU governor and frequency floor defaults, moving a package retry service off the
+startup path, and desktop package selection. See the pre-built image's own CHANGELOG.md.
+
 ## v3.2 (released as a pre-built image; not yet reproducible from this repo)
 
 A pass over the faults that appear once a desktop environment is installed and

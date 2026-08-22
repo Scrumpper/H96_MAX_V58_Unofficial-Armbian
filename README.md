@@ -17,11 +17,12 @@ GPL-2.0. See [`LICENSE`](LICENSE) and [`CREDITS.md`](CREDITS.md).
 
 > **Scope: this repo covers hardware bring-up (kernel, device tree, front-panel
 > daemon) up through v3.1.** It does not include the desktop-completeness and
-> reliability fixes from v3.2 and later: WiFi connection tooling, Bluetooth
+> reliability fixes from v3.2 and later (except the v3.3 HDMI boot argument, which is
+> documented in CHANGELOG.md and does apply here): WiFi connection tooling, Bluetooth
 > audio quality, Discover/software-install authentication, the gaming stack, and
 > related first-boot automation. Compiling from these sources today reproduces
 > the v3/v3.1 feature set: open GPU, onboard WiFi 6, hardware video, and the
-> front-panel display. For the current v3.2 feature set, use the pre-built
+> front-panel display. For the current v3.3 feature set, use the pre-built
 > release images until that userspace layer is published here as well.
 
 ---
@@ -80,7 +81,8 @@ The device tree carries the hardware enablement; the rest is board config + BSP.
 
 Following the steps below produces a v3.1-equivalent image: open GPU, onboard
 WiFi 6, hardware video, and the front-panel display, all working. It does not
-include any v3.2-and-later fix, since none of those touch the kernel, device
+include most v3.2-and-later fixes, since apart from the v3.3 HDMI boot argument
+(see CHANGELOG.md) none of those touch the kernel, device
 tree, or BSP package this repo publishes.
 
 ```bash
