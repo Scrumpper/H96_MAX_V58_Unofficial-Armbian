@@ -1,8 +1,75 @@
 # Changelog
 
+```
+ █████╗ ██╗   ██╗██████╗ ██╗ ██████╗   ███████╗██╗██╗  ██╗
+██╔══██╗██║   ██║██╔══██╗██║██╔═══██╗  ██╔════╝██║╚██╗██╔╝
+███████║██║   ██║██║  ██║██║██║   ██║  █████╗  ██║ ╚███╔╝ 
+██╔══██║██║   ██║██║  ██║██║██║   ██║  ██╔══╝  ██║ ██╔██╗ 
+██║  ██║╚██████╔╝██████╔╝██║╚██████╔╝  ██║     ██║██╔╝ ██╗
+╚═╝  ╚═╝ ╚═════╝ ╚═════╝ ╚═╝ ╚═════╝   ╚═╝     ╚═╝╚═╝  ╚═╝
+
+                           v3.4                           
+```
+
 Versions refer to the board-support/image revisions this repo reproduces.
 
-## v3.3 (released as a pre-built image; the boot argument below IS reproducible here)
+## v3.4 (released as a pre-built image; the EDID below IS reproducible here)
+
+**⚠️ If you followed the v3.3 instructions below, HDMI audio is disabled on your build.
+Apply this instead.**
+
+v3.3 told you to add `drm.edid_firmware=HDMI-A-1:edid/1920x1080.bin` to stop the HDMI EDID
+retry storm. It does stop the storm, and it also **silently disables HDMI audio**. Video is
+unaffected, so it does not look like a display problem at all.
+
+**Why.** Every EDID blob compiled into the kernel (`drivers/gpu/drm/drm_edid_load.c`,
+`generic_edid[]`) is 128 bytes with **no CTA/CEA extension block**. HDMI audio capability is
+declared in that block. With no CTA block, `drm_detect_hdmi_monitor()` returns false, the
+driver sets `sink_is_hdmi = false`, and `dw_hdmi_qp_setup()` then programs `OPMODE_DVI`,
+which drops every data island: audio sample packets and infoframes alike.
+
+Note the consequence: **having no EDID at all is better than having one that declares no
+audio.** With no EDID the driver takes an explicit fallback that sets `support_hdmi = true`
+and `sink_has_audio = true`. The v3.3 argument moved the board out of that fallback.
+
+Measured on hardware, same board and display, changing only this argument:
+
+| | kernel built-in `1920x1080.bin` | no argument | `h96-1080p-audio.bin` |
+|---|---|---|---|
+| dmesg | `dw_hdmi_qp_setup DVI mode` | tmds mode | tmds mode |
+| `/sys/kernel/debug/dw-hdmi0/status` | `PHY: disabled` | `PHY: enabled  Mode: HDMI` | `Mode: HDMI` |
+| ELD | `SAD_Count=0` | zeros | `SAD_Count=1`, LPCM 2ch |
+| HDMI audio | **none** | works | works |
+
+**The fix.** This repo now ships a 256-byte EDID that declares 1080p60 plus an HDMI VSDB and
+an LPCM audio descriptor:
+
+```
+packages/bsp/h96-max-v58/edid/h96-1080p-audio.bin
+```
+
+Install it to `/lib/firmware/edid/h96-1080p-audio.bin` (mode 0644) and use:
+
+```
+drm.edid_firmware=HDMI-A-1:edid/h96-1080p-audio.bin
+```
+
+Keep the existing `video=HDMI-A-1:1920x1080@60` argument alongside it.
+
+**Do not put this file in the initramfs.** It is tempting, because loading it earlier would
+also recover about 1.85 seconds of startup, and the file otherwise loads only on the
+post-rootfs connector reprobe (you will see two `Direct firmware load ... error -2` lines
+before it succeeds). An earlier version of this project tried exactly that and **the box
+would not boot**: this U-Boot and kernel will not boot a uImage `uInitrd` with a prepended
+early cpio, and the connector probe fails before the root filesystem is mounted. Leave
+`uInitrd` alone and accept the startup cost.
+
+**Why not simply drop the argument.** The retry storm is not only a startup cost. The DRM
+connector hotplug poll keeps retrying for as long as the board is powered. Measured: with no
+argument, 108 timeouts by 99 seconds and still climbing at roughly one per second; with this
+EDID, 19 timeouts, and it stays at 19.
+
+## v3.3 (superseded by v3.4: the boot argument below disables HDMI audio, see above)
 
 An efficiency pass on top of v3.2. Most of it is root filesystem configuration and so is
 not reproducible from this repo, with **one exception that is**: the HDMI boot argument.
@@ -18,6 +85,9 @@ not reproducible from this repo, with **one exception that is**: the HDMI boot a
   ```
   drm.edid_firmware=HDMI-A-1:edid/1920x1080.bin
   ```
+
+  **⚠️ DO NOT USE THIS LINE. It disables HDMI audio.**
+  Use `edid/h96-1080p-audio.bin` instead, see v3.4 above.
 
   `edid/1920x1080.bin` is one of the EDID blobs compiled into the kernel
   (`drivers/gpu/drm/drm_edid_load.c`), so no firmware file is loaded and there is no root
