@@ -2,6 +2,11 @@
 
 
 
+## v4.2.1
+
+Adds the `h96` command index. Type `h96` on the box to list every command grouped by
+category, or `h96 <command>` to open that command's help. Otherwise identical to v4.2.
+
 ## v4.2
 
 Efficiency delta on v4.1. Same kernel (6.1.115), device tree, and hardware enablement.

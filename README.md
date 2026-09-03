@@ -33,16 +33,18 @@ GPL-2.0. See [`LICENSE`](LICENSE) and [`CREDITS.md`](CREDITS.md).
 
 ---
 
-## Release images (v4.2)
+## Release images (v4.2.1)
 
-The current release is **v4.2**, shipped as one pre-built full image. It boots to a
+The current release is **v4.2.1**, shipped as one pre-built full image. It boots to a
 text console and does not pre-install a desktop.
 
 | Image | Boots to | GPU | Desktop | Zip size |
 |---|---|---|---|---|
-| **v4.2** (full) | console | Mali-G610 (Panthor) + Mesa | installed on demand via `armbian-config` | ~1.22 GB |
+| **v4.2.1** (full) | console | Mali-G610 (Panthor) + Mesa | installed on demand via `armbian-config` | ~1.22 GB |
 
-- The full **v4.2** image boots to a console and does **not** ship KDE pre-installed.
+- **v4.2.1** adds the `h96` command index: type `h96` for a categorized list of every
+  command, or `h96 <command>` for its help. Otherwise identical to v4.2.
+- The full image boots to a console and does **not** ship KDE pre-installed.
   Install the desktop when you want it through `armbian-config`; first launch of Plasma
   applies the H96 desktop settings.
 - The shipped flasher is slim-capable: from the full image it can strip to a headless
