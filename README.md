@@ -1,4 +1,8 @@
-# H96 Max V58 Armbian board support (RK3588)
+# H96 Max V58 · Armbian board support (RK3588)
+
+**Hardware bring-up sources** · kernel · device tree · Panthor GPU · front-panel VFD · onboard WiFi 6
+
+---
 
 Board bring-up **sources** for running Armbian on **H96 Max V58** TV box
 (Rockchip **RK3588**, Mali-G610) with an **open GPU** stack: Panthor kernel
@@ -17,13 +21,39 @@ GPL-2.0. See [`LICENSE`](LICENSE) and [`CREDITS.md`](CREDITS.md).
 
 > **Scope: this repo covers hardware bring-up (kernel, device tree, front-panel
 > daemon) up through v3.1.** It does not include desktop-completeness and
-> reliability fixes from v3.2 and later (except HDMI EDID work, which is
-> documented in CHANGELOG.md and does apply here): WiFi connection tooling, Bluetooth
-> audio quality, Discover/software-install authentication, gaming stack, and
-> related first-boot automation. Compiling from these sources today reproduces
-> v3/v3.1 feature set: open GPU, onboard WiFi 6, hardware video, and
-> front-panel display. For current v4.0 feature set, use pre-built
-> release images until that userspace layer is published here as well.
+> reliability fixes from v3.2 and later (except HDMI EDID work, the v4.1
+> Bluetooth audio + headset-mic sources, and the v4.1 `xpad` kernel driver +
+> media-tool sources, which are documented in CHANGELOG.md /
+> docs/BLUETOOTH-AUDIO.md / docs/MEDIA-FEATURES.md and do apply here): WiFi connection tooling,
+> Discover/software-install authentication, gaming stack, and related first-boot
+> automation. Compiling from these sources reproduces the open GPU, onboard WiFi 6,
+> hardware video, front-panel display, and (v4.1) Bluetooth headset mic + AAC. For
+> the full current feature set, use pre-built release images until the rest of that
+> userspace layer is published here as well.
+
+---
+
+## Release images (v4.2)
+
+The current release is **v4.2**, shipped as one pre-built full image. It boots to a
+text console and does not pre-install a desktop.
+
+| Image | Boots to | GPU | Desktop | Zip size |
+|---|---|---|---|---|
+| **v4.2** (full) | console | Mali-G610 (Panthor) + Mesa | installed on demand via `armbian-config` | ~1.22 GB |
+
+- The full **v4.2** image boots to a console and does **not** ship KDE pre-installed.
+  Install the desktop when you want it through `armbian-config`; first launch of Plasma
+  applies the H96 desktop settings.
+- The shipped flasher is slim-capable: from the full image it can strip to a headless
+  (nodesktop), no-GPU, or bare-server build before writing, so one download covers desktop,
+  headless, and server use. Free space is reclaimed with `zerofree` after stripping.
+- v4.2 is an efficiency delta on v4.1: faster boot, zram zstd compression, and VM sysctl
+  tuning baked into the image. Same kernel, device tree, and hardware enablement.
+
+These sources cover the kernel, device tree, and BSP package the image is built from; the
+desktop and headless split is a userspace and packaging step and is not selected from this
+repo.
 
 ---
 
@@ -45,7 +75,7 @@ GPL-2.0. See [`LICENSE`](LICENSE) and [`CREDITS.md`](CREDITS.md).
 | Front-panel VFD | ✅ | TM1650, clock + status icons (`h96-vfd`) |
 | IR remote | ✅ | `gpio-ir-receiver` overlay, learn with `ir-keytable` |
 | eMMC storage | ✅ | |
-| GPU upscaling | ✅ | `ravu-lite-ar-r4` as an mpv user shader via `h96-upscale`; measured ~10–13% extra GPU time. Needs a desktop session |
+| GPU upscaling | ✅ | `ravu-lite-ar-r4` as an mpv user shader via `h96-upscale`; measured ~10-13% extra GPU time. Needs a desktop session |
 | NPU (3-core, ~6 TOPS) | ✅ | Driver `v0.9.8`, IOMMU mode, 1000 MHz, per-core load via `h96-npu`. `h96-npu bench` runs an INT8 matmul (~625 GOPS one core; `bench all` ~1.29 TOPS across 3 cores). Inference runtime is proprietary and fetched on demand with `h96-npu-setup`, never bundled |
 | System monitor | ✅ | `scrumptop`: per-core CPU (A76/A55 topology) with per-cluster temperature gauges, GPU/NPU load, network rates, Bluetooth, IR activity, eMMC I/O, peripheral batteries. `b` = NPU bench, `+`/`-` = polling rate |
 | Desktop lock screen | ✅ | v4.0 corrects `/etc/shadow` group ownership from base rootfs. Lock screens rejected correct passwords in every earlier release. Fix for earlier releases is in CHANGELOG |
@@ -85,6 +115,14 @@ packages/
     lib/h96-display-wake-daemon.py  input watcher: re-drives HDMI when stuck off
     environment.d-h96-gpu.conf    GLES/EGL env so desktop composites on GPU
     brcm4362a2_firmware/          BCM4362A2.hcd - vendor Bluetooth firmware blob
+    wireplumber/30-h96-bluetooth.conf  Bluetooth audio: A2DP codec order + HFP
+                                  headset-microphone roles (install to
+                                  /etc/wireplumber/wireplumber.conf.d/)
+    modules-load.d/rfcomm.conf    autoloads rfcomm (needs CONFIG_BT_RFCOMM=m in
+                                  the kernel config) so the Hands-Free headset mic
+                                  works; install to /etc/modules-load.d/
+    systemd/bt-sco-hci.service    routes SCO audio over HCI (Broadcom VSC 0xFC1C)
+                                  so the headset mic carries data; enable it
     tools/                        userspace tools installed to /usr/local/bin|sbin:
                                   h96-npu, h96-encode, h96-upscale, h96-npu-setup,
                                   h96-subtitles, h96-subtitles-setup, scrumptop,
@@ -109,42 +147,57 @@ CHANGELOG.md  CREDITS.md  LICENSE
 These sources plug into standard [Armbian build system](https://github.com/armbian/build).
 Device tree carries hardware enablement; rest is board config + BSP.
 
-Following steps below produces a v3.1-equivalent image: open GPU, onboard
-WiFi 6, hardware video, and front-panel display, all working. It does not
-include most v3.2-and-later fixes, since apart from HDMI EDID work
-(see CHANGELOG.md) none of those touch kernel, device
-tree, or BSP package this repo publishes.
+> **Released images are NOT built by these steps.** Shipped `.img` files are a rootless
+> delta on a known-good ophub RK3588 6.1.x BSP base image (Rock 5B lineage, adapted to the
+> H96 NVR-DEMO DTB). Steps below build a bare Armbian board from the framework: a booting
+> console with working peripherals, but WITHOUT the `h96-*` userspace layer (GPU staging,
+> VPU/NPU setup, Bluetooth stack, media tools, display/EDID handling). No `compile.sh`
+> invocation reproduces a release. Build from source to change the kernel or DTB; flash a
+> release to run the box.
+
+These sources plug into the standard [Armbian build system](https://github.com/armbian/build).
+Device tree carries hardware enablement; rest is board config + BSP.
+
+**Build `BRANCH=vendor`, not `edge`.** On the rockchip-rk3588 family `edge` resolves to
+rolling mainline (7.2+), which ships NO RK3588 vendor drivers: board reaches a console with
+no GPU, no hardware video, no HDMI on this BSP, dead onboard WiFi/BT (issue #5). `vendor`
+builds the `rk-6.1-rkr5.1` BSP kernel (LINUXFAMILY `rk35xx`) that knows this SoC. Build on
+Ubuntu Jammy or Noble (or the Armbian Docker path); newer hosts break the Radxa u-boot build.
 
 ```bash
 # 1. Get Armbian build framework
 git clone --depth=1 https://github.com/armbian/build armbian-build
 cd armbian-build
 
-# 2. Add this board
+# 2. Add this board. Its .tvb sets BOOT_SOC=rk3588 + BOOTCONFIG=rock-5b-rk3588_defconfig
+#    (SPL-blobs u-boot, no OP-TEE) and BOOT_FDT_FILE. Do NOT set BOOTCONFIG=rk3588_defconfig,
+#    the vendor EVB config that pulls OP-TEE and halts u-boot (issue #5).
 cp  /path/to/this-repo/config/boards/h96-max-v58.tvb   config/boards/
 
-# 3. Add device tree to RK3588 kernel dts dir (edge/mainline kernel).
-#    Also add it to that dir's Makefile (dtb-$(CONFIG_ARCH_ROCKCHIP) += rk3588-h96-max-v58.dtb).
-#    Armbian way to do this reproducibly is a userpatch that drops .dts in:
+# 3. Add device tree via a userpatch that drops the .dts in
 mkdir -p userpatches
 cp  /path/to/this-repo/patch/kernel/rk3588-h96-max-v58.dts   userpatches/
 
 # 4. (optional) merge kernel config fragment for Panthor/VPU/IR/PCIe
-cat /path/to/this-repo/config/kernel-h96-max-v58.config >> userpatches/linux-rockchip-rk3588-edge.config  # or use KERNELCONFIG
+cat /path/to/this-repo/config/kernel-h96-max-v58.config >> userpatches/linux-rockchip64-vendor.config
 
-# 5. Build (desktop image, edge kernel)
-./compile.sh  BOARD=h96-max-v58  BRANCH=edge  RELEASE=noble \
+# 5. Build (6.1 BSP kernel, desktop image)
+./compile.sh  BOARD=h96-max-v58  BRANCH=vendor  RELEASE=noble \
               BUILD_DESKTOP=yes  BUILD_MINIMAL=no  KERNEL_CONFIGURE=no
 ```
 
-Output image lands in `output/images/`. Flash it (see **Flashing** below).
+Output image lands in `output/images/`. It boots a bare 6.1 board; the `h96-*` tooling is
+the separate userspace delta the releases carry, not part of this build. Flash it (see
+**Flashing** below). If HDMI stays dark on first boot, force a mode: add
+`video=HDMI-A-1:1280x720@60e` to the `extraargs=` line in `/boot/armbianEnv.txt` (trailing
+`e` forces the mode past this BSP's EDID-read bug).
 
-> **Note on device tree.** `patch/kernel/rk3588-h96-max-v58.dts` is a
-> **decompile of stock Android vendor DTB** that was then edited for an
-> open-GPU Armbian (hence `rockchip,rk3588-nvr-demo-v10-android` compatible and
-> numeric phandles). It is included exactly as it is used, and is source
-> released images are built from. `docs/DEVICE-TREE-CHANGES.md` documents every change so it can be re-applied
-> onto a mainline `rk3588.dtsi` if you prefer a from-scratch DTS.
+> **Note on device tree.** `patch/kernel/rk3588-h96-max-v58.dts` is a decompile of the stock
+> Android vendor DTB, edited for an open-GPU Armbian (hence
+> `rockchip,rk3588-nvr-demo-v10-android` compatible and numeric phandles). It is included
+> exactly as used, and is the DTB source the released images ship. `docs/DEVICE-TREE-CHANGES.md`
+> documents every change so it can be re-applied onto a mainline `rk3588.dtsi` for a
+> from-scratch DTS.
 
 ---
 
