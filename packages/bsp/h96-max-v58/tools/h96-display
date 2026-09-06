@@ -1,0 +1,216 @@
+#!/bin/bash
+# h96-display — set the forced HDMI output mode for the H96 Max V58.
+#
+# This box's HDMI DDC/EDID i2c bus is unreliable (RK3588 BSP dwhdmi driver), so
+# it cannot read the monitor and pick a mode automatically. We force the mode at
+# the kernel level via video=HDMI-A-1:<mode> in /boot/armbianEnv.txt instead.
+
+# Shared block-letter header (art and colours live in one place).
+# The stub matters: without it, a missing library turns every invocation into
+# "h96_banner: command not found" on stderr.
+[ -r /usr/local/lib/h96/banner.sh ] && . /usr/local/lib/h96/banner.sh
+command -v h96_banner >/dev/null 2>&1 || h96_banner() { :; }
+
+set -e
+
+h96_banner "D I S P L A Y   M O D E"
+
+ENV=/boot/armbianEnv.txt
+CONN=HDMI-A-1
+
+usage() {
+  cat <<EOF
+Usage: h96-display <mode>
+
+  <WxH[@HZ]>   any resolution, e.g.  1440x900   1920x1080@60   2560x1440   3840x2160@30
+  safe         1280x720@60   (HDMI-mandatory — works on essentially any display)
+  1080p        1920x1080@60
+  1440p        2560x1440@60
+  4k           3840x2160@30
+  4k60         3840x2160@60  (validated: PHY locks; needs a Premium High Speed cable)
+  8k           7680x4320@30  (unproven: needs HDMI 2.1 FRL output, display, and cable;
+               the trial mechanism reverts it on power-cycle if nothing shows)
+  auto         read the TV's EDID over the DDC pins (GPIO bit-bang), pick the
+               best supported mode, and set it as a trial like any other mode;
+               on any read/parse failure the current mode is kept
+  autodetect on|off|status   list the display native modes (opt-in, off by default)
+  wake         re-drive the HDMI output now if it is blanked and stuck off
+               (a daemon does this automatically on any keypress)
+  show         print the current forced mode
+  keep         confirm the current trial mode (cancels the auto-revert)
+
+The mode is applied on the next boot.  After setting, run:  reboot
+Then, once you can SEE the new mode, run:  h96-display keep
+EOF
+}
+
+[ $# -ge 1 ] || { usage; exit 1; }
+case "$1" in
+  -h|--help) usage; exit 0 ;;
+  show) grep -o 'video=[^ ]*' "$ENV" 2>/dev/null || echo "(no forced mode set)"; exit 0 ;;
+  wake)
+    # Manual trigger for the display-wake path. The daemon
+    # (h96-display-wake.service) runs the same script on any keypress.
+    [ "$(id -u)" = 0 ] || { echo "h96-display: wake needs root" >&2; exit 1; }
+    W=/usr/local/sbin/h96-display-wake.sh
+    [ -x "$W" ] || { echo "h96-display: $W missing" >&2; exit 1; }
+    if [ "$(cat /sys/class/drm/card0-HDMI-A-1/enabled 2>/dev/null)" = enabled ]; then
+      echo "HDMI output is already enabled; nothing to do."
+      exit 0
+    fi
+    "$W"
+    exit $? ;;
+  ok|keep|confirm) rm -f /boot/h96-display.trial /boot/h96-display.trial.seen; echo "Display mode confirmed (kept); auto-revert cancelled."; exit 0 ;;
+  autodetect)
+    # Opt-in display autodetect: enumerate the attached display's native modes
+    # (resolutions + refresh rates) in the desktop. OFF by default because it
+    # injects the display's EDID, which some displays/drivers react to
+    # differently; when off the box is reliable at the forced mode.
+    FLAG=/etc/h96/display-autodetect.enabled
+    OVR=/sys/kernel/debug/dri/0/HDMI-A-1/edid_override
+    case "${2:-status}" in
+      on|enable)
+        [ "$(id -u)" = 0 ] || { echo "h96-display: autodetect on needs root" >&2; exit 1; }
+        mkdir -p /etc/h96; : > "$FLAG"
+        systemctl enable h96-edid-adapt.service >/dev/null 2>&1
+        [ -x /usr/local/sbin/h96-edid-adapt.sh ] && /usr/local/sbin/h96-edid-adapt.sh cli >/dev/null 2>&1
+        echo "Display autodetect ENABLED. The desktop will list the connected"
+        echo "display's native resolutions and refresh rates; pick one in Display"
+        echo "Settings and KDE remembers it."
+        echo
+        echo "REBOOT to apply: the desktop reads the new mode list on its next start."
+        echo
+        echo "REFRESH RATE: pick a rate your HDMI cable can carry. 120/144 Hz and 4K"
+        echo "at 60 Hz need a Premium or Ultra High Speed cable; a standard cable may"
+        echo "go black at those rates while working at 60 Hz. KDE reverts an unusable"
+        echo "mode after 15s if you do not confirm it."
+        echo
+        echo "HDMI AUDIO: enabling autodetect can disable HDMI sound (the audio path"
+        echo "uses the boot EDID). If sound disappears: sudo h96-display autodetect off"
+        echo "and reboot."
+        echo "Turn off: sudo h96-display autodetect off"
+        exit 0 ;;
+      off|disable)
+        [ "$(id -u)" = 0 ] || { echo "h96-display: autodetect off needs root" >&2; exit 1; }
+        rm -f "$FLAG"
+        systemctl disable h96-edid-adapt.service >/dev/null 2>&1
+        [ -w "$OVR" ] && printf reset > "$OVR" 2>/dev/null
+        rm -f /run/h96-edid-adapt.last
+        echo "Display autodetect DISABLED. Back to the forced default mode."
+        echo "(Reboot to fully clear an already-injected mode list.)"
+        exit 0 ;;
+      status|"")
+        if [ -f "$FLAG" ]; then echo "Display autodetect: ON"; else echo "Display autodetect: OFF (opt-in; enable: sudo h96-display autodetect on)"; fi
+        exit 0 ;;
+      *) echo "h96-display: autodetect takes on | off | status" >&2; exit 1 ;;
+    esac ;;
+  safe)  MODE=1280x720@60 ;;
+  1080p) MODE=1920x1080@60 ;;
+  1440p) MODE=2560x1440@60 ;;
+  4k|4K) MODE=3840x2160@30 ;;
+  4k60|4K60) MODE=3840x2160@60 ;;
+  8k|8K)
+    # Offered but UNPROVEN: the RK3588 decodes 8K video, and the chip datasheet
+    # lists HDMI 2.1 FRL output, but this kernel's HDMI driver has only ever
+    # been observed in TMDS mode (ceiling 4K60). 8K30 needs FRL, an 8K display,
+    # and a certified HDMI 2.1 cable. The one-boot trial still protects: if the
+    # display shows nothing, power-cycle and the previous mode returns.
+    MODE=7680x4320@30 ;;
+  auto)
+    # Bit-bang the TV's EDID over the DDC pins as plain GPIO. The SoC's DDC
+    # i2c controller never completes a transaction on this kernel, but the
+    # wires are fine (Android reads EDID over them). Character-device GPIO
+    # uAPI only; NEVER /dev/mem near the HDMI blocks (hard-hangs the SoC).
+    #   SCL = GPIO4_B7 = /dev/gpiochip4 line 15
+    #   SDA = GPIO4_C0 = /dev/gpiochip4 line 16
+    # Validated on hardware 2026-08-25: 5/5 byte-identical reads of a Sony TV,
+    # display undisturbed, full auto->trial->reboot->keep cycle clean.
+    reader=/usr/local/lib/h96/ddc-edid-read
+    parser=/usr/local/lib/h96/edid_modes.py
+    [ "$(id -u)" = 0 ] || { echo "h96-display: auto needs root (GPIO access)" >&2; exit 1; }
+    for f in "$reader" "$parser"; do
+      [ -e "$f" ] || { echo "h96-display: $f missing — current mode left untouched" >&2; exit 1; }
+    done
+    raw="$(mktemp)"; perr="$(mktemp)"
+    # The h96-ddc-i2c-gpio overlay gives the kernel ownership of the DDC pins
+    # (as the i2c bus named "i2c-ddc", used for DDC/CI brightness). When that
+    # bus is present the raw-GPIO reader gets EBUSY, so the EDID is read
+    # through the kernel bus instead: EDID EEPROM at 0x50, extension count at
+    # byte 126, E-DDC segment pointer at 0x30 for blocks >= 2, repeated-start
+    # transactions via i2ctransfer. The raw-GPIO reader remains the fallback
+    # for a boot where the overlay is absent.
+    ddcbus=""
+    for _d in /sys/class/i2c-dev/i2c-*; do
+      [ "$(cat "$_d/name" 2>/dev/null)" = "i2c-ddc" ] && { ddcbus="${_d##*i2c-}"; break; }
+    done
+    if [ -n "$ddcbus" ] && command -v i2ctransfer >/dev/null 2>&1; then
+      if ! b0=$(i2ctransfer -y "$ddcbus" w1@0x50 0x00 r128@0x50 2>"$perr"); then
+        echo "h96-display: DDC/EDID read failed (kernel bus i2c-$ddcbus) — current mode left untouched:" >&2
+        sed "s/^/  /" "$perr" >&2
+        rm -f "$raw" "$perr"; exit 1
+      fi
+      ext=$(python3 -c "import sys;b=[int(x,16) for x in sys.argv[1:]];print(min(b[126],7))" $b0 2>/dev/null)
+      blocks="$b0"
+      i=1
+      while [ "${ext:-0}" -ge "$i" ]; do
+        seg=$((i / 2)); off=$(( (i % 2) * 128 ))
+        if [ "$seg" -eq 0 ]; then
+          bn=$(i2ctransfer -y "$ddcbus" w1@0x50 $off r128@0x50 2>/dev/null) || break
+        else
+          bn=$(i2ctransfer -y "$ddcbus" w1@0x30 $seg w1@0x50 $off r128@0x50 2>/dev/null) || break
+        fi
+        blocks="$blocks $bn"
+        i=$((i + 1))
+      done
+      python3 -c "import sys;sys.stdout.buffer.write(bytes(int(x,16) for x in sys.argv[1:]))" $blocks > "$raw"
+    elif ! "$reader" /dev/gpiochip4 15 16 --label gpio4 >"$raw" 2>"$perr"; then
+      echo "h96-display: DDC/EDID read failed — current mode left untouched:" >&2
+      sed "s/^/  /" "$perr" >&2
+      rm -f "$raw" "$perr"; exit 1
+    fi
+    if ! MODE="$(python3 "$parser" "$raw" 2>"$perr")"; then
+      echo "h96-display: EDID rejected — current mode left untouched:" >&2
+      sed "s/^/  /" "$perr" >&2
+      rm -f "$raw" "$perr"; exit 1
+    fi
+    sed "s/^/  /" "$perr" >&2
+    rm -f "$raw" "$perr"
+    echo "auto-detected mode: $MODE"
+    ;;
+  *)     MODE="$1" ;;
+esac
+
+# Accept WxH or WxH@HZ; default to @60 when no refresh is given.
+case "$MODE" in
+  *x*@*) : ;;
+  *x*)   MODE="${MODE}@60" ;;
+  *) echo "h96-display: unrecognized mode '$MODE'" >&2; usage; exit 1 ;;
+esac
+
+VID="video=${CONN}:${MODE}"
+[ -w "$ENV" ] || { echo "h96-display: $ENV not writable (run as root)" >&2; exit 1; }
+
+# Capture the current (working) mode as last-good BEFORE changing it, and arm a
+# boot-once trial so a bad mode self-heals (see h96-display-guard).
+cur="$(grep -o 'video=HDMI-A-1:[^ ]*' "$ENV" | head -1)"
+[ -n "$cur" ] && printf '%s\n' "$cur" > /boot/h96-display.lastgood
+: > /boot/h96-display.trial
+rm -f /boot/h96-display.trial.seen
+
+# Drop any existing video=HDMI-A-1:... token from extraargs, then append ours.
+tmp="$(mktemp)"
+awk -v vid="$VID" '
+  /^extraargs=/ { gsub(/ *video=HDMI-A-1:[^ ]*/, ""); print $0 " " vid; next }
+  { print }
+' "$ENV" > "$tmp"
+# If there was no extraargs line at all, add one.
+grep -q '^extraargs=' "$tmp" || echo "extraargs=rw rootwait $VID" >> "$tmp"
+cat "$tmp" > "$ENV"
+rm -f "$tmp"
+
+echo "Set forced HDMI mode: $VID  (trial)"
+echo
+echo "Reboot now.  After it comes back up:"
+echo "  - if you can SEE the screen ->  run:  h96-display keep"
+echo "  - if the screen is BLACK     ->  just power-cycle; it auto-reverts to"
+echo "       ${cur:-the previous mode} on the next boot."

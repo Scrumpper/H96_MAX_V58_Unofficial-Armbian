@@ -1,0 +1,13 @@
+[Unit]
+Description=H96 enable lightdm autologin for the desktop user
+Documentation=man:lightdm(1)
+Before=lightdm.service
+ConditionPathExists=/usr/local/sbin/h96-autologin-setup
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/sbin/h96-autologin-setup
+
+[Install]
+WantedBy=multi-user.target

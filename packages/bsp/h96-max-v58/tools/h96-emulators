@@ -1,0 +1,512 @@
+#!/usr/bin/env python3
+# =============================================================================
+# h96-emulators - opt-in game-emulator suite installer for the H96 Max V58
+#                 (RK3588 / Mali-G610, all-open Panthor/PanVK stack).
+#
+# Installs nothing by default. Emulators are pulled on demand so non-gamers carry
+# no weight and no game code is ever bundled. Bring your own game dumps/BIOS.
+#
+#   h96-emulators                       interactive multi-select menu
+#   h96-emulators list                  catalog + install state + GPU backend
+#   h96-emulators install <names...|all>
+#   h96-emulators remove  <names...|all>
+#   h96-emulators bootstrap             install flatpak + Flathub (fresh flashes)
+#   h96-emulators gpu                   report GPU wiring (PanVK/Panfrost vs software)
+#
+# The suite (GPU-accelerated systems only - each offloads real 3D rendering to the
+# Mali-G610 through PanVK / Panfrost; verified on the box, see `h96-emulators gpu`):
+#   retroarch  Multi-system, Vulkan/glcore cores (PS1/N64/PSP/Saturn) - Flatpak
+#   dolphin    GameCube / Wii            (Vulkan PanVK)                - Flatpak
+#   ppsspp     Sony PSP                  (Vulkan PanVK)                - Flatpak
+#   flycast    Sega Dreamcast / NAOMI    (Vulkan / GL)                 - Flatpak
+#   melonds    Nintendo DS               (OpenGL 3D renderer)         - Flatpak
+#   rmg        Nintendo 64 (Parallel-RDP Vulkan)                       - Flatpak
+#   azahar     Nintendo 3DS              (Vulkan PanVK)                - Flatpak
+#   cemu       Nintendo Wii U            (Vulkan PanVK, box64, no wine)- box64
+#
+# CPU-RENDERED SYSTEMS ARE NOT INCLUDED HERE, ON PURPOSE. mGBA (Game Boy Advance) and
+# ScummVM (point-and-click adventures) are 2D: they do not meaningfully use the Mali GPU,
+# so there is nothing for this tool's GPU wiring to do for them. They are NOT missing from
+# the box - both are already one click away in the software store (Discover), as aarch64
+# Flatpaks on Flathub (io.mgba.mGBA, org.scummvm.ScummVM) and as apt packages (mgba-qt,
+# scummvm). Install them there; they run fine on the CPU.
+#
+# The seven Flatpaks are native ARM64 and render on the GPU through PanVK/Panfrost.
+# Cemu has no ARM build, so it runs the x86-64 build under box64 (Vulkan -> PanVK).
+# `install` runs a GPU wiring + verification pass so each emulator actually uses the
+# Mali GPU (not the llvmpipe software fallback); see gpu_wire()/gpu_probe().
+#
+# GPU: pick the recommended backend (shown by `list`) inside each emulator. On this
+# open Panfrost/PanVK stack, Vulkan (PanVK) is preferred where supported; a few use
+# OpenGL ES (Panfrost). Flatpak GPU acceleration relies on the runtime's Mesa having
+# Panfrost/PanVK - verify per emulator that it is NOT falling back to software.
+#
+# FRESH FLASHES have no flatpak. Running an install auto-bootstraps it (apt install
+# flatpak + Flathub remote) after a warning; or run `h96-emulators bootstrap` first.
+# Auto-elevates via sudo. Cemu files land under the invoking desktop user's home.
+# =============================================================================
+import os, sys, shutil, subprocess, tempfile, json, urllib.request, pwd
+
+BANNER_LIB    = "/usr/local/lib/h96/banner.sh"
+CEMU_ROOT_SUB = ".local/share/h96-emulators/cemu"      # under the desktop user's HOME
+CEMU_LAUNCHER = "/usr/local/bin/h96-cemu"
+CEMU_DESKTOP  = "/usr/share/applications/h96-cemu.desktop"
+FLATHUB_REPO  = "https://dl.flathub.org/repo/flathub.flatpakrepo"
+CEMU_API      = "https://api.github.com/repos/cemu-project/Cemu/releases/latest"
+PANVK_ICD     = "/usr/share/vulkan/icd.d/panfrost_icd.json"
+
+# name -> (system, kind, flatpak_id_or_None, recommended GPU backend)
+CATALOG = {
+    "retroarch": ("Multi-system (NES/SNES/Genesis/PS1/GB/PCE)", "flatpak", "org.libretro.RetroArch",   "Vulkan or glcore (per core)"),
+    "dolphin":   ("GameCube / Wii",                             "flatpak", "org.DolphinEmu.dolphin-emu","Vulkan (PanVK)"),
+    "ppsspp":    ("Sony PSP",                                   "flatpak", "org.ppsspp.PPSSPP",         "Vulkan (PanVK)"),
+    "flycast":   ("Sega Dreamcast / NAOMI",                     "flatpak", "org.flycast.Flycast",       "Vulkan or OpenGL"),
+    "melonds":   ("Nintendo DS (OpenGL 3D)",                    "flatpak", "net.kuribo64.melonDS",      "OpenGL (GLES)"),
+    "rmg":       ("Nintendo 64 (Rosalie's Mupen GUI)",          "flatpak", "com.github.Rosalie241.RMG", "Vulkan (Parallel-RDP) or GL"),
+    "azahar":    ("Nintendo 3DS",                               "flatpak", "org.azahar_emu.Azahar",     "Vulkan (PanVK)"),
+    "cemu":      ("Nintendo Wii U (box64, no wine)",            "box64",   None,                        "Vulkan (PanVK)"),
+}
+
+def c(s, code): return f"\033[{code}m{s}\033[0m" if sys.stdout.isatty() else s
+def info(m): print(">> " + m)
+def warn(m): print(c("!! " + m, "93"), file=sys.stderr)
+def die(m): print(c("ERROR: " + m, "91"), file=sys.stderr); sys.exit(1)
+
+CYAN, MAGENTA, DIM = "96", "95", "2"   # Scrumpper's suite palette
+
+# Shared block-letter wordmark, matching /usr/local/lib/h96/banner.sh and every
+# other h96- tool. Embedded (not only sourced) so this suite installer always
+# shows the Scrumpper's theme, on-box or off. TTY-gated + NO_COLOR honoured, so
+# it prints nothing from a pipe or a systemd unit.
+_ART = r"""
+   ██╗  ██╗ █████╗  ██████╗    ██╗   ██╗███████╗ █████╗
+   ██║  ██║██╔══██╗██╔════╝    ██║   ██║██╔════╝██╔══██╗
+   ███████║╚██████║███████╗    ██║   ██║███████╗╚█████╔╝
+   ██╔══██║ ╚═══██║██╔═══██╗    ╚██╗ ██╔╝╚════██║██╔══██╗
+   ██║  ██║ █████╔╝╚██████╔╝     ╚████╔╝ ███████║╚█████╔╝
+   ╚═╝  ╚═╝ ╚════╝  ╚═════╝       ╚═══╝  ╚══════╝ ╚════╝"""
+
+def banner():
+    if not sys.stdout.isatty() or os.environ.get("NO_COLOR"):
+        return
+    B, P, D, BOLD, X = "\033[96m", "\033[95m", "\033[2m", "\033[1m", "\033[0m"
+    def ctr(s): return s.rjust((64 + len(s)) // 2)
+    print(B + BOLD + _ART + X)
+    print(P + BOLD + ctr("  S C R U M P P E R ' S  ") + X)
+    print(P + BOLD + ctr("  U N O F F I C I A L   A R M B I A N  ") + X)
+    print(P + BOLD + ctr("  E M U L A T O R   S U I T E  ") + X)
+    print(D + ctr("H96 Max V58  ·  Rockchip RK3588") + X)
+    print(D + "  " + "─" * 60 + X)
+
+def desktop_user():
+    v = os.environ.get("SUDO_USER")
+    if v and v != "root": return v
+    u = os.environ.get("USER")
+    if u and u != "root": return u
+    for p in pwd.getpwall():
+        if 1000 <= p.pw_uid < 65000 and os.path.isdir(p.pw_dir): return p.pw_name
+    die("cannot determine the desktop user")
+
+def have(cmd): return shutil.which(cmd) is not None
+
+def net_ok():
+    try:
+        urllib.request.urlopen("https://api.github.com", timeout=8); return True
+    except Exception:
+        return False
+
+def elevate():
+    """Re-exec as root, keeping the session env but NOT the caller's HOME.
+
+    The -E below is deliberate: DISPLAY and XAUTHORITY have to survive, or the renderer
+    probe has no display to talk to. But -E also carries HOME=/home/<user> into the root
+    process, and flatpak initialises a per-user repo at $HOME/.local/share/flatpak on
+    almost any invocation. Run as root, that repo lands in the desktop user's home owned
+    by root with mode 700, and from then on EVERY `flatpak run` as that user dies with
+    "Permission denied" - which the probe can only honestly report as "unknown", making a
+    working Panfrost GPU look missing. Root's flatpak state belongs in root's home."""
+    if os.geteuid() == 0:
+        os.environ["HOME"] = "/root"
+        return
+    if not have("sudo"): die("need root (sudo not available); run as root")
+    os.execvp("sudo", ["sudo", "-E", sys.executable, os.path.abspath(__file__)] + sys.argv[1:])
+
+def repair_user_flatpak_dir(user):
+    """Heal a per-user flatpak repo that a previous root run created (see elevate()).
+
+    Boxes installed before that fix already carry the root-owned directory, and nothing
+    else ever puts it right. Only touches it when it is genuinely misowned."""
+    try:
+        pw = pwd.getpwnam(user)
+    except KeyError:
+        return
+    d = os.path.join(pw.pw_dir, ".local", "share", "flatpak")
+    if not os.path.isdir(d) or os.stat(d).st_uid == pw.pw_uid:
+        return
+    info(f"repairing root-owned {d} (would break flatpak for {user})")
+    for root, dirs, files in os.walk(d):
+        for p in [root] + [os.path.join(root, n) for n in dirs + files]:
+            try: os.chown(p, pw.pw_uid, pw.pw_gid)
+            except OSError: pass
+    try: os.chmod(d, 0o755)
+    except OSError: pass
+
+# --------------------------------------------- flatpak bootstrap (fresh) -----
+def flatpak_present():
+    return have("flatpak")
+
+def ensure_flatpak(interactive=True):
+    """Fresh H96 flashes ship without flatpak. Install it + add Flathub."""
+    if flatpak_present():
+        subprocess.run(["flatpak", "remote-add", "--if-not-exists", "flathub", FLATHUB_REPO], check=False)
+        return
+    warn("flatpak is NOT installed - fresh flashes of this image ship without it.")
+    print("   Seven of the eight emulators are Flatpaks and need flatpak + the Flathub remote.")
+    if interactive and sys.stdin.isatty():
+        try:
+            ans = input("   Install flatpak now (apt) and add Flathub? [Y/n]: ").strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            ans = "n"
+        if ans not in ("", "y", "yes"):
+            die("flatpak is required for these emulators. Re-run when ready, or: h96-emulators bootstrap")
+    if not net_ok():
+        die("no internet - cannot install flatpak")
+    info("installing flatpak (apt-get)...")
+    subprocess.run(["apt-get", "update"], check=False)
+    r = subprocess.run(["apt-get", "install", "-y", "flatpak"])
+    if r.returncode != 0 or not have("flatpak"):
+        die("could not install flatpak. Install manually: sudo apt install flatpak")
+    info("adding Flathub remote...")
+    subprocess.run(["flatpak", "remote-add", "--if-not-exists", "flathub", FLATHUB_REPO], check=False)
+    print(c("flatpak + Flathub ready.", "92"))
+    print("  Note: first Flatpak install also pulls a runtime (hundreds of MB), and a")
+    print("  log out / back in may be needed before the app-menu entries appear.")
+
+# ------------------------------------------------------------- flatpak -------
+def _flatpak_installed(app_id):
+    if not flatpak_present(): return False
+    return subprocess.run(["flatpak", "info", app_id],
+                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode == 0
+
+def install_flatpak(name, user, interactive=True):
+    ensure_flatpak(interactive)
+    desc, _, app_id, gpu = CATALOG[name]
+    info(f"installing {name} ({desc}) -> {app_id} ...")
+    r = subprocess.run(["flatpak", "install", "-y", "--system", "--noninteractive", "flathub", app_id])
+    if r.returncode != 0:
+        warn(f"install of {name} failed (network? no aarch64 build? Flathub down?) - skipping")
+        return False
+    print(c(f"  {name} installed. Menu: Games. Recommended GPU backend: {gpu}", "92"))
+    backend = gpu_wire(user, app_id)
+    ok = "PanVK" in backend or "Panfrost" in backend
+    print(c(f"  GPU: Mali-G610 -> {backend}", "92" if ok else "93"))
+    if not ok:
+        warn(f"{name} could not see the Mali GPU (would run on the llvmpipe software "
+             f"fallback). Try: h96-emulators gpu")
+    return True
+
+
+# --------------------------------------------------------- GPU wiring --------
+# "Connect the GPU back in": these images ship the OPEN Panfrost/PanVK Mesa stack,
+# but a stray libmali blob or a software-only Flatpak GL extension can leave an
+# emulator on the llvmpipe software renderer. Verified on the box: PPSSPP/Dolphin
+# enumerate 'Mali-G610 MC4' via PanVK when wired correctly.
+PANVK_ICD_SANDBOX = "/usr/share/vulkan/icd.d/panfrost_icd.aarch64.json"
+
+def _user_env(user):
+    """Environment for running a GUI app as the desktop user.
+
+    THIS BOX IS X11, deliberately (Wayland breaks the GPU/mpv path on this BSP). Only
+    WAYLAND_DISPLAY used to be set here, so nothing that needed a display could connect:
+    every renderer probe silently failed and fell through to the weakest check. DISPLAY and
+    XAUTHORITY are what actually matter here; WAYLAND_DISPLAY is kept for a Wayland session."""
+    uid = pwd.getpwnam(user).pw_uid
+    home = pwd.getpwnam(user).pw_dir
+    return {
+        "XDG_RUNTIME_DIR": f"/run/user/{uid}",
+        "DISPLAY": os.environ.get("DISPLAY", ":0"),
+        "XAUTHORITY": os.environ.get("XAUTHORITY", os.path.join(home, ".Xauthority")),
+        "WAYLAND_DISPLAY": os.environ.get("WAYLAND_DISPLAY", "wayland-0"),
+        "DBUS_SESSION_BUS_ADDRESS": f"unix:path=/run/user/{uid}/bus",
+        "PATH": "/usr/bin:/bin:/usr/local/bin",
+    }
+
+def _run_user(user, argv, **kw):
+    env = _user_env(user)
+    return subprocess.run(["sudo", "-u", user, "env"]
+                          + [f"{k}={v}" for k, v in env.items()] + argv, **kw)
+
+def libmali_present():
+    return subprocess.run("ls /usr/lib/*/libmali.so* >/dev/null 2>&1",
+                          shell=True).returncode == 0
+
+def _renderer_from(out):
+    """Classify a renderer/device string. Mali or Panfrost or PanVK means the real GPU;
+    llvmpipe, swrast or softpipe means the software fallback."""
+    low = (out or "").lower()
+    if "mali" in low or "panfrost" in low or "panvk" in low:
+        for ln in out.splitlines():
+            l = ln.lower()
+            if ("renderer" in l or "devicename" in l or "gpu id" in l) and "mali" in l:
+                return ln.strip()[:70]
+        return "Mali-G610 (Panfrost)"
+    if "llvmpipe" in low or "swrast" in low or "softpipe" in low:
+        return None
+    return ""
+
+def gpu_probe(user, app_id):
+    """Ask the sandbox what it would actually RENDER on, and report what it says.
+
+    The old check merely tested that the Panfrost ICD file existed in the sandbox. That file
+    ships with org.freedesktop.Platform.GL.default, so it is present for EVERY app using that
+    extension: the check could never return "software" and so verified nothing. It reported
+    PPSSPP as hardware while PPSSPP's default GL backend was failing with EGL_BAD_ALLOC and
+    never opening a window. We now read a real renderer string, and fall back to the ICD test
+    ONLY as a last resort, labelled honestly as unverified."""
+    if not _flatpak_installed(app_id):
+        return "not-installed"
+    # qtdiag6 lives in the KDE runtime and prints both the GL renderer and the Vulkan device.
+    for cmd in (["--command=qtdiag6", app_id],
+                ["--command=vulkaninfo", app_id, "--summary"],
+                ["--command=glxinfo", app_id, "-B"]):
+        r = _run_user(user, ["flatpak", "run"] + cmd, capture_output=True, text=True)
+        got = _renderer_from((r.stdout or "") + (r.stderr or ""))
+        if got is None:
+            return "SOFTWARE fallback (llvmpipe)"
+        if got:
+            return f"hardware: {got}"
+    # Nothing that reports a renderer is available in this runtime. Say so plainly.
+    r = _run_user(user, ["flatpak", "run", "--command=sh", app_id, "-c",
+                         f"test -e {PANVK_ICD_SANDBOX} && echo ICD || echo NOICD"],
+                  capture_output=True, text=True)
+    out = (r.stdout or "") + (r.stderr or "")
+    if "NOICD" in out:
+        return "no Mali ICD in sandbox (would be software)"
+    if "ICD" in out:
+        return "Mali ICD present, renderer NOT verified"
+    return "unknown"
+
+def gpu_wire(user, app_id):
+    """Guarantee GPU access for a freshly-installed flatpak app, then verify."""
+    # 1. render node + Wayland socket (flatpak grants dri by default; be explicit)
+    subprocess.run(["flatpak", "override", "--system", app_id,
+                    "--device=dri", "--socket=wayland"], check=False,
+                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    # 2. ensure a HARDWARE GL/Vulkan driver extension is present. A fresh flash can
+    #    otherwise land only the software lvp fallback and every 3D emulator crawls.
+    subprocess.run(["flatpak", "install", "-y", "--system", "--noninteractive",
+                    "flathub", "org.freedesktop.Platform.GL.default"],
+                   check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    # 3. verify the app can see Mali
+    return gpu_probe(user, app_id)
+
+def gpu_status(user):
+    banner()
+    print(c("GPU status  -  open Panfrost / PanVK stack", CYAN))
+    lm = libmali_present()
+    print(f"  libmali blob : {'PRESENT' if lm else 'absent'}"
+          + ("  (can shadow Mesa's EGL/Vulkan; if an emulator is stuck on software,"
+             " this is the first suspect)" if lm else "  (good - Mesa is authoritative)"))
+    print("  Vulkan       : PanVK (Mali-G610 MC4) is the expected hardware device")
+    print("  OpenGL       : Panfrost (Mali-G610 MC4)")
+    print(c("\n  Per-emulator backend (installed apps):", MAGENTA))
+    any_app = False
+    for name, (desc, kind, app_id, _) in CATALOG.items():
+        if kind != "flatpak":
+            # cemu runs under box64, not flatpak. It was silently skipped here, which
+            # hid the one entry most likely to have GPU trouble. Report it explicitly.
+            state = "installed" if os.path.isdir(cemu_home(user)) else "not installed"
+            print(f"    {name:10} box64 build, {state}. Its GPU path is only exercised once a")
+            print(f"    {'':10} title is loaded; launch it and watch the GPU load to confirm.")
+            continue
+        if not _flatpak_installed(app_id):
+            continue
+        any_app = True
+        b = gpu_probe(user, app_id)
+        print(f"    {name:10} {b}")
+    if not any_app:
+        print("    (no flatpak emulators installed yet)")
+    print("\n  In-emulator: pick the Vulkan (PanVK) backend where offered; if a title"
+          "\n  is stuck on 'llvmpipe', that is the software fallback - re-run install.")
+
+def remove_flatpak(name):
+    if not flatpak_present(): info(f"{name} not installed (no flatpak)."); return
+    _, _, app_id, _ = CATALOG[name]
+    if not _flatpak_installed(app_id): info(f"{name} not installed."); return
+    subprocess.run(["flatpak", "uninstall", "-y", "--system", app_id], check=False)
+    info(f"{name} removed.")
+
+# ---------------------------------------------------------------- cemu -------
+def cemu_home(user): return os.path.join(pwd.getpwnam(user).pw_dir, CEMU_ROOT_SUB)
+def cemu_installed(user):
+    return os.path.exists(os.path.join(cemu_home(user), "Cemu-linux", "usr", "bin", "Cemu"))
+
+def install_cemu(user):
+    if not have("box64"):
+        die("box64 not found (box64-rk3588 ships in the base image); cannot run Cemu")
+    dst = cemu_home(user)
+    if not cemu_installed(user):
+        info("querying latest Cemu release...")
+        with urllib.request.urlopen(CEMU_API, timeout=20) as r:
+            rel = json.load(r)
+        url = next((a["browser_download_url"] for a in rel.get("assets", [])
+                    if a["name"].endswith("x86_64.AppImage")), None)
+        if not url: die("no x86_64 AppImage in the latest Cemu release")
+        info(f"downloading {url.split('/')[-1]} (~60 MB)...")
+        os.makedirs(dst, exist_ok=True)
+        with tempfile.TemporaryDirectory() as td:
+            appimg = os.path.join(td, "Cemu.AppImage")
+            urllib.request.urlretrieve(url, appimg)
+            os.chmod(appimg, 0o755)
+            info("extracting (via box64, no FUSE needed)...")
+            subprocess.run(["box64", appimg, "--appimage-extract"], cwd=td, check=True,
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            src = os.path.join(td, "squashfs-root")
+            if not os.path.isdir(src): die("AppImage extraction produced no squashfs-root")
+            shutil.rmtree(os.path.join(dst, "Cemu-linux"), ignore_errors=True)
+            shutil.move(src, os.path.join(dst, "Cemu-linux"))
+        subprocess.run(["chown", "-R", f"{user}:{user}", dst], check=False)
+    _write_cemu_launcher(user)
+    print(c("  cemu installed. Menu: Games -> 'Cemu (Wii U)', or run: h96-cemu", "92"))
+    print("  First launch builds shader caches (slow). Set Graphics API = Vulkan (PanVK).")
+
+def _write_cemu_launcher(user):
+    appdir = os.path.join(cemu_home(user), "Cemu-linux")
+    launcher = f"""#!/bin/bash
+# h96-cemu - Cemu (Wii U) under box64 on Mali-G610/PanVK (no wine). Auto-generated.
+APPDIR="{appdir}"
+BIN="$APPDIR/usr/bin/Cemu"
+command -v box64 >/dev/null 2>&1 || {{ echo "box64 missing"; exit 1; }}
+[ -x "$BIN" ] || {{ echo "Cemu not installed - run: h96-emulators install cemu"; exit 1; }}
+[ -r "$APPDIR/apprun-hooks/linuxdeploy-plugin-gtk.sh" ] && . "$APPDIR/apprun-hooks/linuxdeploy-plugin-gtk.sh" 2>/dev/null || true
+export GDK_BACKEND=x11
+export LD_LIBRARY_PATH="$APPDIR/usr/lib:${{LD_LIBRARY_PATH:-}}"
+export VK_ICD_FILENAMES="${{VK_ICD_FILENAMES:-{PANVK_ICD}}}"
+export VK_DRIVER_FILES="$VK_ICD_FILENAMES"
+export BOX64_DYNAREC="${{BOX64_DYNAREC:-1}}"
+export BOX64_DYNAREC_BIGBLOCK="${{BOX64_DYNAREC_BIGBLOCK:-1}}"
+exec box64 "$BIN" "$@"
+"""
+    _root_write(CEMU_LAUNCHER, launcher, 0o755)
+    _root_write(CEMU_DESKTOP,
+        "[Desktop Entry]\nType=Application\nName=Cemu (Wii U)\n"
+        "Comment=Cemu under box64 on Mali-G610 / PanVK (no wine)\n"
+        f"Exec={CEMU_LAUNCHER}\nIcon={appdir}/info.cemu.Cemu.png\nTerminal=false\nCategories=Game;Emulator;\n",
+        0o644)
+
+def remove_cemu(user):
+    _root_rm(CEMU_LAUNCHER); _root_rm(CEMU_DESKTOP)
+    shutil.rmtree(cemu_home(user), ignore_errors=True)
+    info("cemu removed.")
+
+# --------------------------------------------------------------- helpers -----
+def _root_write(path, content, mode):
+    with open(path, "w") as f: f.write(content)
+    os.chmod(path, mode)
+def _root_rm(path):
+    try: os.unlink(path)
+    except FileNotFoundError: pass
+
+def is_installed(name, user):
+    if CATALOG[name][1] == "flatpak": return _flatpak_installed(CATALOG[name][2])
+    return cemu_installed(user)
+
+def show_list(user):
+    print(c("Emulator suite  -  GPU-accelerated systems for the H96 Max V58 (pick by number or name):", CYAN))
+    if not flatpak_present():
+        warn("flatpak not installed - run `h96-emulators bootstrap` (or just install; it self-bootstraps)")
+    names = list(CATALOG)
+    for i, name in enumerate(names, 1):
+        desc, kind, _, gpu = CATALOG[name]
+        tag = c("[installed]", "92") if is_installed(name, user) else c("[ - ]", "90")
+        eng = "box64" if kind == "box64" else "flatpak"
+        print(f"  {i:2}) {name:10} {desc:42} {eng:7} GPU: {gpu:26} {tag}")
+    print(c("\nInstall: ", MAGENTA) + "h96-emulators install <names...|all>    "
+          + c("Remove: ", MAGENTA) + "h96-emulators remove <names...|all>")
+
+def resolve_names(tokens):
+    """Turn a list of tokens (names, numbers, 'all') into catalog names."""
+    names = list(CATALOG)
+    out = []
+    for t in tokens:
+        t = t.strip().lower().rstrip(",")
+        if not t: continue
+        if t == "all": return names
+        if t.isdigit() and 1 <= int(t) <= len(names): out.append(names[int(t)-1])
+        elif t in CATALOG: out.append(t)
+        else: die(f"unknown emulator '{t}'. See: h96-emulators list")
+    # de-dup, keep order
+    seen = set(); return [n for n in out if not (n in seen or seen.add(n))]
+
+def do_install(names, user, interactive=True):
+    if not names: die("nothing selected")
+    done = []
+    for n in names:
+        if is_installed(n, user):
+            # already installed: confirm before touching it
+            if interactive and sys.stdin.isatty():
+                try:
+                    ans = input(c(f"  {n} is already installed - reinstall it? [y/N]: ", MAGENTA)).strip().lower()
+                except (EOFError, KeyboardInterrupt):
+                    print(); ans = "n"
+                if ans not in ("y", "yes"):
+                    info(f"skipped {n} (already installed)")
+                    continue
+            else:
+                info(f"{n} already installed; skipping (run interactively to reinstall)")
+                continue
+        install_cemu(user) if CATALOG[n][1] == "box64" else install_flatpak(n, user, interactive)
+        done.append(n)
+    print(c(f"\nDone: {', '.join(done)}", "1") if done else c("\nNothing installed.", DIM))
+
+def do_remove(names, user):
+    for n in names:
+        remove_cemu(user) if CATALOG[n][1] == "box64" else remove_flatpak(n)
+
+def menu(user):
+    show_list(user)
+    print("\nEnter numbers or names, space/comma separated (e.g. '1 3 cemu'), 'all', or 'q'.")
+    try:
+        sel = input("Install which? ").strip()
+    except (EOFError, KeyboardInterrupt):
+        print(); return
+    if sel.lower() in ("q", "", "quit", "exit"): return
+    names = resolve_names(sel.replace(",", " ").split())
+    if not names: return
+    if not net_ok(): die("no internet connection (emulators are fetched on demand)")
+    do_install(names, user, interactive=True)
+
+def main():
+    args = sys.argv[1:]
+    if not (args and args[0] in ("list", "-h", "--help", "help")):
+        elevate()
+    user = desktop_user()
+    if os.geteuid() == 0 and not (args and args[0] in ("list", "-h", "--help", "help")):
+        repair_user_flatpak_dir(user)
+    if not (args and args[0] in ("-h", "--help", "help")):
+        banner()
+    if not args:
+        menu(user); return
+    cmd = args[0]
+    if cmd == "list":
+        show_list(user)
+    elif cmd == "bootstrap":
+        ensure_flatpak(interactive=True)
+    elif cmd == "gpu":
+        gpu_status(user)
+    elif cmd == "install":
+        names = resolve_names(args[1:]) if len(args) > 1 else []
+        if not names: die("usage: h96-emulators install <names...|all>")
+        if not net_ok(): die("no internet connection (emulators are fetched on demand)")
+        do_install(names, user, interactive=True)
+    elif cmd == "remove":
+        names = resolve_names(args[1:]) if len(args) > 1 else []
+        if not names: die("usage: h96-emulators remove <names...|all>")
+        do_remove(names, user)
+    elif cmd in ("-h", "--help", "help"):
+        print(__doc__)
+    else:
+        die(f"unknown command '{cmd}' (list | install | remove | bootstrap | gpu)")
+
+if __name__ == "__main__":
+    main()

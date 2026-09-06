@@ -1,0 +1,64 @@
+#!/bin/bash
+# =============================================================================
+# h96-motion - toggle mpv motion smoothing (built-in frame interpolation) on the
+#              H96 Max V58. Cuts 24fps judder on pans by resampling to the display
+#              refresh and blending frames, GPU-side (vo=gpu), with hwdec=rkmpp.
+#
+# NOTE: this is mpv's built-in interpolation, not SVP/MVTools motion-compensation.
+# The VapourSynth + MVTools "soap-opera" path has no arm64 build in this box's
+# repos, so it is intentionally NOT used here. This path needs zero extra packages.
+#
+#   h96-motion            status
+#   sudo h96-motion on    enable  (adds an include to /etc/mpv/mpv.conf)
+#   sudo h96-motion off   disable (removes it; base config untouched)
+# =============================================================================
+[ -r /usr/local/lib/h96/banner.sh ] && . /usr/local/lib/h96/banner.sh
+command -v h96_banner >/dev/null 2>&1 || h96_banner() { :; }
+
+MPV=/etc/mpv/mpv.conf
+DROPIN=/etc/mpv/motion.conf
+MARK='# >>> h96-motion (built-in interpolation) >>>'
+END='# <<< h96-motion <<<'
+INC="$MARK"$'\n'"include=$DROPIN"$'\n'"$END"
+
+die() { echo "h96-motion: ERROR: $*" >&2; exit 1; }
+is_on() { [ -f "$MPV" ] && grep -qF "$MARK" "$MPV"; }
+
+status() {
+  h96_banner "M O T I O N   S M O O T H I N G"
+  echo "  drop-in : $([ -f "$DROPIN" ] && echo present || echo MISSING) ($DROPIN)"
+  echo "  state   : $(is_on && echo ON || echo off)"
+  echo "  base vo : $(grep -hoE '^vo=.*' "$MPV" 2>/dev/null | head -1 || echo '(default)')"
+  echo
+  echo "  sudo h96-motion on    # enable      sudo h96-motion off   # disable"
+}
+
+need_root() { [ "$(id -u)" -eq 0 ] || die "run with sudo"; }
+
+on() {
+  need_root
+  [ -f "$DROPIN" ] || die "$DROPIN missing (reinstall)"
+  mkdir -p "$(dirname "$MPV")"; touch "$MPV"
+  if is_on; then echo "h96-motion: already on"; return; fi
+  [ -f "$MPV.pre-h96-motion" ] || cp -a "$MPV" "$MPV.pre-h96-motion" 2>/dev/null
+  printf '\n%s\n' "$INC" >> "$MPV"
+  echo "h96-motion: ON. Restart mpv. Toggle live in mpv with: cycle-values ... (see docs)."
+}
+
+off() {
+  need_root
+  is_on || { echo "h96-motion: already off"; return; }
+  # delete the marked block
+  sed -i "/$(printf '%s' "$MARK" | sed 's/[][\/.*^$]/\\&/g')/,/$(printf '%s' "$END" | sed 's/[][\/.*^$]/\\&/g')/d" "$MPV"
+  # tidy any leading blank line left behind
+  sed -i '${/^$/d}' "$MPV"
+  echo "h96-motion: off (base config restored)."
+}
+
+case "${1:-status}" in
+  status|"") status ;;
+  on)        on ;;
+  off)       off ;;
+  -h|--help) sed -n '2,14p' "$0" | sed 's/^# \{0,1\}//' ;;
+  *)         die "unknown command '$1' (status | on | off)" ;;
+esac

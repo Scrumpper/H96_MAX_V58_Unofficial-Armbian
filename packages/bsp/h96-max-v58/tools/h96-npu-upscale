@@ -1,0 +1,511 @@
+#!/usr/bin/env python3
+"""
+h96-npu-upscale - offline Real-ESRGAN x4 super-resolution on the RK3588 NPU.
+
+This is an OFFLINE / BATCH upscaler. It is NOT live per-frame playback. A single
+Real-ESRGAN tile inference on this NPU takes on the order of 10^2 ms, so a full
+frame is seconds and a clip is minutes. Use it to upscale still images and short,
+low-resolution clips, not to upscale video during playback.
+
+Design:
+  - Talks to the proprietary Rockchip runtime librknnrt.so DIRECTLY through
+    ctypes (the C API). It does NOT use the rknnlite Python wheel, which builds
+    only for CPython <= 3.12 and will not install against this image's Python.
+  - The model (realesrgan_x4_96.rknn, 96x96 -> 384x384, x4) is fetched on demand
+    by h96-npu-upscale-setup and is NOT bundled.
+  - Large images are cut into overlapping tiles, each tile is upscaled on the
+    NPU, and tiles are feather-blended back together to hide seams.
+  - Video support shells out to the box ffmpeg: split to frames, upscale each,
+    reassemble with the hardware encoder (hevc_rkmpp) and copy the audio.
+
+Deployed to /usr/local/bin/h96-npu-upscale.
+"""
+import argparse
+import ctypes
+import ctypes.util
+import os
+import shutil
+import subprocess
+import sys
+import tempfile
+import time
+
+sys.path.insert(0, "/usr/local/lib/h96")
+
+MODEL_DIR = "/var/lib/h96/upscale/models"
+DEFAULT_MODEL = os.path.join(MODEL_DIR, "realesrgan_x4_96.rknn")
+LIBRKNN_CANDIDATES = (
+    "/usr/lib/aarch64-linux-gnu/librknnrt.so",
+    "/usr/lib/librknnrt.so",
+    "/usr/local/lib/librknnrt.so",
+)
+
+IMAGE_EXT = {".png", ".jpg", ".jpeg", ".bmp", ".webp", ".tif", ".tiff"}
+VIDEO_EXT = {".mp4", ".mkv", ".mov", ".webm", ".avi", ".m4v", ".ts"}
+
+
+def banner(sub=""):
+    try:
+        from banner import banner as b
+        b(sub)
+    except Exception:
+        pass
+
+
+def die(msg, code=1):
+    print(f"h96-npu-upscale: {msg}", file=sys.stderr)
+    sys.exit(code)
+
+
+def have(cmd):
+    return shutil.which(cmd) is not None
+
+
+# --------------------------------------------------------------------------- #
+# RKNN C API (aarch64) via ctypes                                             #
+# --------------------------------------------------------------------------- #
+RKNN_MAX_DIMS = 16
+RKNN_MAX_NAME_LEN = 256
+
+RKNN_QUERY_IN_OUT_NUM = 0
+RKNN_QUERY_INPUT_ATTR = 1
+RKNN_QUERY_OUTPUT_ATTR = 2
+
+RKNN_TENSOR_FLOAT32 = 0
+RKNN_TENSOR_NCHW = 0
+RKNN_TENSOR_NHWC = 1
+
+RKNN_NPU_CORE_0_1_2 = 7
+RKNN_NPU_CORE_AUTO = 0
+
+# typedef uint64_t rknn_context (aarch64)
+rknn_context = ctypes.c_uint64
+
+
+class rknn_input_output_num(ctypes.Structure):
+    _fields_ = [("n_input", ctypes.c_uint32), ("n_output", ctypes.c_uint32)]
+
+
+class rknn_tensor_attr(ctypes.Structure):
+    _fields_ = [
+        ("index", ctypes.c_uint32),
+        ("n_dims", ctypes.c_uint32),
+        ("dims", ctypes.c_uint32 * RKNN_MAX_DIMS),
+        ("name", ctypes.c_char * RKNN_MAX_NAME_LEN),
+        ("n_elems", ctypes.c_uint32),
+        ("size", ctypes.c_uint32),
+        ("fmt", ctypes.c_int),
+        ("type", ctypes.c_int),
+        ("qnt_type", ctypes.c_int),
+        ("fl", ctypes.c_int8),
+        ("zp", ctypes.c_int32),
+        ("scale", ctypes.c_float),
+        ("w_stride", ctypes.c_uint32),
+        ("size_with_stride", ctypes.c_uint32),
+        ("pass_through", ctypes.c_uint8),
+        ("h_stride", ctypes.c_uint32),
+    ]
+
+
+class rknn_input(ctypes.Structure):
+    _fields_ = [
+        ("index", ctypes.c_uint32),
+        ("buf", ctypes.c_void_p),
+        ("size", ctypes.c_uint32),
+        ("pass_through", ctypes.c_uint8),
+        ("type", ctypes.c_int),
+        ("fmt", ctypes.c_int),
+    ]
+
+
+class rknn_output(ctypes.Structure):
+    _fields_ = [
+        ("want_float", ctypes.c_uint8),
+        ("is_prealloc", ctypes.c_uint8),
+        ("index", ctypes.c_uint32),
+        ("buf", ctypes.c_void_p),
+        ("size", ctypes.c_uint32),
+    ]
+
+
+def _find_lib():
+    for p in LIBRKNN_CANDIDATES:
+        if os.path.exists(p):
+            return p
+    found = ctypes.util.find_library("rknnrt")
+    return found
+
+
+class RknnEngine:
+    """Minimal single-input / single-output float32 RKNN runner."""
+
+    def __init__(self, model_path, core_mask=RKNN_NPU_CORE_0_1_2):
+        libpath = _find_lib()
+        if not libpath:
+            die("librknnrt.so not found. The Rockchip NPU runtime is proprietary "
+                "and fetched on demand.\n  Install it with:  sudo h96-npu-setup "
+                "--accept-license\n  Then fetch the model:  sudo h96-npu-upscale-setup")
+        try:
+            self.lib = ctypes.CDLL(libpath)
+        except OSError as e:
+            die(f"cannot load {libpath}: {e}")
+        self._decl()
+        with open(model_path, "rb") as fh:
+            blob = fh.read()
+        self.ctx = rknn_context(0)
+        buf = (ctypes.c_char * len(blob)).from_buffer_copy(blob)
+        r = self.lib.rknn_init(ctypes.byref(self.ctx), buf, len(blob), 0, None)
+        if r != 0:
+            die(f"rknn_init failed ({r}). The model or the runtime/driver pair may "
+                f"be incompatible.\n  Check:  h96-npu ; cat /proc/rknpu/version")
+        # core mask is best-effort; older runtimes may lack the symbol
+        try:
+            self.lib.rknn_set_core_mask(self.ctx, core_mask)
+        except Exception:
+            pass
+        self._query_shapes()
+
+    def _decl(self):
+        L = self.lib
+        L.rknn_init.argtypes = [ctypes.POINTER(rknn_context), ctypes.c_void_p,
+                                ctypes.c_uint32, ctypes.c_uint32, ctypes.c_void_p]
+        L.rknn_init.restype = ctypes.c_int
+        L.rknn_query.argtypes = [rknn_context, ctypes.c_int, ctypes.c_void_p,
+                                 ctypes.c_uint32]
+        L.rknn_query.restype = ctypes.c_int
+        L.rknn_inputs_set.argtypes = [rknn_context, ctypes.c_uint32,
+                                      ctypes.POINTER(rknn_input)]
+        L.rknn_inputs_set.restype = ctypes.c_int
+        L.rknn_run.argtypes = [rknn_context, ctypes.c_void_p]
+        L.rknn_run.restype = ctypes.c_int
+        L.rknn_outputs_get.argtypes = [rknn_context, ctypes.c_uint32,
+                                       ctypes.POINTER(rknn_output), ctypes.c_void_p]
+        L.rknn_outputs_get.restype = ctypes.c_int
+        L.rknn_outputs_release.argtypes = [rknn_context, ctypes.c_uint32,
+                                           ctypes.POINTER(rknn_output)]
+        L.rknn_outputs_release.restype = ctypes.c_int
+        L.rknn_destroy.argtypes = [rknn_context]
+        L.rknn_destroy.restype = ctypes.c_int
+        try:
+            L.rknn_set_core_mask.argtypes = [rknn_context, ctypes.c_int]
+            L.rknn_set_core_mask.restype = ctypes.c_int
+        except Exception:
+            pass
+
+    def _attr(self, cmd, index):
+        a = rknn_tensor_attr()
+        a.index = index
+        r = self.lib.rknn_query(self.ctx, cmd, ctypes.byref(a), ctypes.sizeof(a))
+        if r != 0:
+            die(f"rknn_query({cmd}) failed ({r})")
+        return a
+
+    @staticmethod
+    def _hw_from_attr(a):
+        dims = list(a.dims[:a.n_dims])
+        # Pull channel dim (==3) out, the remaining spatial pair is H,W.
+        spatial = [d for d in dims if d != 1 and d != 3]
+        if len(spatial) >= 2:
+            return spatial[0], spatial[1]
+        if len(spatial) == 1:
+            return spatial[0], spatial[0]
+        return 96, 96
+
+    def _query_shapes(self):
+        n = rknn_input_output_num()
+        r = self.lib.rknn_query(self.ctx, RKNN_QUERY_IN_OUT_NUM,
+                                ctypes.byref(n), ctypes.sizeof(n))
+        if r != 0:
+            die(f"rknn_query(IN_OUT_NUM) failed ({r})")
+        ia = self._attr(RKNN_QUERY_INPUT_ATTR, 0)
+        oa = self._attr(RKNN_QUERY_OUTPUT_ATTR, 0)
+        self.in_h, self.in_w = self._hw_from_attr(ia)
+        self.out_h, self.out_w = self._hw_from_attr(oa)
+        self.scale = max(1, round(self.out_h / self.in_h)) if self.in_h else 4
+        self.out_size = oa.size
+
+    def infer(self, nhwc_float):
+        """nhwc_float: contiguous float32 array shaped (1, H, W, 3), values 0..1.
+        Returns a float32 numpy array shaped (out_h, out_w, 3)."""
+        import numpy as np
+        arr = np.ascontiguousarray(nhwc_float, dtype=np.float32)
+        inp = rknn_input()
+        inp.index = 0
+        inp.buf = arr.ctypes.data_as(ctypes.c_void_p)
+        inp.size = arr.nbytes
+        inp.pass_through = 0
+        inp.type = RKNN_TENSOR_FLOAT32
+        inp.fmt = RKNN_TENSOR_NHWC
+        r = self.lib.rknn_inputs_set(self.ctx, 1, ctypes.byref(inp))
+        if r != 0:
+            die(f"rknn_inputs_set failed ({r})")
+        r = self.lib.rknn_run(self.ctx, None)
+        if r != 0:
+            die(f"rknn_run failed ({r})")
+        out = rknn_output()
+        out.want_float = 1
+        out.is_prealloc = 0
+        out.index = 0
+        r = self.lib.rknn_outputs_get(self.ctx, 1, ctypes.byref(out), None)
+        if r != 0:
+            die(f"rknn_outputs_get failed ({r})")
+        try:
+            nfloat = out.size // 4
+            raw = (ctypes.c_float * nfloat).from_address(out.buf)
+            data = np.frombuffer(bytes(raw), dtype=np.float32).copy()
+        finally:
+            self.lib.rknn_outputs_release(self.ctx, 1, ctypes.byref(out))
+        # Real-ESRGAN output is NCHW (1,3,H,W) -> HWC
+        data = data.reshape(1, 3, self.out_h, self.out_w)[0].transpose(1, 2, 0)
+        return data
+
+    def close(self):
+        try:
+            self.lib.rknn_destroy(self.ctx)
+        except Exception:
+            pass
+
+
+# --------------------------------------------------------------------------- #
+# Tiled image upscaling with feather blending                                 #
+# --------------------------------------------------------------------------- #
+def upscale_array(eng, img, overlap, progress=True):
+    import numpy as np
+    tile_h, tile_w = eng.in_h, eng.in_w
+    scale = eng.scale
+    H, W = img.shape[:2]
+    ov = max(0, min(overlap, tile_h - 1, tile_w - 1))
+    if ov % 2:
+        ov += 1
+    step_h = max(1, tile_h - ov)
+    step_w = max(1, tile_w - ov)
+
+    ys = list(range(0, max(1, H - ov), step_h))
+    xs = list(range(0, max(1, W - ov), step_w))
+    if ys[-1] + tile_h < H:
+        ys.append(H - tile_h)
+    if xs[-1] + tile_w < W:
+        xs.append(W - tile_w)
+    ys = sorted(set(max(0, y) for y in ys))
+    xs = sorted(set(max(0, x) for x in xs))
+
+    out_H, out_W = H * scale, W * scale
+    acc = np.zeros((out_H, out_W, 3), dtype=np.float32)
+    wsum = np.zeros((out_H, out_W, 1), dtype=np.float32)
+
+    # feather weight for one output tile (linear ramp over the overlap band)
+    def ramp(n, band):
+        w = np.ones(n, dtype=np.float32)
+        if band > 0:
+            r = (np.arange(band, dtype=np.float32) + 1.0) / (band + 1.0)
+            w[:band] = r
+            w[-band:] = r[::-1]
+        return w
+
+    band = ov * scale
+    wy = ramp(tile_h * scale, band)
+    wx = ramp(tile_w * scale, band)
+    tile_weight = np.outer(wy, wx).astype(np.float32)[:, :, None]
+
+    total = len(ys) * len(xs)
+    done = 0
+    t0 = time.time()
+    for y in ys:
+        for x in xs:
+            y0 = min(y, max(0, H - tile_h))
+            x0 = min(x, max(0, W - tile_w))
+            crop = img[y0:y0 + tile_h, x0:x0 + tile_w]
+            # pad partial edge tiles by reflection
+            ph, pw = tile_h - crop.shape[0], tile_w - crop.shape[1]
+            if ph or pw:
+                crop = np.pad(crop, ((0, ph), (0, pw), (0, 0)), mode="reflect")
+            inp = (crop.astype(np.float32) / 255.0)[None, ...]
+            sr = eng.infer(inp)
+            oy, ox = y0 * scale, x0 * scale
+            th, tw = tile_h * scale, tile_w * scale
+            eh = min(th, out_H - oy)
+            ew = min(tw, out_W - ox)
+            acc[oy:oy + eh, ox:ox + ew] += sr[:eh, :ew] * tile_weight[:eh, :ew]
+            wsum[oy:oy + eh, ox:ox + ew] += tile_weight[:eh, :ew]
+            done += 1
+            if progress:
+                el = time.time() - t0
+                eta = el / done * (total - done)
+                print(f"\r  tile {done}/{total}  {el:5.1f}s elapsed  ~{eta:5.1f}s left",
+                      end="", flush=True)
+    if progress:
+        print()
+    wsum[wsum == 0] = 1.0
+    out = (acc / wsum).clip(0, 255).astype(np.uint8)
+    return out
+
+
+def cmd_image(args, eng):
+    from PIL import Image
+    import numpy as np
+    img = Image.open(args.input).convert("RGB")
+    src = np.asarray(img)
+    print(f"  input : {args.input}  {src.shape[1]}x{src.shape[0]}")
+    print(f"  model : {eng.in_w}x{eng.in_h} tile, x{eng.scale}  ->  "
+          f"{src.shape[1]*eng.scale}x{src.shape[0]*eng.scale}")
+    out = upscale_array(eng, src, args.overlap)
+    Image.fromarray(out).save(args.output)
+    print(f"  saved : {args.output}")
+
+
+# --------------------------------------------------------------------------- #
+# Video: split -> upscale frames -> reassemble (hardware encode)              #
+# --------------------------------------------------------------------------- #
+def _probe_fps(path):
+    if not have("ffprobe"):
+        return None
+    try:
+        out = subprocess.check_output(
+            ["ffprobe", "-v", "0", "-select_streams", "v:0", "-show_entries",
+             "stream=r_frame_rate", "-of", "csv=p=0", path],
+            text=True).strip()
+        if "/" in out:
+            a, b = out.split("/")
+            return float(a) / float(b) if float(b) else None
+        return float(out)
+    except Exception:
+        return None
+
+
+def cmd_video(args, eng):
+    from PIL import Image
+    import numpy as np
+    if not have("ffmpeg"):
+        die("ffmpeg is required for video and was not found on PATH")
+    fps = _probe_fps(args.input) or 24.0
+    tmp = tempfile.mkdtemp(prefix="h96-upscale-")
+    frames_in = os.path.join(tmp, "in")
+    frames_out = os.path.join(tmp, "out")
+    os.makedirs(frames_in)
+    os.makedirs(frames_out)
+    print(f"  splitting frames (fps ~{fps:.3f}) ...", flush=True)
+    r = subprocess.run(["ffmpeg", "-v", "error", "-y", "-i", args.input,
+                        os.path.join(frames_in, "f_%06d.png")])
+    if r.returncode != 0:
+        shutil.rmtree(tmp, ignore_errors=True)
+        die("ffmpeg frame split failed")
+    names = sorted(os.listdir(frames_in))
+    n = len(names)
+    if n == 0:
+        shutil.rmtree(tmp, ignore_errors=True)
+        die("no frames were extracted")
+    print(f"  {n} frames. Each frame is upscaled on the NPU; this is slow.")
+    if n > args.max_frames:
+        shutil.rmtree(tmp, ignore_errors=True)
+        die(f"clip has {n} frames, over the --max-frames={args.max_frames} guard. "
+            "This tool is for SHORT clips; raise the guard only if you accept the "
+            "runtime (minutes per second of video).")
+    for i, name in enumerate(names, 1):
+        src = np.asarray(Image.open(os.path.join(frames_in, name)).convert("RGB"))
+        out = upscale_array(eng, src, args.overlap, progress=False)
+        Image.fromarray(out).save(os.path.join(frames_out, name))
+        print(f"\r  frame {i}/{n}", end="", flush=True)
+    print()
+    # pick an encoder: hardware first, then the box has no libx264
+    enc = None
+    try:
+        encs = subprocess.check_output(["ffmpeg", "-v", "0", "-encoders"], text=True)
+    except Exception:
+        encs = ""
+    for cand in ("hevc_rkmpp", "h264_rkmpp", "mjpeg"):
+        if cand in encs:
+            enc = cand
+            break
+    if enc is None:
+        shutil.rmtree(tmp, ignore_errors=True)
+        die("no usable ffmpeg encoder (looked for hevc_rkmpp / h264_rkmpp / mjpeg)")
+    print(f"  reassembling with {enc} ...", flush=True)
+    cmd = ["ffmpeg", "-v", "error", "-y", "-framerate", f"{fps}",
+           "-i", os.path.join(frames_out, "f_%06d.png")]
+    # bring the original audio along if present
+    cmd += ["-i", args.input, "-map", "0:v:0", "-map", "1:a:0?",
+            "-c:v", enc, "-c:a", "copy", "-pix_fmt", "yuv420p", args.output]
+    r = subprocess.run(cmd)
+    if r.returncode != 0:
+        # retry without audio mapping
+        cmd = ["ffmpeg", "-v", "error", "-y", "-framerate", f"{fps}",
+               "-i", os.path.join(frames_out, "f_%06d.png"),
+               "-c:v", enc, "-pix_fmt", "yuv420p", args.output]
+        r = subprocess.run(cmd)
+    shutil.rmtree(tmp, ignore_errors=True)
+    if r.returncode != 0:
+        die("ffmpeg reassembly failed")
+    print(f"  saved : {args.output}")
+
+
+# --------------------------------------------------------------------------- #
+def main():
+    ap = argparse.ArgumentParser(
+        prog="h96-npu-upscale",
+        description="Offline Real-ESRGAN x4 super-resolution on the RK3588 NPU "
+                    "(images and short clips; NOT live playback).")
+    ap.add_argument("input", nargs="?", help="input image or video")
+    ap.add_argument("output", nargs="?", help="output path")
+    ap.add_argument("--model", default=DEFAULT_MODEL, help="path to the .rknn model")
+    ap.add_argument("--overlap", type=int, default=16,
+                    help="input-pixel tile overlap for seam blending (default 16)")
+    ap.add_argument("--max-frames", type=int, default=900,
+                    help="refuse videos longer than this many frames (default 900)")
+    ap.add_argument("--info", action="store_true",
+                    help="print NPU/model status and exit")
+    args = ap.parse_args()
+
+    if sys.stdout.isatty():
+        banner("N P U   U P S C A L E")
+
+    if args.info:
+        print("  NPU driver :", _driver_version() or "not present")
+        print("  runtime    :", _find_lib() or "NOT installed (run: sudo h96-npu-setup)")
+        print("  model      :", args.model if os.path.exists(args.model)
+              else f"{args.model} (missing; run: sudo h96-npu-upscale-setup)")
+        return
+
+    if not args.input or not args.output:
+        die("usage: h96-npu-upscale <input> <output>   (see --help, --info)")
+    if not os.path.exists(args.input):
+        die(f"input not found: {args.input}")
+    if not os.path.exists(args.model):
+        die(f"model not found: {args.model}\n  Fetch it once with:  sudo "
+            "h96-npu-upscale-setup")
+    try:
+        import numpy  # noqa: F401
+        from PIL import Image  # noqa: F401
+    except Exception:
+        die("python3 numpy and Pillow are required.\n  Install:  sudo apt install "
+            "python3-numpy python3-pil")
+
+    ext = os.path.splitext(args.input)[1].lower()
+    if ext not in IMAGE_EXT and ext not in VIDEO_EXT:
+        die(f"unrecognised input type '{ext}'. Images: {sorted(IMAGE_EXT)}; "
+            f"videos: {sorted(VIDEO_EXT)}")
+
+    eng = RknnEngine(args.model)
+    print(f"  NPU model loaded: {eng.in_w}x{eng.in_h} -> "
+          f"{eng.out_w}x{eng.out_h} (x{eng.scale})")
+    try:
+        if ext in VIDEO_EXT:
+            cmd_video(args, eng)
+        else:
+            cmd_image(args, eng)
+    finally:
+        eng.close()
+
+
+def _driver_version():
+    try:
+        with open("/proc/rknpu/version") as fh:
+            return fh.read().strip()
+    except Exception:
+        return None
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except KeyboardInterrupt:
+        die("interrupted", 130)

@@ -1,0 +1,158 @@
+#!/usr/bin/env bash
+# h96-cec -- HDMI-CEC control for the H96 Max V58 (RK3588 / dw-hdmi-qp)
+#
+# Subcommands:
+#   status      Show CEC device, adapter info, addresses, and daemon state.
+#   on          Wake the TV and make this box the active source.
+#   off         Put the TV into standby.
+#   monitor     Live CEC bus traffic (Ctrl-C to stop).
+#   keys        Follow the CEC->uinput daemon log (what the remote is sending).
+#   test        Ask the TV who it is (probe the bus).
+#   restart     Restart the h96-cec.service daemon.
+#
+# Device-agnostic: uses the kernel CEC API via /dev/cec0. Prefers cec-ctl
+# (v4l-utils); uses cec-client (libcec) for on/off when present.
+
+set -u
+
+[ -r /usr/local/lib/h96/banner.sh ] && . /usr/local/lib/h96/banner.sh
+command -v h96_banner >/dev/null 2>&1 || h96_banner() { :; }
+
+CEC_DEV="${H96_CEC_DEV:-/dev/cec0}"
+OSD="${H96_CEC_OSD:-H96}"
+SERVICE="h96-cec.service"
+
+err() { printf '%s\n' "$*" >&2; }
+
+need_dev() {
+  if [ ! -e "$CEC_DEV" ]; then
+    err "No CEC device at $CEC_DEV."
+    err "This kernel/device-tree may not expose HDMI-CEC on the HDMI-TX port."
+    err "Check:  cec-ctl -D 2>/dev/null ;  dmesg | grep -i cec"
+    return 1
+  fi
+  return 0
+}
+
+have() { command -v "$1" >/dev/null 2>&1; }
+
+pick_backend() {
+  # Echo the tool we will use for bus operations; empty if none.
+  if have cec-ctl; then echo cec-ctl
+  elif have cec-client; then echo cec-client
+  else echo ""; fi
+}
+
+cmd_status() {
+  h96_banner "H D M I - C E C"
+  echo "device:   $CEC_DEV"
+  if [ -e "$CEC_DEV" ]; then
+    echo "present:  yes"
+  else
+    echo "present:  NO  (CEC not exposed by this kernel/DT)"
+  fi
+  echo "backends: cec-ctl=$(have cec-ctl && echo yes || echo no)  cec-client=$(have cec-client && echo yes || echo no)"
+  echo
+  if [ -e "$CEC_DEV" ] && have cec-ctl; then
+    echo "-- adapter (cec-ctl -D) --"
+    cec-ctl -d "$CEC_DEV" -D 2>/dev/null | sed 's/^/  /'
+    echo
+  fi
+  if have systemctl; then
+    echo "-- daemon --"
+    systemctl is-enabled "$SERVICE" 2>/dev/null | sed 's/^/  enabled: /'
+    systemctl is-active  "$SERVICE" 2>/dev/null | sed 's/^/  active:  /'
+  fi
+}
+
+cmd_on() {
+  need_dev || return 1
+  echo "Waking TV and claiming active source..."
+  if have cec-client; then
+    { echo "on 0"; sleep 1; echo "as"; sleep 1; } | cec-client -t p -o "$OSD" -s -d 1 "$CEC_DEV" >/dev/null 2>&1
+  elif have cec-ctl; then
+    cec-ctl -d "$CEC_DEV" --playback -o "$OSD" >/dev/null 2>&1
+    cec-ctl -d "$CEC_DEV" --to 0 --image-view-on >/dev/null 2>&1
+    cec-ctl -d "$CEC_DEV" --active-source phys-addr="$(cec_phys)" >/dev/null 2>&1
+  else
+    err "Need cec-utils or v4l-utils installed."; return 1
+  fi
+  echo "done."
+}
+
+cmd_off() {
+  need_dev || return 1
+  echo "Sending TV to standby..."
+  if have cec-client; then
+    echo "standby 0" | cec-client -t p -o "$OSD" -s -d 1 "$CEC_DEV" >/dev/null 2>&1
+  elif have cec-ctl; then
+    cec-ctl -d "$CEC_DEV" --to 0 --standby >/dev/null 2>&1
+  else
+    err "Need cec-utils or v4l-utils installed."; return 1
+  fi
+  echo "done."
+}
+
+cec_phys() {
+  # Best-effort physical address from cec-ctl; default 1.0.0.0.
+  local p
+  p="$(cec-ctl -d "$CEC_DEV" -D 2>/dev/null | grep -oiE 'Physical Address *: *[0-9a-f.]+' | grep -oE '[0-9a-f.]+$' | head -n1)"
+  [ -n "$p" ] && echo "$p" || echo "1.0.0.0"
+}
+
+cmd_monitor() {
+  need_dev || return 1
+  if have cec-ctl; then
+    echo "Monitoring $CEC_DEV (Ctrl-C to stop)..."
+    exec cec-ctl -d "$CEC_DEV" -M
+  elif have cec-client; then
+    echo "Monitoring via cec-client (Ctrl-C to stop)..."
+    exec cec-client -m -o "$OSD" -d 8 "$CEC_DEV"
+  else
+    err "Need v4l-utils (cec-ctl) or cec-utils (cec-client)."; return 1
+  fi
+}
+
+cmd_keys() {
+  if have journalctl; then
+    echo "Following remote key events (press keys on the TV remote; Ctrl-C to stop)..."
+    exec journalctl -u "$SERVICE" -f -o cat
+  else
+    err "journalctl not available."; return 1
+  fi
+}
+
+cmd_test() {
+  need_dev || return 1
+  if have cec-ctl; then
+    echo "Probing bus..."
+    cec-ctl -d "$CEC_DEV" --playback -o "$OSD" >/dev/null 2>&1
+    cec-ctl -d "$CEC_DEV" --to 0 --give-osd-name 2>/dev/null
+    cec-ctl -d "$CEC_DEV" --to 0 --get-cec-version 2>/dev/null
+  elif have cec-client; then
+    echo "scan" | cec-client -s -d 1 "$CEC_DEV"
+  else
+    err "Need v4l-utils or cec-utils."; return 1
+  fi
+}
+
+cmd_restart() {
+  have systemctl || { err "systemctl not available."; return 1; }
+  sudo systemctl restart "$SERVICE" && echo "restarted $SERVICE"
+}
+
+usage() {
+  sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//'
+}
+
+case "${1:-status}" in
+  status)  cmd_status ;;
+  on)      cmd_on ;;
+  off)     cmd_off ;;
+  monitor) cmd_monitor ;;
+  keys)    cmd_keys ;;
+  test)    cmd_test ;;
+  restart) cmd_restart ;;
+  -h|--help|help) usage ;;
+  *) err "unknown command: $1"; usage; exit 2 ;;
+esac

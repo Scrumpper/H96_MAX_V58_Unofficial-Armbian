@@ -1,0 +1,154 @@
+#!/usr/bin/env bash
+# h96-bt-loopback -- route incoming Bluetooth A2DP audio to the local sink.
+#
+# WHAT THIS DOES
+#   Runs INSIDE the desktop user's PipeWire session. Watches for A2DP source
+#   nodes that appear when a phone/laptop connects to the box (node.name
+#   "bluez_input.<MAC>.a2dp-source", media.class Audio/Source) and, for each,
+#   starts a pw-loopback that captures from it and plays to the target sink
+#   (the default sink, i.e. HDMI on this box, unless H96_BT_SINK is set).
+#
+#   WirePlumber does not auto-link a raw Audio/Source to a sink, so this bridge
+#   is what actually makes the box a speaker. When the phone disconnects the
+#   source node vanishes and its pw-loopback is torn down.
+#
+# ENV
+#   H96_BT_SINK   node.name (or serial) of the playback sink. Empty => default
+#                 sink resolved via `pactl get-default-sink` / wpctl.
+#   H96_BT_POLL   poll interval seconds (default 1).
+#
+# Requires a running PipeWire session (XDG_RUNTIME_DIR must point at it) plus
+# pw-loopback, pw-dump, and one of pactl/wpctl. Deployed to
+# /usr/local/lib/h96/h96-bt-loopback (0755). Started/stopped by h96-bt-speaker.
+
+set -uo pipefail
+
+POLL="${H96_BT_POLL:-1}"
+TAG="h96-bt-loopback"
+declare -A PIDS=()   # source node.name -> pw-loopback PID
+
+log() { printf '%s: %s\n' "$TAG" "$*" >&2; }
+
+have() { command -v "$1" >/dev/null 2>&1; }
+
+cleanup() {
+  log "stopping, tearing down $(( ${#PIDS[@]} )) loopback(s)"
+  local k
+  for k in "${!PIDS[@]}"; do
+    kill "${PIDS[$k]}" 2>/dev/null
+  done
+  # Belt and suspenders: kill any stragglers we spawned.
+  pkill -P $$ pw-loopback 2>/dev/null
+  exit 0
+}
+trap cleanup TERM INT
+
+# --- preflight -------------------------------------------------------------
+if ! have pw-dump || ! have pw-loopback; then
+  log "pw-dump / pw-loopback not found (pipewire-bin missing). Nothing to do."
+  # Idle so the supervising tool can still stop us cleanly.
+  while :; do sleep "$POLL"; done
+fi
+
+if ! pw-dump >/dev/null 2>&1; then
+  log "cannot reach PipeWire (XDG_RUNTIME_DIR=${XDG_RUNTIME_DIR:-unset}). Waiting."
+fi
+
+# Resolve the playback sink node.name. Prefer explicit override, else the
+# default sink. `pactl get-default-sink` prints the node.name directly.
+resolve_sink() {
+  if [ -n "${H96_BT_SINK:-}" ]; then
+    printf '%s\n' "$H96_BT_SINK"; return 0
+  fi
+  local s=""
+  if have pactl; then
+    s="$(pactl get-default-sink 2>/dev/null)"
+  fi
+  if [ -z "$s" ] && have wpctl; then
+    # Fallback: node.name of @DEFAULT_AUDIO_SINK@.
+    s="$(wpctl inspect @DEFAULT_AUDIO_SINK@ 2>/dev/null \
+         | sed -n 's/.*node\.name = "\([^"]*\)".*/\1/p' | head -n1)"
+  fi
+  printf '%s\n' "$s"
+}
+
+# Emit the node.name of every currently-present A2DP source, one per line.
+list_a2dp_sources() {
+  # pw-dump is JSON. Use python3 if available for a robust parse, else a
+  # tolerant grep/sed fallback.
+  if have python3; then
+    pw-dump 2>/dev/null | python3 - <<'PY' 2>/dev/null
+import json, sys
+try:
+    data = json.load(sys.stdin)
+except Exception:
+    sys.exit(0)
+for o in data:
+    if o.get("type") != "PipeWire:Interface:Node":
+        continue
+    p = (o.get("info") or {}).get("props") or {}
+    if p.get("media.class") != "Audio/Source":
+        continue
+    name = p.get("node.name", "")
+    if name.startswith("bluez_input.") or p.get("api.bluez5.profile") == "a2dp-source":
+        if name:
+            print(name)
+PY
+  else
+    pw-dump 2>/dev/null \
+      | grep -oE '"node\.name": "bluez_input\.[^"]*"' \
+      | sed 's/.*"node\.name": "\(.*\)"/\1/'
+  fi
+}
+
+start_loopback() {
+  local src="$1" sink="$2"
+  # Capture from the bluez source, play to the target sink. target.object
+  # accepts a node.name. stream.capture.sink=false => capture from a source.
+  setsid pw-loopback \
+    --name="h96-bt-speaker" \
+    --capture-props="target.object=$src stream.capture.sink=false node.description=H96-BT-in node.passive=false" \
+    --playback-props="target.object=$sink node.description=H96-BT-out node.passive=false" \
+    >/dev/null 2>&1 &
+  local pid=$!
+  PIDS["$src"]=$pid
+  log "linked $src -> ${sink:-<default>} (pw-loopback pid $pid)"
+}
+
+reap() {
+  # Drop entries whose pw-loopback died on its own.
+  local k
+  for k in "${!PIDS[@]}"; do
+    if ! kill -0 "${PIDS[$k]}" 2>/dev/null; then
+      unset 'PIDS[$k]'
+    fi
+  done
+}
+
+log "started; poll=${POLL}s sink=${H96_BT_SINK:-<default>} runtime=${XDG_RUNTIME_DIR:-unset}"
+
+while :; do
+  reap
+  sink="$(resolve_sink)"
+  # Current set of sources.
+  declare -A seen=()
+  while IFS= read -r src; do
+    [ -n "$src" ] || continue
+    seen["$src"]=1
+    if [ -z "${PIDS[$src]:-}" ]; then
+      start_loopback "$src" "$sink"
+    fi
+  done < <(list_a2dp_sources)
+
+  # Tear down loopbacks whose source disappeared.
+  for k in "${!PIDS[@]}"; do
+    if [ -z "${seen[$k]:-}" ]; then
+      kill "${PIDS[$k]}" 2>/dev/null
+      unset 'PIDS[$k]'
+      log "unlinked $k (source gone)"
+    fi
+  done
+  unset seen
+
+  sleep "$POLL"
+done

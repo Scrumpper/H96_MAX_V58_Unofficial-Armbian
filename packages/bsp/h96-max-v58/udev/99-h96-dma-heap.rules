@@ -1,0 +1,6 @@
+# MPP (hardware video decode/encode) allocates frame buffers from the DMA heaps.
+# They default to 0600 root-only, which silently breaks hardware video for every
+# desktop user (mpv falls back to software: "Failed to init MPP context: -1").
+# Root never noticed because root bypasses it -- which is exactly how every
+# over-SSH validation missed it.
+SUBSYSTEM=="dma_heap", KERNEL=="system*", GROUP="video", MODE="0660"

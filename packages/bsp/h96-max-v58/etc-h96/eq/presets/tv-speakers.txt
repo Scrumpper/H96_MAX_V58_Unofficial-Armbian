@@ -1,0 +1,8 @@
+# Small flat-panel / soundbar-ish correction for HDMI TV speakers:
+# tame boxy low-mids, add a little low-end body and presence.
+Preamp: -3.0 dB
+Filter 1: ON LSC Fc 90 Hz Gain 3.0 dB Q 0.707
+Filter 2: ON PK Fc 300 Hz Gain -3.0 dB Q 1.20
+Filter 3: ON PK Fc 900 Hz Gain -1.5 dB Q 1.50
+Filter 4: ON PK Fc 3500 Hz Gain 2.0 dB Q 1.20
+Filter 5: ON HSC Fc 9000 Hz Gain 2.0 dB Q 0.707

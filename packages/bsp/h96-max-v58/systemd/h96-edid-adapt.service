@@ -1,0 +1,19 @@
+[Unit]
+Description=H96 Max V58 EDID adapt (inject the attached display's EDID into DRM)
+# Before the display manager so the login greeter already has the full mode
+# list. On a headless image display-manager.service does not exist, which is a
+# valid Before= target regardless.
+After=systemd-udev-settle.service
+Before=display-manager.service
+ConditionPathExists=/etc/h96/display-autodetect.enabled
+ConditionPathExists=/sys/kernel/debug/dri/0/HDMI-A-1/edid_override
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/h96-edid-adapt.sh boot
+TimeoutStartSec=30
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

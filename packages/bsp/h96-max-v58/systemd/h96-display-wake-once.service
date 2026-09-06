@@ -1,0 +1,6 @@
+[Unit]
+Description=H96 display wake: one-shot HDMI re-drive after hotplug
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/h96-display-wake.sh

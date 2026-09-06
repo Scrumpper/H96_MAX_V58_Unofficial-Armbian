@@ -1,0 +1,15 @@
+[Unit]
+Description=H96 display wake: re-drive HDMI on keypress when blanked output fails to return
+# The BSP kernel does not re-init the HDMI PHY/VOP path after DPMS-off; the
+# daemon runs an explicit modeset (h96-display-wake.sh) when a key is pressed
+# while the connector is connected but disabled.
+After=multi-user.target
+
+[Service]
+ExecStart=/usr/bin/python3 /usr/local/lib/h96/h96-display-wake-daemon.py
+Restart=on-failure
+RestartSec=5
+Nice=10
+
+[Install]
+WantedBy=multi-user.target

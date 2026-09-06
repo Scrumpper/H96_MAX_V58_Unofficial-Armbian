@@ -1,0 +1,6 @@
+# H96 Max V58 - broad USB game-controller dongle support.
+# xpad (CONFIG_JOYSTICK_XPAD=m in the kernel config) handles X-input controllers.
+# For an X-input dongle whose USB product id is not in xpad's table, match the
+# X-input interface signature and force-bind it via xpad's new_id.
+ACTION=="add", SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ENV{ID_USB_INTERFACES}=="*:ff5d01:*", RUN+="/bin/sh -c '/sbin/modprobe xpad 2>/dev/null; echo $attr{idVendor} $attr{idProduct} > /sys/bus/usb/drivers/xpad/new_id 2>/dev/null || true'"
+ACTION=="add", SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ENV{ID_USB_INTERFACES}=="*:ff5d81:*", RUN+="/bin/sh -c '/sbin/modprobe xpad 2>/dev/null; echo $attr{idVendor} $attr{idProduct} > /sys/bus/usb/drivers/xpad/new_id 2>/dev/null || true'"

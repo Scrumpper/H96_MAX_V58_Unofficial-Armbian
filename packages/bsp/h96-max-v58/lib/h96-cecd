@@ -1,0 +1,375 @@
+#!/usr/bin/env python3
+# h96-cecd -- HDMI-CEC to uinput daemon for H96 Max V58 (RK3588)
+#
+# Listens for CEC "User Control Pressed" events from the TV remote and injects
+# them as Linux input key events through /dev/uinput, so the TV remote drives
+# KDE Plasma, mpv, and Kodi.
+#
+# Device-agnostic: talks to the kernel CEC API via /dev/cec0.
+# Backend priority:
+#   1. cec-client  (libcec, package: cec-utils)   -- preferred, turnkey key decode
+#   2. cec-ctl     (v4l-utils, package: v4l-utils) -- fallback, kernel-native
+#
+# Fails gracefully when no CEC device / no backend is present: it prints a
+# clear message and exits 0 (so systemd does not crash-loop).
+#
+# No third-party Python deps. uinput driven directly via ctypes/struct.
+
+import fcntl
+import os
+import re
+import select
+import shutil
+import signal
+import struct
+import subprocess
+import sys
+import time
+
+CEC_DEV = os.environ.get("H96_CEC_DEV", "/dev/cec0")
+UINPUT_DEV = "/dev/uinput"
+OSD_NAME = os.environ.get("H96_CEC_OSD", "H96")
+KEYMAP_FILE = "/etc/h96/cec-keymap.conf"
+
+
+def log(*a):
+    print("h96-cecd:", *a, file=sys.stderr, flush=True)
+
+
+# ---------------------------------------------------------------------------
+# Linux input key codes (subset we need). From <linux/input-event-codes.h>.
+# ---------------------------------------------------------------------------
+KEY = {
+    "KEY_ESC": 1, "KEY_BACKSPACE": 14, "KEY_ENTER": 28,
+    "KEY_UP": 103, "KEY_DOWN": 108, "KEY_LEFT": 105, "KEY_RIGHT": 106,
+    "KEY_HOME": 102, "KEY_END": 107, "KEY_PAGEUP": 104, "KEY_PAGEDOWN": 109,
+    "KEY_MENU": 139, "KEY_BACK": 158, "KEY_FORWARD": 159, "KEY_EXIT": 174,
+    "KEY_INFO": 358, "KEY_CONTEXT_MENU": 438,
+    "KEY_PLAY": 207, "KEY_PAUSE": 119, "KEY_PLAYPAUSE": 164,
+    "KEY_STOP": 128, "KEY_STOPCD": 166, "KEY_RECORD": 167,
+    "KEY_REWIND": 168, "KEY_FASTFORWARD": 208,
+    "KEY_NEXTSONG": 163, "KEY_PREVIOUSSONG": 165,
+    "KEY_VOLUMEUP": 115, "KEY_VOLUMEDOWN": 114, "KEY_MUTE": 113,
+    "KEY_POWER": 116, "KEY_RED": 398, "KEY_GREEN": 399,
+    "KEY_YELLOW": 400, "KEY_BLUE": 401,
+    "KEY_0": 11, "KEY_1": 2, "KEY_2": 3, "KEY_3": 4, "KEY_4": 5,
+    "KEY_5": 6, "KEY_6": 7, "KEY_7": 8, "KEY_8": 9, "KEY_9": 10,
+}
+
+# Default map: normalized CEC user-control name -> KEY_ symbol.
+# Names are normalized to lowercase, spaces/underscores -> "-".
+DEFAULT_MAP = {
+    "select": "KEY_ENTER",
+    "ok": "KEY_ENTER",
+    "up": "KEY_UP",
+    "down": "KEY_DOWN",
+    "left": "KEY_LEFT",
+    "right": "KEY_RIGHT",
+    "right-up": "KEY_UP",
+    "right-down": "KEY_DOWN",
+    "left-up": "KEY_UP",
+    "left-down": "KEY_DOWN",
+    "exit": "KEY_ESC",
+    "back": "KEY_BACK",
+    "return": "KEY_BACK",
+    "root-menu": "KEY_MENU",
+    "contents-menu": "KEY_MENU",
+    "setup-menu": "KEY_MENU",
+    "top-menu": "KEY_MENU",
+    "dot": "KEY_INFO",
+    "display-information": "KEY_INFO",
+    "info": "KEY_INFO",
+    "help": "KEY_INFO",
+    "play": "KEY_PLAYPAUSE",
+    "pause": "KEY_PLAYPAUSE",
+    "play-function": "KEY_PLAYPAUSE",
+    "pause-play-function": "KEY_PLAYPAUSE",
+    "stop": "KEY_STOPCD",
+    "stop-function": "KEY_STOPCD",
+    "record": "KEY_RECORD",
+    "rewind": "KEY_REWIND",
+    "fast-forward": "KEY_FASTFORWARD",
+    "forward": "KEY_NEXTSONG",
+    "backward": "KEY_PREVIOUSSONG",
+    "next-favorite": "KEY_NEXTSONG",
+    "channel-up": "KEY_PAGEUP",
+    "channel-down": "KEY_PAGEDOWN",
+    "sound-select": "KEY_MUTE",
+    "volume-up": "KEY_VOLUMEUP",
+    "volume-down": "KEY_VOLUMEDOWN",
+    "mute": "KEY_MUTE",
+    "power": "KEY_POWER",
+    "power-on-function": "KEY_POWER",
+    "power-off-function": "KEY_POWER",
+    "power-toggle-function": "KEY_POWER",
+    "f1-blue": "KEY_BLUE",
+    "f2-red": "KEY_RED",
+    "f3-green": "KEY_GREEN",
+    "f4-yellow": "KEY_YELLOW",
+    "number-0-or-10": "KEY_0",
+    "number-1": "KEY_1", "number-2": "KEY_2", "number-3": "KEY_3",
+    "number-4": "KEY_4", "number-5": "KEY_5", "number-6": "KEY_6",
+    "number-7": "KEY_7", "number-8": "KEY_8", "number-9": "KEY_9",
+}
+
+# libcec key-name aliases (cec-client prints these) -> normalized names above.
+LIBCEC_ALIAS = {
+    "channel up": "channel-up",
+    "channel down": "channel-down",
+    "fast forward": "fast-forward",
+    "root menu": "root-menu",
+    "contents menu": "contents-menu",
+    "setup menu": "setup-menu",
+    "top menu": "top-menu",
+    "sub picture": "info",
+    "power on function": "power-on-function",
+    "power off function": "power-off-function",
+    "F1 (blue)": "f1-blue",
+    "F2 (red)": "f2-red",
+    "F3 (green)": "f3-green",
+    "F4 (yellow)": "f4-yellow",
+    "an return": "back",
+    "return (samsung)": "back",
+    "exit (samsung)": "exit",
+    "play (samsung)": "play",
+    "an channels list": "root-menu",
+}
+
+
+def load_keymap():
+    m = dict(DEFAULT_MAP)
+    try:
+        with open(KEYMAP_FILE) as f:
+            for line in f:
+                line = line.split("#", 1)[0].strip()
+                if not line or "=" not in line:
+                    continue
+                k, v = line.split("=", 1)
+                m[k.strip().lower().replace(" ", "-").replace("_", "-")] = v.strip()
+        log("loaded keymap overrides from", KEYMAP_FILE)
+    except FileNotFoundError:
+        pass
+    except Exception as e:
+        log("keymap parse warning:", e)
+    return m
+
+
+def normalize(name):
+    name = name.strip()
+    if name in LIBCEC_ALIAS:
+        name = LIBCEC_ALIAS[name]
+    return name.lower().replace(" ", "-").replace("_", "-")
+
+
+# ---------------------------------------------------------------------------
+# uinput virtual keyboard (legacy uinput_user_dev + write interface).
+# aarch64 uses asm-generic ioctl encoding.
+# ---------------------------------------------------------------------------
+UINPUT_IOCTL_BASE = ord("U")
+
+
+def _iow(nr, size):
+    return (1 << 30) | (size << 16) | (UINPUT_IOCTL_BASE << 8) | nr
+
+
+def _io(nr):
+    return (UINPUT_IOCTL_BASE << 8) | nr
+
+
+UI_SET_EVBIT = _iow(100, 4)
+UI_SET_KEYBIT = _iow(101, 4)
+UI_DEV_CREATE = _io(1)
+UI_DEV_DESTROY = _io(2)
+
+EV_SYN = 0x00
+EV_KEY = 0x01
+SYN_REPORT = 0x00
+
+
+class UInput:
+    def __init__(self, codes):
+        self.fd = os.open(UINPUT_DEV, os.O_WRONLY | os.O_NONBLOCK)
+        fcntl.ioctl(self.fd, UI_SET_EVBIT, EV_KEY)
+        fcntl.ioctl(self.fd, UI_SET_EVBIT, EV_SYN)
+        for c in sorted(set(codes)):
+            fcntl.ioctl(self.fd, UI_SET_KEYBIT, c)
+        # struct uinput_user_dev: name[80], input_id{bustype,vendor,product,version}
+        # (4 x u16), ff_effects_max u32, then abs arrays 4 x s32[64].
+        name = b"H96-CEC-Remote"
+        dev = struct.pack(
+            "80sHHHHI" + "i" * (64 * 4),
+            name.ljust(80, b"\0"),
+            0x03,  # BUS_USB
+            0x1D6B,  # vendor (Linux Foundation)
+            0x0CEC,  # product
+            1,  # version
+            0,  # ff_effects_max
+            *([0] * (64 * 4)),
+        )
+        os.write(self.fd, dev)
+        fcntl.ioctl(self.fd, UI_DEV_CREATE)
+        time.sleep(0.2)
+        log("uinput device created: H96-CEC-Remote")
+
+    def _emit(self, etype, code, value):
+        # struct input_event on 64-bit: time (2 x long), type u16, code u16,
+        # value s32. Timestamp left at 0 (kernel fills it in).
+        ev = struct.pack("llHHi", 0, 0, etype, code, value)
+        os.write(self.fd, ev)
+
+    def tap(self, code):
+        self._emit(EV_KEY, code, 1)
+        self._emit(EV_SYN, SYN_REPORT, 0)
+        self._emit(EV_KEY, code, 0)
+        self._emit(EV_SYN, SYN_REPORT, 0)
+
+    def close(self):
+        try:
+            fcntl.ioctl(self.fd, UI_DEV_DESTROY)
+        except Exception:
+            pass
+        try:
+            os.close(self.fd)
+        except Exception:
+            pass
+
+
+# ---------------------------------------------------------------------------
+# Backends
+# ---------------------------------------------------------------------------
+def wait_for_device(timeout=30):
+    """CEC device can appear a little after boot (HDMI hotplug). Wait briefly."""
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if os.path.exists(CEC_DEV):
+            return True
+        time.sleep(2)
+    return os.path.exists(CEC_DEV)
+
+
+def run_libcec(ui, keymap):
+    # cec-client acts as a Playback device, becomes active source, and prints
+    # "key pressed: <name> (<code>) ..." lines we parse.
+    cec_num = re.sub(r"\D", "", os.path.basename(CEC_DEV)) or "0"
+    cmd = ["cec-client", "-t", "p", "-o", OSD_NAME, "-d", "8", CEC_DEV]
+    log("starting backend: cec-client (libcec) on", CEC_DEV)
+    proc = subprocess.Popen(
+        cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT, bufsize=1, universal_newlines=True,
+    )
+    try:
+        # Become active source so the TV routes remote keys to us.
+        proc.stdin.write("as\n")
+        proc.stdin.flush()
+    except Exception:
+        pass
+
+    keyre = re.compile(r"key pressed:\s*(.+?)\s*\((0x[0-9a-fA-F]+|\d+)\)")
+    for line in proc.stdout:
+        m = keyre.search(line)
+        if not m:
+            continue
+        name = normalize(m.group(1))
+        dispatch(ui, keymap, name)
+    rc = proc.wait()
+    log("cec-client exited rc", rc)
+    return rc
+
+
+def run_cecctl(ui, keymap):
+    # Kernel-native fallback. First claim a Playback logical address so the TV
+    # will address remote keys to us, then monitor traffic.
+    log("starting backend: cec-ctl (v4l-utils) on", CEC_DEV)
+    try:
+        subprocess.run(
+            ["cec-ctl", "-d", CEC_DEV, "--playback", "-o", OSD_NAME],
+            check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
+    except Exception as e:
+        log("cec-ctl config warning:", e)
+
+    proc = subprocess.Popen(
+        ["cec-ctl", "-d", CEC_DEV, "-M"],
+        stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+        bufsize=1, universal_newlines=True,
+    )
+    # Lines look like:  "\tui-cmd: select (0x00)"  (inside USER_CONTROL_PRESSED)
+    uire = re.compile(r"ui-cmd:\s*([a-z0-9\-]+)", re.IGNORECASE)
+    pressed = False
+    for line in proc.stdout:
+        low = line.strip()
+        if "USER_CONTROL_PRESSED" in line:
+            pressed = True
+            continue
+        if "USER_CONTROL_RELEASED" in line:
+            pressed = False
+            continue
+        m = uire.search(line)
+        if m and pressed:
+            dispatch(ui, keymap, normalize(m.group(1)))
+            pressed = False  # one tap per press
+    rc = proc.wait()
+    log("cec-ctl exited rc", rc)
+    return rc
+
+
+def dispatch(ui, keymap, name):
+    keyname = keymap.get(name)
+    if not keyname:
+        log("unmapped CEC key:", name)
+        return
+    code = KEY.get(keyname)
+    if code is None:
+        log("unknown KEY symbol in map:", keyname)
+        return
+    ui.tap(code)
+    log("cec", name, "->", keyname)
+
+
+# ---------------------------------------------------------------------------
+def main():
+    signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
+
+    have_libcec = shutil.which("cec-client") is not None
+    have_cecctl = shutil.which("cec-ctl") is not None
+    if not (have_libcec or have_cecctl):
+        log("no CEC userspace backend found (install cec-utils or v4l-utils).")
+        log("nothing to do; exiting cleanly.")
+        return 0
+
+    if not wait_for_device():
+        log(CEC_DEV, "not present.")
+        log("This kernel/DT may not expose HDMI-CEC. exiting cleanly.")
+        log("Box-test: `cec-ctl -D` and `dmesg | grep -i cec`.")
+        return 0
+
+    keymap = load_keymap()
+    try:
+        ui = UInput(KEY.values())
+    except FileNotFoundError:
+        log(UINPUT_DEV, "missing (uinput module not loaded). exiting cleanly.")
+        return 0
+    except PermissionError:
+        log("cannot open", UINPUT_DEV, "(need root/udev perms). exiting.")
+        return 0
+
+    try:
+        while True:
+            if have_libcec:
+                run_libcec(ui, keymap)
+            elif have_cecctl:
+                run_cecctl(ui, keymap)
+            # Backend died (HDMI unplug, adapter reset). Retry after a pause,
+            # but bail if the device vanished for good.
+            if not os.path.exists(CEC_DEV):
+                log(CEC_DEV, "gone; exiting.")
+                break
+            log("backend stopped; restarting in 5s")
+            time.sleep(5)
+    finally:
+        ui.close()
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

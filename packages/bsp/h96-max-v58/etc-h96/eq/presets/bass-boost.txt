@@ -1,0 +1,5 @@
+# Musical low-end lift without muddying the mids.
+Preamp: -4.0 dB
+Filter 1: ON LSC Fc 105 Hz Gain 5.0 dB Q 0.707
+Filter 2: ON PK Fc 60 Hz Gain 2.0 dB Q 1.00
+Filter 3: ON PK Fc 350 Hz Gain -1.5 dB Q 1.20

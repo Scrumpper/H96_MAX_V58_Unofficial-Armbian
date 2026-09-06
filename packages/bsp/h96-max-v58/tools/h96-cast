@@ -1,0 +1,293 @@
+#!/usr/bin/env bash
+# h96-cast : AirPlay + Cast RECEIVER control for H96 Max V58 (RK3588, Armbian)
+# Opt-in. Installs packages on first enable, writes + enables systemd units,
+# routes receiver audio to the PipeWire/Pulse HDMI sink.
+#
+# Receivers:
+#   airplay  -> shairport-sync    (AirPlay 2 audio; AirPlay 1 fallback w/o nqptp)
+#   mirror   -> uxplay            (AirPlay screen/video mirroring, GStreamer)
+#   dlna     -> gmediarender      (UPnP/DLNA renderer = open Cast substitute)
+#
+# There is NO open Google Cast receiver (Cast receiver SDK is proprietary).
+# DLNA/UPnP (gmediarender) is the open "send media to the box" equivalent.
+set -u
+
+# ---- Scrumpper's shared banner (TTY-gated) --------------------------------
+[ -r /usr/local/lib/h96/banner.sh ] && . /usr/local/lib/h96/banner.sh
+command -v h96_banner >/dev/null 2>&1 || h96_banner() { :; }
+
+PROG=h96-cast
+UNIT_DIR=/usr/lib/systemd/system
+DROPIN_ROOT=/etc/systemd/system
+DEFAULTS=/etc/default/h96-cast
+NAME_DEFAULT="H96 Max V58"
+
+SVC_AIRPLAY=h96-shairport.service
+SVC_MIRROR=h96-uxplay.service
+SVC_DLNA=h96-gmediarender.service
+
+die() { printf '%s: %s\n' "$PROG" "$*" >&2; exit 1; }
+info() { printf '  %s\n' "$*"; }
+need_root() { [ "$(id -u)" -eq 0 ] || die "must run as root (try: sudo $PROG $*)"; }
+
+# ---- desktop user / session detection (never hardcode username) -----------
+detect_user() {
+  local u
+  u=$(loginctl list-users --no-legend 2>/dev/null \
+        | awk '$1>=1000 && $1<60000 {print $2; exit}')
+  [ -n "${u:-}" ] || u=$(getent passwd 1000 2>/dev/null | cut -d: -f1)
+  [ -n "${u:-}" ] || die "cannot detect desktop user (uid 1000)"
+  printf '%s' "$u"
+}
+user_uid() { id -u "$1" 2>/dev/null; }
+user_home() { getent passwd "$1" | cut -d: -f6; }
+
+RCV_NAME="$NAME_DEFAULT"
+[ -r "$DEFAULTS" ] && . "$DEFAULTS" 2>/dev/null || true
+# /etc/default/h96-cast may set: RCV_NAME, UXPLAY_EXTRA, SHAIRPORT_EXTRA,
+#   GMEDIA_EXTRA, AUDIOSINK (default pulsesink)
+AUDIOSINK="${AUDIOSINK:-pulsesink}"
+
+# ---- package sets ---------------------------------------------------------
+PKGS_AIRPLAY="shairport-sync"
+PKGS_AIRPLAY_OPT="nqptp"                       # AirPlay 2 timing; may be unpackaged
+PKGS_GST="gstreamer1.0-plugins-base gstreamer1.0-plugins-good gstreamer1.0-plugins-bad gstreamer1.0-libav gstreamer1.0-pipewire gstreamer1.0-alsa"
+PKGS_MIRROR="uxplay $PKGS_GST"
+PKGS_DLNA="gmediarender $PKGS_GST"
+
+apt_install() {
+  # apt_install <fatal-list> ; returns non-zero only if a required pkg failed
+  local list="$1"
+  info "installing: $list"
+  DEBIAN_FRONTEND=noninteractive apt-get update -qq || true
+  # shellcheck disable=SC2086
+  DEBIAN_FRONTEND=noninteractive apt-get install -y $list
+}
+apt_try() {
+  # best-effort; never fatal (used for nqptp)
+  local list="$1"
+  # shellcheck disable=SC2086
+  DEBIAN_FRONTEND=noninteractive apt-get install -y $list >/dev/null 2>&1
+}
+
+# ---- unit writers (author = single source of truth) -----------------------
+# Base [Service] env shared by every receiver so it reaches the desktop
+# user's PipeWire (pipewire-pulse) session and X11 display.
+common_env() {
+  local user="$1" uid="$2" home="$3"
+  cat <<EOF
+User=$user
+Group=$user
+Environment=XDG_RUNTIME_DIR=/run/user/$uid
+Environment=PULSE_SERVER=unix:/run/user/$uid/pulse/native
+Environment=DISPLAY=:0
+Environment=XAUTHORITY=$home/.Xauthority
+EOF
+}
+# Wait (non-fatal) for the per-user pulse socket to appear (boot-time enable).
+wait_pulse() {
+  local uid="$1"
+  printf 'ExecStartPre=/bin/sh -c '\''for i in $(seq 1 30); do [ -S /run/user/%s/pulse/native ] && exit 0; sleep 1; done; exit 0'\''\n' "$uid"
+}
+
+write_airplay_unit() {
+  local user uid home; user=$(detect_user); uid=$(user_uid "$user"); home=$(user_home "$user")
+  cat > "$UNIT_DIR/$SVC_AIRPLAY" <<EOF
+[Unit]
+Description=h96 AirPlay audio receiver (shairport-sync -> HDMI/PipeWire)
+Documentation=man:shairport-sync(1)
+After=network-online.target avahi-daemon.service sound.target
+Wants=network-online.target avahi-daemon.service
+
+[Service]
+$(common_env "$user" "$uid" "$home")
+$(wait_pulse "$uid")
+ExecStart=/usr/bin/shairport-sync -a "$RCV_NAME" -o pa ${SHAIRPORT_EXTRA:-}
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
+EOF
+}
+
+write_mirror_unit() {
+  local user uid home; user=$(detect_user); uid=$(user_uid "$user"); home=$(user_home "$user")
+  cat > "$UNIT_DIR/$SVC_MIRROR" <<EOF
+[Unit]
+Description=h96 AirPlay screen mirroring receiver (uxplay -> HDMI)
+Documentation=https://github.com/FDH2/UxPlay
+After=network-online.target avahi-daemon.service graphical.target sound.target
+Wants=network-online.target avahi-daemon.service
+
+[Service]
+$(common_env "$user" "$uid" "$home")
+$(wait_pulse "$uid")
+ExecStart=/usr/bin/uxplay -n "$RCV_NAME" -nh -fs -as $AUDIOSINK ${UXPLAY_EXTRA:-}
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
+EOF
+}
+
+write_dlna_unit() {
+  local user uid home; user=$(detect_user); uid=$(user_uid "$user"); home=$(user_home "$user")
+  cat > "$UNIT_DIR/$SVC_DLNA" <<EOF
+[Unit]
+Description=h96 DLNA/UPnP media renderer (gmediarender -> HDMI) [open Cast substitute]
+Documentation=https://github.com/hzeller/gmrender-resurrect
+After=network-online.target sound.target
+Wants=network-online.target
+
+[Service]
+$(common_env "$user" "$uid" "$home")
+$(wait_pulse "$uid")
+ExecStart=/usr/bin/gmediarender -f "$RCV_NAME" -p 49494 --gstout-audiosink=$AUDIOSINK --gstout-videosink=autovideosink ${GMEDIA_EXTRA:-}
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
+EOF
+}
+
+# ---- HDMI sink routing (run inside the desktop user's session) ------------
+route_hdmi() {
+  local user uid; user=$(detect_user); uid=$(user_uid "$user")
+  local sink
+  sink=$(runuser -u "$user" -- env XDG_RUNTIME_DIR=/run/user/$uid \
+           pactl list sinks short 2>/dev/null \
+           | awk 'tolower($2) ~ /hdmi/ {print $2; exit}')
+  if [ -n "${sink:-}" ]; then
+    runuser -u "$user" -- env XDG_RUNTIME_DIR=/run/user/$uid \
+      pactl set-default-sink "$sink" >/dev/null 2>&1 \
+      && info "default sink -> $sink"
+  else
+    info "no HDMI sink found via pactl (session may be down); default sink unchanged"
+  fi
+}
+
+ensure_avahi() {
+  # The H96 image MASKS avahi (both .socket and .service) to trim boot. A masked
+  # unit cannot be enabled, so a plain `enable --now` silently no-ops and there is
+  # no DNS-SD: shairport/gmediarender are undiscoverable and uxplay dies with
+  # "No DNS-SD Server found". Unmask BOTH first (verified on box: the .socket was
+  # masked separately and blocked the service), then start it.
+  systemctl unmask avahi-daemon.socket avahi-daemon.service >/dev/null 2>&1 || true
+  systemctl enable --now avahi-daemon.service >/dev/null 2>&1 || true
+}
+
+svc_up() { systemctl daemon-reload; systemctl enable --now "$1"; }
+svc_down() { systemctl disable --now "$1" 2>/dev/null || true; }
+
+# ---- actions --------------------------------------------------------------
+enable_airplay() {
+  apt_install "$PKGS_AIRPLAY" || die "shairport-sync install failed (need internet)"
+  if apt_try "$PKGS_AIRPLAY_OPT"; then
+    info "nqptp installed -> AirPlay 2 timing available"
+    systemctl enable --now nqptp.service >/dev/null 2>&1 || true
+  else
+    info "nqptp NOT available in apt -> AirPlay 1 (classic) audio only"
+  fi
+  ensure_avahi
+  write_airplay_unit
+  svc_up "$SVC_AIRPLAY"
+  route_hdmi
+  info "AirPlay audio ready as \"$RCV_NAME\""
+}
+enable_mirror() {
+  apt_install "$PKGS_MIRROR" || die "uxplay install failed (need internet)"
+  ensure_avahi
+  write_mirror_unit
+  svc_up "$SVC_MIRROR"
+  route_hdmi
+  info "AirPlay mirroring ready as \"$RCV_NAME\" (decode: box-verify rkmpp vs software)"
+}
+enable_dlna() {
+  apt_install "$PKGS_DLNA" || die "gmediarender install failed (need internet)"
+  write_dlna_unit
+  svc_up "$SVC_DLNA"
+  route_hdmi
+  info "DLNA/UPnP renderer ready as \"$RCV_NAME\""
+}
+
+do_enable() {
+  need_root enable "$@"
+  h96_banner "C A S T   R E C E I V E R"
+  case "${1:-all}" in
+    airplay) enable_airplay ;;
+    mirror)  enable_mirror ;;
+    dlna)    enable_dlna ;;
+    all)     enable_airplay; enable_mirror; enable_dlna ;;
+    *) die "unknown target '$1' (airplay|mirror|dlna|all)" ;;
+  esac
+}
+do_disable() {
+  need_root disable "$@"
+  case "${1:-all}" in
+    airplay) svc_down "$SVC_AIRPLAY" ;;
+    mirror)  svc_down "$SVC_MIRROR" ;;
+    dlna)    svc_down "$SVC_DLNA" ;;
+    all)     svc_down "$SVC_AIRPLAY"; svc_down "$SVC_MIRROR"; svc_down "$SVC_DLNA" ;;
+    *) die "unknown target '$1' (airplay|mirror|dlna|all)" ;;
+  esac
+  info "disabled ${1:-all}"
+}
+
+state() { systemctl is-active "$1" 2>/dev/null || echo unknown; }
+do_status() {
+  h96_banner "C A S T   S T A T U S"
+  local user uid; user=$(detect_user 2>/dev/null || echo '?'); uid=$(user_uid "$user" 2>/dev/null || echo '?')
+  printf '  desktop user     : %s (uid %s)\n' "$user" "$uid"
+  printf '  receiver name    : %s\n' "$RCV_NAME"
+  printf '  airplay audio    : %-8s [%s]\n' "$(state $SVC_AIRPLAY)" "$SVC_AIRPLAY"
+  printf '  airplay mirror   : %-8s [%s]\n' "$(state $SVC_MIRROR)" "$SVC_MIRROR"
+  printf '  dlna renderer    : %-8s [%s]\n' "$(state $SVC_DLNA)" "$SVC_DLNA"
+  printf '  nqptp (AP2 time) : %s\n' "$(state nqptp.service)"
+  printf '  avahi (mDNS)     : %s\n' "$(state avahi-daemon.service)"
+  if command -v shairport-sync >/dev/null 2>&1; then
+    printf '  shairport build  : %s\n' "$(shairport-sync -V 2>/dev/null | tr ',' ' ' | grep -oE 'AirPlay2|airplay-2' | head -n1 || echo 'AirPlay1/classic')"
+  fi
+  if command -v gst-inspect-1.0 >/dev/null 2>&1; then
+    local hw
+    hw=$(gst-inspect-1.0 2>/dev/null | grep -Eio 'rkmpp[a-z0-9]*dec|mpp[a-z0-9]*dec|v4l2[a-z0-9]*dec' | sort -u | tr '\n' ' ')
+    printf '  gst hw decoders  : %s\n' "${hw:-none (software avdec_h264 only)}"
+  fi
+  if [ -n "${SUDO_USER:-}" ] || [ "$(id -u)" -eq 0 ]; then
+    local sink
+    sink=$(runuser -u "$user" -- env XDG_RUNTIME_DIR=/run/user/$uid pactl get-default-sink 2>/dev/null)
+    printf '  default sink     : %s\n' "${sink:-unknown}"
+  fi
+}
+
+usage() {
+  cat <<EOF
+$PROG - AirPlay + Cast receiver control (opt-in) for the H96 Max V58
+
+USAGE:
+  $PROG enable  [airplay|mirror|dlna|all]   install + start receiver(s)
+  $PROG disable [airplay|mirror|dlna|all]   stop + disable receiver(s)
+  $PROG status                              show receiver + decode state
+  $PROG -h|--help
+
+TARGETS:
+  airplay   shairport-sync   AirPlay 2 audio (AirPlay 1 w/o nqptp) -> HDMI
+  mirror    uxplay           AirPlay screen/video mirroring -> HDMI
+  dlna      gmediarender     UPnP/DLNA renderer (open Google Cast substitute)
+
+NOTES:
+  * First 'enable' fetches packages over the internet (apt).
+  * No open Google Cast *receiver* exists; use 'dlna' + a DLNA sender app.
+  * Override name/args in $DEFAULTS (RCV_NAME, UXPLAY_EXTRA, ...).
+EOF
+}
+
+case "${1:-}" in
+  enable)  shift; do_enable "${1:-all}" ;;
+  disable) shift; do_disable "${1:-all}" ;;
+  status)  do_status ;;
+  -h|--help|help|'') usage ;;
+  *) die "unknown command '$1' (enable|disable|status)" ;;
+esac

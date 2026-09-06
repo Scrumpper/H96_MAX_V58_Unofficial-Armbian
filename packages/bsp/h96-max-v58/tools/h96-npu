@@ -1,0 +1,420 @@
+#!/bin/bash
+# h96-npu — report and tune the RK3588 NPU (RKNPU, 3 cores, ~6 TOPS INT8).
+#
+# The NPU is fully up in this image at the kernel level and has been since the
+# vendor BSP: it probes in IOMMU mode, clocks to 1000 MHz and exposes per-core
+# load. What it has never had is anything in userspace that uses or reports it.
+# This is the reporting half. `h96-npu-setup` installs the inference runtime.
+#
+# Read-only by default. The freq subcommands write only devfreq min/max, which
+# are standard, validated against the kernel's own OPP list, and reset on reboot.
+# `power` additionally writes the devfreq governor, validated against the
+# kernel's own available_governors list, and drops a udev rule so the choice
+# survives a reboot. `power sync` matches the NPU to the CPU+GPU profile that
+# `h96-perf` set, and `power sync on` drops a flag file that makes h96-perf do
+# that match on every profile change.
+#
+# Deployed to /usr/local/bin/h96-npu.
+
+set -uo pipefail
+
+[ -r /usr/local/lib/h96/banner.sh ] && . /usr/local/lib/h96/banner.sh
+command -v h96_banner >/dev/null 2>&1 || h96_banner() { :; }
+
+PROC=/proc/rknpu
+BENCH_BIN=/usr/local/lib/h96/npuload
+POWER_RULE=/etc/udev/rules.d/99-h96-npu-power.rules
+FOLLOW_FLAG=/etc/h96/npu-follow
+
+# The devfreq node is named after the SoC address, so find it rather than
+# assuming it. On RK3588 it is fdab0000.npu; that stays the fallback.
+DEVFREQ=""
+for _d in /sys/class/devfreq/*npu*; do
+    [ -d "$_d" ] && { DEVFREQ="$_d"; break; }
+done
+[ -n "$DEVFREQ" ] || DEVFREQ=/sys/class/devfreq/fdab0000.npu
+DEVFREQ_NAME=$(basename "$DEVFREQ")
+
+die() { echo "h96-npu: $*" >&2; exit 1; }
+
+[ -d "$PROC" ] || die "no $PROC — the rknpu driver is not loaded on this kernel"
+
+npu_drm_node() {
+    # the RKNPU DRM card is whichever one reports DRIVER=RKNPU
+    local n
+    for n in /sys/class/drm/card[0-9]; do
+        [ -r "$n/device/uevent" ] || continue
+        if grep -q '^DRIVER=RKNPU$' "$n/device/uevent" 2>/dev/null; then
+            basename "$n"; return 0
+        fi
+    done
+    echo "unknown"
+}
+
+runtime_state() {
+    local so
+    so=$(ldconfig -p 2>/dev/null | awk '/librknnrt\.so/{print $NF; exit}')
+    if [ -n "$so" ]; then echo "installed ($so)"; else echo "NOT installed — run: sudo h96-npu-setup"; fi
+}
+
+cmd_status() {
+    h96_banner "N P U"
+    printf '  driver           %s\n' "$(tr -d '\n' < "$PROC/version" 2>/dev/null || echo unknown)"
+    local rd rnode=""
+    rd=$(npu_drm_node)
+    if [ "$rd" != unknown ]; then
+        # cardN and renderD(128+N) are the same device on this driver
+        local idx="${rd#card}"
+        [ -e "/dev/dri/renderD$((128 + idx))" ] && rnode="  (/dev/dri/renderD$((128 + idx)))"
+    fi
+    printf '  DRM node         %s%s\n' "$rd" "$rnode"
+    printf '  cores            %s\n' "$(sed -n 's/^NPU load: *//p' "$PROC/load" 2>/dev/null || cat "$PROC/load" 2>/dev/null)"
+    [ -r "$DEVFREQ/cur_freq" ] && {
+        printf '  frequency        %s MHz  (min %s / max %s)\n' \
+            "$(( $(cat "$DEVFREQ/cur_freq") / 1000000 ))" \
+            "$(( $(cat "$DEVFREQ/min_freq") / 1000000 ))" \
+            "$(( $(cat "$DEVFREQ/max_freq") / 1000000 ))"
+        printf '  governor         %s\n' "$(cat "$DEVFREQ/governor" 2>/dev/null)"
+        printf '  available        %s MHz\n' \
+            "$(tr ' ' '\n' < "$DEVFREQ/available_frequencies" | awk 'NF{printf "%s ", $1/1000000}')"
+    }
+    [ -r "$PROC/volt" ]  && printf '  voltage          %s\n' "$(tr -d '\n' < "$PROC/volt")"
+    [ -r "$PROC/power" ] && printf '  power            %s\n' "$(tr -d '\n' < "$PROC/power")"
+    printf '  runtime          %s\n' "$(runtime_state)"
+    echo
+    echo "  note: 'could not find sram resource!' in dmesg is EXPECTED on this board."
+    echo "        RK3588 system SRAM is fully allocated to the two video decoders;"
+    echo "        the NPU runs from DRAM. See the release notes. Nothing is wrong."
+}
+
+cmd_watch() {
+    command -v stdbuf >/dev/null 2>&1 || true
+    echo "h96-npu: watching per-core load, Ctrl-C to stop"
+    while :; do
+        printf '\r  %s  %s MHz   ' \
+            "$(sed -n 's/^NPU load: *//p' "$PROC/load" 2>/dev/null | tr -s ' ')" \
+            "$([ -r "$DEVFREQ/cur_freq" ] && echo $(( $(cat "$DEVFREQ/cur_freq") / 1000000 )) || echo '?')"
+        sleep 1
+    done
+}
+
+require_root() { [ "$(id -u)" -eq 0 ] || die "that needs root (try: sudo h96-npu $*)"; }
+
+set_freq() {
+    local want="$1"
+    require_root "$@"
+    [ -w "$DEVFREQ/min_freq" ] || die "no writable devfreq at $DEVFREQ"
+    local avail hi lo
+    avail=$(cat "$DEVFREQ/available_frequencies")
+    hi=$(echo "$avail" | tr ' ' '\n' | awk 'NF' | sort -n | tail -1)
+    lo=$(echo "$avail" | tr ' ' '\n' | awk 'NF' | sort -n | head -1)
+    case "$want" in
+        max)  echo "$hi" > "$DEVFREQ/min_freq"; echo "$hi" > "$DEVFREQ/max_freq" ;;
+        auto) echo "$lo" > "$DEVFREQ/min_freq"; echo "$hi" > "$DEVFREQ/max_freq" ;;
+        *)
+            local hz=$(( want * 1000000 ))
+            echo "$avail" | tr ' ' '\n' | grep -qx "$hz" \
+                || die "$want MHz is not an available OPP. Available: $(echo "$avail" | tr ' ' '\n' | awk 'NF{printf "%s ", $1/1000000}')"
+            # raise max before min, lower min before max, so the two never cross
+            echo "$lo" > "$DEVFREQ/min_freq"
+            echo "$hz" > "$DEVFREQ/max_freq"
+            echo "$hz" > "$DEVFREQ/min_freq"
+            ;;
+    esac
+    echo "h96-npu: now min $(( $(cat "$DEVFREQ/min_freq") / 1000000 )) / max $(( $(cat "$DEVFREQ/max_freq") / 1000000 )) MHz (resets on reboot)"
+}
+
+# ---- power profiles -------------------------------------------------------
+# The stock governor is rknpu_ondemand, but on a TV box nothing ever submits an
+# RKNN job, so the NPU sits at its top OPP for the whole uptime: trans_stat
+# reports 1000 MHz for 100% of the time with "Total transition: 0". Parking it
+# at the bottom OPP costs nothing when the NPU is idle and gives back roughly
+# 0.3-0.8 W. Switch to performance before real inference work.
+
+profile_governor() {
+    case "$1" in
+        performance) echo performance ;;
+        balanced)    echo rknpu_ondemand ;;
+        powersave)   echo powersave ;;
+        *)           echo "" ;;
+    esac
+}
+
+governor_profile() {
+    case "$1" in
+        performance)                    echo "performance  (pinned at the top OPP)" ;;
+        rknpu_ondemand|simple_ondemand) echo "balanced     (stock; scales on demand)" ;;
+        powersave)                      echo "powersave    (parked at the bottom OPP)" ;;
+        *)                              echo "custom       (governor set outside this tool)" ;;
+    esac
+}
+
+write_power_rule() {
+    # Idempotent: same content, no write, no udev reload.
+    local gov="$1" new
+    new="# /etc/udev/rules.d/99-h96-npu-power.rules
+# Written by \`h96-npu power\`. Re-applies the chosen NPU devfreq governor on
+# every boot. Selecting another profile rewrites this file; deleting it hands
+# the NPU back to the kernel default (rknpu_ondemand).
+SUBSYSTEM==\"devfreq\", KERNEL==\"$DEVFREQ_NAME\", ATTR{governor}=\"$gov\""
+    if [ -r "$POWER_RULE" ] && [ "$(cat "$POWER_RULE")" = "$new" ]; then
+        return 0
+    fi
+    printf '%s\n' "$new" > "$POWER_RULE" || die "cannot write $POWER_RULE"
+    udevadm control --reload-rules >/dev/null 2>&1 || true
+}
+
+power_status() {
+    h96_banner "N P U   P O W E R"
+    local gov cur
+    gov=$(cat "$DEVFREQ/governor" 2>/dev/null)
+    cur=$(cat "$DEVFREQ/cur_freq" 2>/dev/null)
+    printf '  profile          %s\n' "$(governor_profile "$gov")"
+    printf '  governor         %s\n' "$gov"
+    printf '  frequency        %s MHz  (min %s / max %s)\n' \
+        "$(( cur / 1000000 ))" \
+        "$(( $(cat "$DEVFREQ/min_freq") / 1000000 ))" \
+        "$(( $(cat "$DEVFREQ/max_freq") / 1000000 ))"
+    printf '  governors        %s\n' "$(awk '{$1=$1; print}' "$DEVFREQ/available_governors")"
+    printf '  frequencies      %s MHz\n' \
+        "$(tr ' ' '\n' < "$DEVFREQ/available_frequencies" | awk 'NF{printf "%s ", $1/1000000}')"
+    if [ -r "$POWER_RULE" ]; then
+        printf '  on reboot        %s  (%s)\n' \
+            "$(sed -n 's/.*ATTR{governor}="\([^"]*\)".*/\1/p' "$POWER_RULE")" "$POWER_RULE"
+    else
+        printf '  on reboot        kernel default, no rule at %s\n' "$POWER_RULE"
+    fi
+    printf '  follow           %s  (%s)\n' "$(follow_state)" "$FOLLOW_FLAG"
+    echo
+    echo "  performance  pin the top OPP — use this for real NPU/RKNN work."
+    echo "  balanced     rknpu_ondemand, the stock governor."
+    echo "  powersave    park at the bottom OPP — recommended when nothing uses"
+    echo "               the NPU, which on a TV box is all of the time."
+    echo "  sync         match the profile h96-perf set for the CPU and GPU;"
+    echo "               'sync on' makes h96-perf keep the NPU in step from now on."
+}
+
+set_power() {
+    # $2 = "quiet" when called from the h96-perf follow hook: apply and verify
+    # exactly as normal, but say nothing unless the governor actually moved, so
+    # h96-perf's own output stays what it has always been.
+    local prof="$1" gov quiet="${2:-}"
+    gov=$(profile_governor "$prof")
+    [ -n "$gov" ] || die "unknown profile '$prof' (performance, balanced, powersave, status)"
+    require_root power "$prof"
+    [ -w "$DEVFREQ/governor" ] || die "no writable devfreq governor at $DEVFREQ"
+    local avail
+    avail=$(cat "$DEVFREQ/available_governors")
+    echo "$avail" | tr ' ' '\n' | grep -qx "$gov" \
+        || die "this kernel has no '$gov' governor for the NPU. Available: $(echo "$avail" | awk '{$1=$1; print}')"
+
+    local was_gov was_freq
+    was_gov=$(cat "$DEVFREQ/governor")
+    was_freq=$(cat "$DEVFREQ/cur_freq")
+    echo "$gov" > "$DEVFREQ/governor" || die "the kernel refused governor '$gov'"
+    local now_gov
+    now_gov=$(cat "$DEVFREQ/governor")
+    [ "$now_gov" = "$gov" ] || die "asked for '$gov' but devfreq still reports '$now_gov'"
+    write_power_rule "$gov"
+
+    if [ "$quiet" = quiet ]; then
+        [ "$was_gov" = "$now_gov" ] || \
+            printf 'h96-npu: follow — NPU governor %s -> %s (%s)\n' "$was_gov" "$now_gov" "$prof"
+        return 0
+    fi
+    printf 'h96-npu: %s — governor %s -> %s, %s -> %s MHz\n' \
+        "$prof" "$was_gov" "$now_gov" \
+        "$(( was_freq / 1000000 ))" "$(( $(cat "$DEVFREQ/cur_freq") / 1000000 ))"
+    echo "h96-npu: written to $POWER_RULE, so it persists across reboots."
+}
+
+# ---- follow the system power profile --------------------------------------
+# `h96-perf` is the system CPU+GPU profile selector. sync reads back the
+# governors it set, straight out of sysfs, and picks the matching NPU profile.
+# It never runs h96-perf, so the hook h96-perf carries cannot recurse.
+#
+# Follow mode is one flag file. h96-perf ships with a hook that runs
+# `h96-npu power sync --quiet` only when that file exists, so `sync off` deletes
+# it and h96-perf is back to exactly its old behaviour with nothing to unpatch.
+
+# The GPU devfreq node is named after its SoC address like the NPU one, so look
+# it up rather than assuming. On RK3588 it is fb000000.gpu.
+SYS_GPU_GOV=""
+for _g in /sys/class/devfreq/*gpu*; do
+    [ -d "$_g" ] && { SYS_GPU_GOV="$_g/governor"; break; }
+done
+[ -n "$SYS_GPU_GOV" ] || SYS_GPU_GOV=/sys/class/devfreq/fb000000.gpu/governor
+
+follow_state() { [ -e "$FOLLOW_FLAG" ] && echo on || echo off; }
+
+sync_power() {
+    local quiet="${1:-}" cpu0 gpu govs prof
+    # up front, so the hint names sync rather than the profile it worked out
+    require_root power sync
+    cpu0=$(cat /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor 2>/dev/null)
+    [ -n "$cpu0" ] || die "no readable CPU scaling_governor — cpufreq is not up"
+    gpu=$(cat "$SYS_GPU_GOV" 2>/dev/null)
+    # every CPU's governor, deduplicated: more than one means the profile is
+    # half-applied and cpu0 alone is not the whole story.
+    govs=$(cat /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor 2>/dev/null \
+           | sort -u | tr '\n' ' ' | awk '{$1=$1; print}')
+
+    if [ "$cpu0" = performance ] || [ "$gpu" = performance ]; then
+        prof=performance
+    elif [ "$cpu0" = powersave ]; then
+        prof=powersave
+    else
+        prof=balanced
+    fi
+
+    if [ "$quiet" != quiet ]; then
+        h96_banner "N P U   S Y N C"
+        printf '  CPU governor     %s\n' "$cpu0"
+        printf '  GPU governor     %s\n' "${gpu:-unknown}"
+        printf '  system profile   %s\n' "$prof"
+        printf '  follow           %s\n' "$(follow_state)"
+        case "$govs" in
+            *' '*) printf '  note             the CPUs disagree: %s\n' "$govs" ;;
+        esac
+    fi
+    set_power "$prof" "$quiet"
+}
+
+follow_on() {
+    require_root power sync on
+    mkdir -p "$(dirname "$FOLLOW_FLAG")" || die "cannot create $(dirname "$FOLLOW_FLAG")"
+    printf '%s\n' "# Written by \`h96-npu power sync on\`. While this file exists, h96-perf
+# runs \`h96-npu power sync --quiet\` after every profile change, so the NPU
+# governor tracks the CPU and GPU one. Remove it, or run
+# \`h96-npu power sync off\`, to stop." > "$FOLLOW_FLAG" \
+        || die "cannot write $FOLLOW_FLAG"
+    echo "h96-npu: follow mode ON — h96-perf now moves the NPU with the CPU/GPU profile."
+    sync_power
+}
+
+follow_off() {
+    require_root power sync off
+    rm -f "$FOLLOW_FLAG" || die "cannot remove $FOLLOW_FLAG"
+    echo "h96-npu: follow mode OFF — h96-perf leaves the NPU alone."
+    echo "h96-npu: the NPU stays on $(cat "$DEVFREQ/governor" 2>/dev/null); change it with 'h96-npu power <prof>'."
+}
+
+cmd_sync() {
+    case "${1:-}" in
+        on)       follow_on ;;
+        off)      follow_off ;;
+        --quiet)  sync_power quiet ;;   # internal: the hook inside h96-perf
+        ""|now)   sync_power ;;
+        *) die "unknown sync argument '$1' (on, off, or no argument for a one-shot sync)" ;;
+    esac
+}
+
+cmd_power() {
+    case "${1:-status}" in
+        status|"")                        power_status ;;
+        performance|balanced|powersave)   set_power "$1" ;;
+        sync)                             shift; cmd_sync "$@" ;;
+        *) die "unknown power profile '$1' (performance, balanced, powersave, sync, status)" ;;
+    esac
+}
+
+cmd_bench() {
+    # A genuine INT8 matmul submission through the RKNN runtime. This is the
+    # SAFE way to exercise the NPU: the power domain resumes on its own via a
+    # real job. Never poke the power-domain sysfs directly to "wake" it -- that
+    # hard-hangs this board.
+    #   h96-npu bench [iters]        one core (pinned to core 0), clean output
+    #   h96-npu bench all [iters]    one job per core (0,1,2), aggregate TOPS
+    local mode="single"
+    case "${1:-}" in
+        all|--all-cores) mode="all"; shift ;;
+    esac
+    local iters="${1:-1000}"
+    case "$iters" in ''|*[!0-9]*) die "iterations must be a whole number (got '$iters')" ;; esac
+    # Capture the string, don't test the pipeline's exit status: under
+    # `set -o pipefail`, `grep -q` closes the pipe on first match and SIGPIPEs
+    # ldconfig, which would make the pipeline report failure on a real match.
+    local _so
+    _so=$(ldconfig -p 2>/dev/null | awk '/librknnrt\.so/{print $NF; exit}')
+    [ -n "$_so" ] || [ -e /usr/lib/aarch64-linux-gnu/librknnrt.so ] \
+        || die "the NPU runtime is not installed -- run 'sudo h96-npu-setup' first (bench links librknnrt.so)"
+    [ -x "$BENCH_BIN" ] || die "bench binary is missing at $BENCH_BIN"
+
+    if [ "$mode" = "all" ]; then
+        h96_banner "N P U   B E N C H   x3"
+        echo "  workload : int8 matmul 256x4096x4096, $iters iters, one job per core"
+        echo "  three jobs pinned to cores 0/1/2, run concurrently (whole NPU)."
+        echo "  tip: run 'h96-npu watch' in another shell to see all three climb."
+        echo
+        local tmp c g agg=0
+        tmp=$(mktemp -d) || die "cannot make a temp dir"
+        for c in 0 1 2; do
+            ( "$BENCH_BIN" "$iters" "$c" 2>/dev/null | awk '/GOPS/{print}' > "$tmp/c$c" ) &
+        done
+        wait
+        for c in 0 1 2; do
+            g=$(sed -n 's/.*=>  [^,]*, \([0-9.]*\) GOPS/\1/p' "$tmp/c$c")
+            [ -n "$g" ] || g=0
+            printf "  core%s: %s GOPS\n" "$c" "$g"
+            agg=$(awk "BEGIN{print $agg + $g}")
+        done
+        rm -rf "$tmp"
+        echo
+        awk "BEGIN{printf \"  AGGREGATE: %.1f GOPS  (~%.2f TOPS across 3 cores)\n\", $agg, $agg/1000}"
+        echo "  note: large matmuls are DRAM-bandwidth-bound on this board (NPU has"
+        echo "        no SRAM -- it is allocated to the video decoders), so 3-core"
+        echo "        aggregate is ~2x one core, not 3x. Compiled models with weight"
+        echo "        reuse scale better; see COMMANDS for using all cores yourself."
+    else
+        h96_banner "N P U   B E N C H"
+        echo "  workload : int8 matmul 256x4096x4096, $iters iterations (one core)"
+        echo "  this is a real inference submission -- low power, NPU-only, safe."
+        echo "  tip: 'h96-npu bench all' runs one job per core; 'h96-npu watch' shows load."
+        echo
+        "$BENCH_BIN" "$iters" 0 || die "bench failed (is the runtime/driver pairing ok? see 'h96-npu')"
+        echo
+        echo "  GOPS/1000 = TOPS. A single matmul runs on one core, so this is one"
+        echo "  core's int8 throughput. Use 'h96-npu bench all' for the whole NPU."
+    fi
+}
+
+case "${1:-status}" in
+    status|"")      cmd_status ;;
+    watch|-w)       cmd_watch ;;
+    max)            set_freq max ;;
+    auto|reset)     set_freq auto ;;
+    [0-9]*)         set_freq "$1" ;;
+    power)          shift; cmd_power "$@" ;;
+    bench)          shift; cmd_bench "$@" ;;
+    -h|--help|help)
+        cat <<'USAGE'
+h96-npu — RK3588 NPU status and tuning
+
+  h96-npu               status: driver version, per-core load, frequency, runtime
+  h96-npu watch         live per-core load
+  h96-npu max           pin to the highest OPP        (root; resets on reboot)
+  h96-npu <MHz>         pin to a specific OPP         (root; resets on reboot)
+  h96-npu auto          restore the full range        (root)
+  h96-npu power         power profile: governor, frequency, what boot restores
+  h96-npu power <prof>  performance | balanced | powersave  (root; persists)
+  h96-npu power sync    match the NPU to the profile h96-perf set        (root)
+  h96-npu power sync on|off   follow h96-perf from now on   (root; persists)
+  h96-npu bench [iters] one-core int8 matmul benchmark    (needs the runtime)
+  h96-npu bench all [n] whole-NPU: one job per core 0/1/2, aggregate TOPS
+
+Power profiles set the devfreq governor and are remembered across reboots in
+/etc/udev/rules.d/99-h96-npu-power.rules. Stock is balanced (rknpu_ondemand),
+but nothing on a TV box submits an NPU job, so the NPU never leaves its top
+OPP; powersave parks it and gives back ~0.3-0.8 W. Use performance for real work.
+
+`h96-perf` is the CPU+GPU selector; it knows nothing about the NPU. `power sync`
+reads the governors it set and gives the NPU the matching profile: performance
+for performance, powersave for powersave, balanced otherwise. `power sync on`
+writes /etc/h96/npu-follow, and while that file is there h96-perf runs the sync
+itself on every profile change; `power sync off` deletes it.
+
+The inference runtime is installed separately with `sudo h96-npu-setup`.
+USAGE
+        ;;
+    *) die "unknown argument '$1' (try --help)" ;;
+esac

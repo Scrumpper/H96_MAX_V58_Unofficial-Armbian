@@ -1,0 +1,43 @@
+/dts-v1/;
+/plugin/;
+
+/*
+ * H96 Max V58 - kernel i2c-gpio bus on the HDMI DDC pins (dead HDMI-DDC
+ * controller workaround; see DDCCI-BRIGHTNESS.md).
+ *
+ *   SCL = GPIO4_B7 = &gpio4 15   SDA = GPIO4_C0 = &gpio4 16
+ *
+ * v2: NO pinctrl group. The HDMI node (fde80000.hdmi) already claims these
+ * pins' mux via pinctrl at boot, so an overlay pinctrl re-mux is refused
+ * ("pin gpio4-15 already requested"). Instead we rely purely on the gpiod
+ * request the i2c-gpio driver makes via scl-gpios/sda-gpios - the SAME path
+ * our userspace bit-bang uses, which auto-remuxes the pin to GPIO at request
+ * time and is proven to work at runtime without disturbing the display.
+ *
+ * Build: dtc -@ -I dts -O dtb -o h96-ddc-i2c-gpio.dtbo h96-ddc-i2c-gpio.dts
+ */
+
+/ {
+	fragment@0 {
+		target-path = "/";
+		__overlay__ {
+			ddc_i2c: i2c-ddc {
+				compatible = "i2c-gpio";
+				/* GPIO_ACTIVE_HIGH(0) | GPIO_OPEN_DRAIN(6) = 6 */
+				sda-gpios = <&gpio4 0x10 6>;
+				scl-gpios = <&gpio4 0x0f 6>;
+				/* 5 us half-clock -> ~100 kHz. VALIDATED 2026-08-25:
+				 * at 250 us (~2 kHz) EDID reads worked but DDC/CI
+				 * getvcp read a garbage current value and setvcp
+				 * failed DDCRC_VERIFY - the monitor's DDC/CI MCU could
+				 * not clock value bytes at 4 ms/byte. At ~100 kHz a
+				 * Dell P2419H reads real brightness and setvcp tracks
+				 * 30/75/15/60 exactly with on-screen change. */
+				i2c-gpio,delay-us = <5>;
+				#address-cells = <0x01>;
+				#size-cells = <0x00>;
+				status = "okay";
+			};
+		};
+	};
+};

@@ -1,0 +1,425 @@
+#!/usr/bin/env bash
+# h96-bt-speaker -- turn the H96 Max V58 into a Bluetooth A2DP speaker.
+#
+# WHAT THIS DOES
+#   `on`  makes the box discoverable + pairable, arms a Just Works pairing
+#         agent (auto-accept, no PIN/screen), and bridges any incoming A2DP
+#         stream to the local sink (HDMI by default). A phone then pairs to
+#         the box and plays music out of the TV / receiver.
+#   `off` reverts: stops the bridge and the agent, drops discoverable +
+#         pairable. Paired devices are kept (Trusted) unless you `forget` them.
+#
+# HOW IT WORKS
+#   - Adapter control (power/alias/discoverable/pairable) via bluetoothctl on
+#     the SYSTEM bus. Class is nudged to "audio, loudspeaker" so phones show
+#     the box as a speaker.
+#   - Pairing: /usr/local/lib/h96/h96-bt-agent (python D-Bus Agent1,
+#     NoInputNoOutput) auto-accepts and Trusts each device. Runs as root.
+#   - Routing: /usr/local/lib/h96/h96-bt-loopback runs in the DESKTOP user's
+#     PipeWire session and pw-loopbacks each "bluez_input.*" source to the
+#     default sink. WirePlumber already advertises the a2dp_sink role
+#     (30-h96-bluetooth.conf), so the box accepts A2DP; this tool just wires
+#     the accepted stream to the speakers.
+#
+#   State: /run/h96-bt-speaker/ (agent.pid, on marker). Config overrides:
+#   /etc/h96/bt-speaker.conf  (ALIAS, DISCOVERABLE_TIMEOUT, SINK, SET_CLASS).
+#
+# SUBCOMMANDS
+#   on [SECONDS]   enter speaker mode. SECONDS = how long to stay discoverable
+#                  (0 = until `off`; default from config, else 0).
+#   off            leave speaker mode, revert adapter, stop agent + bridge.
+#   status         (default) adapter state, agent/bridge, sink, connections.
+#   test           probe dependencies + prerequisites; nonzero if core missing.
+#   devices        list paired/connected Bluetooth audio devices.
+#   forget MAC     unpair + remove a device (AA:BB:CC:DD:EE:FF).
+#
+# Deployed to /usr/local/bin/h96-bt-speaker (0755).
+
+set -uo pipefail
+
+[ -r /usr/local/lib/h96/banner.sh ] && . /usr/local/lib/h96/banner.sh
+command -v h96_banner >/dev/null 2>&1 || h96_banner() { :; }
+
+# --- constants / config ----------------------------------------------------
+HCI="${H96_BT_HCI:-hci0}"
+RUNDIR="/run/h96-bt-speaker"
+AGENT_PID="$RUNDIR/agent.pid"
+ON_MARK="$RUNDIR/on"
+CONF="/etc/h96/bt-speaker.conf"
+
+AGENT_BIN="/usr/local/lib/h96/h96-bt-agent"
+LOOPBACK_BIN="/usr/local/lib/h96/h96-bt-loopback"
+
+# Defaults (overridable in $CONF).
+ALIAS="H96 Max V58 Speaker"
+DISCOVERABLE_TIMEOUT=0        # seconds; 0 = forever
+SINK=""                       # empty = default sink (HDMI on this box)
+SET_CLASS=1                   # set adapter class to Audio/Loudspeaker
+# 0x240414: Rendering+Audio major service, Audio/Video major, Loudspeaker minor.
+BT_CLASS="0x240414"
+
+# shellcheck source=/dev/null
+[ -r "$CONF" ] && . "$CONF"
+
+err()  { printf '%s\n' "$*" >&2; }
+info() { printf '%s\n' "$*"; }
+have() { command -v "$1" >/dev/null 2>&1; }
+
+need_root() {
+  if [ "$(id -u)" -ne 0 ]; then
+    err "This action changes system + adapter state; re-run as root:"
+    err "  sudo $0 $*"
+    exit 1
+  fi
+}
+
+# --- desktop-user detection (uid 1000; do NOT hardcode name) ---------------
+# The PipeWire session lives in the autologin desktop user. Find it, prefer the
+# active graphical seat, fall back to uid 1000.
+detect_desktop_user() {
+  local u=""
+  if have loginctl; then
+    # First active, non-root session's user.
+    u="$(loginctl list-sessions --no-legend 2>/dev/null \
+         | awk '{print $3}' \
+         | while read -r name; do
+             [ -n "$name" ] && [ "$name" != "root" ] || continue
+             st="$(loginctl show-user "$name" -p State --value 2>/dev/null)"
+             [ "$st" = "active" ] && { printf '%s\n' "$name"; break; }
+           done)"
+  fi
+  if [ -z "$u" ]; then
+    u="$(id -nu 1000 2>/dev/null)"
+  fi
+  printf '%s\n' "$u"
+}
+
+user_runtime_dir() {
+  local uid; uid="$(id -u "$1" 2>/dev/null)" || return 1
+  printf '/run/user/%s\n' "$uid"
+}
+
+# Run a command inside the desktop user's session (PipeWire reachable).
+run_as_user() {
+  local u="$1"; shift
+  local rt; rt="$(user_runtime_dir "$u")" || return 1
+  if [ "$u" = "$(id -nu)" ]; then
+    XDG_RUNTIME_DIR="$rt" DBUS_SESSION_BUS_ADDRESS="unix:path=$rt/bus" "$@"
+  elif have runuser; then
+    runuser -u "$u" -- env XDG_RUNTIME_DIR="$rt" \
+      DBUS_SESSION_BUS_ADDRESS="unix:path=$rt/bus" "$@"
+  else
+    sudo -u "$u" XDG_RUNTIME_DIR="$rt" \
+      DBUS_SESSION_BUS_ADDRESS="unix:path=$rt/bus" "$@"
+  fi
+}
+
+# --- bluetoothctl / adapter helpers ----------------------------------------
+adapter_present() { [ -e "/sys/class/bluetooth/$HCI" ]; }
+
+btctl() { bluetoothctl "$@" 2>/dev/null; }
+
+adapter_prop() {
+  # Print a Controller property value ("yes"/"no"/string) from `show`.
+  btctl show "$HCI" 2>/dev/null | sed -n "s/^[[:space:]]*$1:[[:space:]]*//p" | head -n1
+}
+
+# --- lifecycle: agent ------------------------------------------------------
+agent_running() {
+  [ -f "$AGENT_PID" ] && kill -0 "$(cat "$AGENT_PID" 2>/dev/null)" 2>/dev/null
+}
+
+start_agent() {
+  if agent_running; then info "pairing agent already running"; return 0; fi
+  if [ ! -x "$AGENT_BIN" ]; then
+    err "agent missing ($AGENT_BIN); pairing will not auto-accept."
+    return 1
+  fi
+  mkdir -p "$RUNDIR"
+  setsid "$AGENT_BIN" >>"$RUNDIR/agent.log" 2>&1 &
+  local pid=$!
+  echo "$pid" > "$AGENT_PID"
+  sleep 0.5
+  if agent_running; then
+    info "pairing agent started (pid $pid)"
+  else
+    err "pairing agent failed to start; see $RUNDIR/agent.log"
+    err "(need: sudo apt install -y python3-dbus python3-gi)"
+    rm -f "$AGENT_PID"
+    return 1
+  fi
+}
+
+stop_agent() {
+  if [ -f "$AGENT_PID" ]; then
+    kill "$(cat "$AGENT_PID" 2>/dev/null)" 2>/dev/null
+    rm -f "$AGENT_PID"
+  fi
+  pkill -f "$AGENT_BIN" 2>/dev/null
+}
+
+# --- lifecycle: loopback bridge (runs as desktop user) ---------------------
+loopback_running() {
+  pgrep -f "$LOOPBACK_BIN" >/dev/null 2>&1
+}
+
+start_loopback() {
+  local u="$1"
+  if loopback_running; then info "audio bridge already running"; return 0; fi
+  if [ ! -x "$LOOPBACK_BIN" ]; then
+    err "bridge missing ($LOOPBACK_BIN); A2DP audio will not reach the sink."
+    return 1
+  fi
+  local rt; rt="$(user_runtime_dir "$u")"
+  if [ -z "$u" ] || [ ! -d "$rt" ]; then
+    err "no desktop PipeWire session found (user='$u' runtime='$rt')."
+    err "Log in on the box (autologin uid 1000) then re-run 'on'."
+    return 1
+  fi
+  # Launch detached in the user's session. Pass sink override through env.
+  run_as_user "$u" setsid env H96_BT_SINK="$SINK" \
+    "$LOOPBACK_BIN" >>"$RUNDIR/loopback.log" 2>&1 &
+  sleep 0.5
+  if loopback_running; then
+    info "audio bridge started (user $u -> ${SINK:-default sink})"
+  else
+    err "audio bridge failed to start; see $RUNDIR/loopback.log"
+    return 1
+  fi
+}
+
+stop_loopback() {
+  pkill -TERM -f "$LOOPBACK_BIN" 2>/dev/null
+  # pw-loopback children are killed by the bridge's TERM trap; sweep leftovers.
+  pkill -f 'pw-loopback.*h96-bt-speaker' 2>/dev/null
+}
+
+# --- commands --------------------------------------------------------------
+cmd_on() {
+  need_root on "$@"
+  local secs="${1:-$DISCOVERABLE_TIMEOUT}"
+  h96_banner "B L U E T O O T H   S P E A K E R"
+
+  if ! have bluetoothctl; then
+    err "bluetoothctl not found (bluez not installed)."; exit 1
+  fi
+  if ! adapter_present; then
+    err "Bluetooth adapter $HCI not present."
+    err "Check: dmesg | grep -i bluetooth ; systemctl status bluetooth"
+    exit 1
+  fi
+
+  mkdir -p "$RUNDIR"
+
+  info "Powering $HCI and configuring for A2DP sink..."
+  btctl power on >/dev/null
+  btctl system-alias "$ALIAS" >/dev/null 2>&1 || btctl set-alias "$ALIAS" >/dev/null 2>&1
+  if [ "${SET_CLASS:-1}" = "1" ] && have hciconfig; then
+    hciconfig "$HCI" class "$BT_CLASS" >/dev/null 2>&1 \
+      && info "adapter class set to Audio/Loudspeaker ($BT_CLASS)" \
+      || err "note: could not set adapter class (hciconfig); phones still pair."
+  fi
+
+  # Discoverable window. bluetoothctl's discoverable-timeout takes seconds
+  # (0 = no timeout). Set it BEFORE toggling discoverable on.
+  btctl discoverable-timeout "$secs" >/dev/null 2>&1
+  btctl pairable on >/dev/null
+  btctl discoverable on >/dev/null
+
+  start_agent
+  local du; du="$(detect_desktop_user)"
+  start_loopback "$du"
+
+  : > "$ON_MARK"
+  {
+    echo "ALIAS=$ALIAS"
+    echo "USER=$du"
+    echo "TIMEOUT=$secs"
+    echo "SINK=${SINK:-default}"
+  } > "$RUNDIR/state"
+
+  info ""
+  info "Box is now a Bluetooth speaker."
+  info "  Name:        $ALIAS"
+  if [ "$secs" = "0" ]; then
+    info "  Discoverable: yes (until 'h96-bt-speaker off')"
+  else
+    info "  Discoverable: yes (${secs}s window)"
+  fi
+  info "  Audio out:   ${SINK:-default sink (HDMI)}"
+  info ""
+  info "On your phone: open Bluetooth settings, pick \"$ALIAS\", confirm."
+  info "Then play audio -- it comes out of the TV / receiver."
+  info "Turn off with:  sudo h96-bt-speaker off"
+}
+
+cmd_off() {
+  need_root off "$@"
+  h96_banner "B L U E T O O T H   S P E A K E R"
+  if have bluetoothctl && adapter_present; then
+    btctl discoverable off >/dev/null 2>&1
+    btctl pairable off >/dev/null 2>&1
+    info "adapter $HCI no longer discoverable/pairable"
+  fi
+  stop_loopback
+  stop_agent
+  rm -f "$ON_MARK" "$RUNDIR/state"
+  info "audio bridge + pairing agent stopped"
+  info "speaker mode off (paired devices kept; use 'forget MAC' to remove)"
+}
+
+cmd_status() {
+  h96_banner "B L U E T O O T H   S P E A K E R"
+  if ! have bluetoothctl; then err "bluetoothctl not installed."; return 1; fi
+  if ! adapter_present; then
+    info "Adapter $HCI: NOT PRESENT"
+    return 0
+  fi
+  local mode="off"; [ -f "$ON_MARK" ] && mode="ON"
+  info "Speaker mode:   $mode"
+  info "Adapter $HCI:"
+  info "  Powered:      $(adapter_prop Powered)"
+  info "  Discoverable: $(adapter_prop Discoverable)"
+  info "  Pairable:     $(adapter_prop Pairable)"
+  info "  Alias:        $(adapter_prop Alias)"
+  info "  Class:        $(adapter_prop Class)"
+  info "Pairing agent:  $(agent_running && echo running || echo stopped)"
+  info "Audio bridge:   $(loopback_running && echo running || echo stopped)"
+
+  local du; du="$(detect_desktop_user)"
+  info "Desktop user:   ${du:-<none>}"
+  # Default sink as seen in the user session.
+  local sink=""
+  if [ -n "$du" ] && have pactl; then
+    sink="$(run_as_user "$du" pactl get-default-sink 2>/dev/null)"
+  fi
+  info "Default sink:   ${SINK:-${sink:-<unknown>}}"
+
+  # Connected devices.
+  info "Connected devices:"
+  local any=0 mac name
+  while read -r _ mac name; do
+    [ -n "$mac" ] || continue
+    if [ "$(btctl info "$mac" 2>/dev/null | sed -n 's/^[[:space:]]*Connected:[[:space:]]*//p' | head -n1)" = "yes" ]; then
+      info "  $mac  $name"; any=1
+    fi
+  done < <(btctl devices 2>/dev/null)
+  [ "$any" = "1" ] || info "  (none)"
+
+  # Active loopback links, if pw-link is available in the session.
+  if [ -n "$du" ] && run_as_user "$du" sh -c 'command -v pw-link' >/dev/null 2>&1; then
+    local links
+    links="$(run_as_user "$du" pw-link -l 2>/dev/null | grep -c 'h96-bt' || true)"
+    info "Bridge links:   ${links:-0} port(s)"
+  fi
+}
+
+cmd_devices() {
+  if ! have bluetoothctl; then err "bluetoothctl not installed."; return 1; fi
+  info "Paired / known Bluetooth devices:"
+  local mac name conn
+  while read -r _ mac name; do
+    [ -n "$mac" ] || continue
+    conn="$(btctl info "$mac" 2>/dev/null | sed -n 's/^[[:space:]]*Connected:[[:space:]]*//p' | head -n1)"
+    printf '  %s  %-24s [connected: %s]\n' "$mac" "$name" "${conn:-no}"
+  done < <(btctl devices 2>/dev/null)
+}
+
+cmd_forget() {
+  need_root forget "$@"
+  local mac="${1:-}"
+  if [ -z "$mac" ]; then err "usage: $0 forget AA:BB:CC:DD:EE:FF"; exit 1; fi
+  btctl disconnect "$mac" >/dev/null 2>&1
+  if btctl remove "$mac" 2>/dev/null | grep -qi 'removed\|not available'; then
+    info "removed $mac"
+  else
+    btctl remove "$mac" >/dev/null 2>&1
+    info "removed $mac (or was unknown)"
+  fi
+}
+
+cmd_test() {
+  h96_banner "B L U E T O O T H   S P E A K E R"
+  local rc=0
+  chk() { # label  test-cmd...
+    local label="$1"; shift
+    if "$@" >/dev/null 2>&1; then printf '  [ OK ] %s\n' "$label"
+    else printf '  [FAIL] %s\n' "$label"; rc=1; fi
+  }
+  chkw() { # non-fatal warn
+    local label="$1"; shift
+    if "$@" >/dev/null 2>&1; then printf '  [ OK ] %s\n' "$label"
+    else printf '  [warn] %s\n' "$label"; fi
+  }
+
+  info "Core:"
+  chk  "bluetoothctl present"        have bluetoothctl
+  chk  "Bluetooth adapter $HCI"      adapter_present
+  chk  "pw-loopback present"         have pw-loopback
+  chk  "pw-dump present"             have pw-dump
+  chk  "pairing agent installed"     test -x "$AGENT_BIN"
+  chk  "audio bridge installed"      test -x "$LOOPBACK_BIN"
+
+  info "Pairing agent runtime:"
+  if have python3; then
+    chk "python3 dbus + gi bindings" \
+      python3 -c 'import dbus, dbus.service, dbus.mainloop.glib; from gi.repository import GLib'
+  else
+    printf '  [FAIL] python3 present\n'; rc=1
+  fi
+
+  info "PipeWire session (desktop user):"
+  local du; du="$(detect_desktop_user)"
+  if [ -n "$du" ]; then
+    printf '  [info] desktop user: %s\n' "$du"
+    chk  "PipeWire reachable in session" run_as_user "$du" pw-dump
+    chkw "pactl (default-sink lookup)"   run_as_user "$du" sh -c 'command -v pactl'
+  else
+    printf '  [FAIL] desktop user detected\n'; rc=1
+  fi
+
+  info "WirePlumber a2dp_sink role:"
+  if grep -rqs 'a2dp_sink' /etc/wireplumber/ 2>/dev/null; then
+    printf '  [ OK ] a2dp_sink present in /etc/wireplumber (30-h96-bluetooth.conf)\n'
+  else
+    printf '  [warn] a2dp_sink role not found in /etc/wireplumber config\n'
+  fi
+
+  info ""
+  if [ "$rc" = "0" ]; then info "test: core OK -- ready for speaker mode."
+  else info "test: one or more core checks FAILED (see above)."; fi
+  return "$rc"
+}
+
+usage() {
+  cat <<EOF
+h96-bt-speaker -- H96 Max V58 as a Bluetooth A2DP speaker
+
+  on [SECONDS]   discoverable+pairable, auto-accept agent, bridge A2DP -> sink
+                 SECONDS: discoverable window (0 = until off; default $DISCOVERABLE_TIMEOUT)
+  off            revert adapter, stop bridge + agent
+  status         (default) adapter + bridge + connections
+  devices        list paired / connected audio devices
+  forget MAC     unpair + remove a device
+  test           probe dependencies + prerequisites
+
+Config: $CONF (ALIAS, DISCOVERABLE_TIMEOUT, SINK, SET_CLASS)
+On-demand deps: python3-dbus python3-gi (pairing agent), pipewire-bin (bridge)
+EOF
+}
+
+main() {
+  local cmd="${1:-status}"; shift || true
+  case "$cmd" in
+    on)       cmd_on "$@";;
+    off)      cmd_off "$@";;
+    status)   cmd_status "$@";;
+    devices)  cmd_devices "$@";;
+    forget)   cmd_forget "$@";;
+    test)     cmd_test "$@";;
+    -h|--help|help) usage;;
+    *) err "unknown command: $cmd"; usage; exit 2;;
+  esac
+}
+
+main "$@"

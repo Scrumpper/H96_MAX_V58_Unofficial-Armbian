@@ -1,0 +1,411 @@
+#!/usr/bin/env bash
+# h96-audio-passthrough -- HDMI bitstream + multichannel LPCM to an AV receiver
+# for the H96 Max V58 (RK3588, dw-hdmi-qp HDMI-TX audio).
+#
+# WHAT THIS DOES
+#   Routes mpv audio out over the HDMI-TX port to an AVR / soundbar in one of
+#   two modes:
+#     bitstream  Dolby Digital (AC3), DTS and E-AC3 (DD+) are sent COMPRESSED,
+#                untouched, over IEC61937/IEC958. The receiver decodes them.
+#                (--audio-spdif=ac3,dts,eac3)
+#     lpcm       Multichannel uncompressed PCM 5.1 / 7.1. mpv decodes on-box
+#                and sends discrete channels over HDMI. (--audio-channels)
+#   Plus it can advertise the passthrough (IEC958) codecs on the PipeWire HDMI
+#   node so non-mpv apps (Kodi, Firefox) can passthrough too.
+#
+# HOW IT WORKS
+#   mpv config is kept in a managed marker block in /etc/mpv/mpv.conf that just
+#   `include`s /etc/mpv/passthrough.conf. This tool regenerates that fragment
+#   per mode + device and adds/removes the include block. `off` reverts mpv to
+#   its base (stereo / PipeWire) config.
+#
+# SUBCOMMANDS
+#   status              (default) detected HDMI device, mode, mpv + PW state
+#   devices             list ALSA HDMI/IEC958 PCMs and PipeWire HDMI sinks
+#   bitstream [DEV]     enable AC3/DTS/EAC3 compressed passthrough
+#   lpcm [DEV] [CH]     enable multichannel LPCM (CH default 7.1)
+#   off                 disable passthrough, revert mpv to base config
+#   set-device DEV      persist the HDMI ALSA device to use
+#   codecs on|off       (un)advertise IEC958 codecs on the PipeWire HDMI node
+#   test                probe: mpv spdif support, device opens, PW node present
+#
+# DEV is an ALSA PCM name such as  hdmi:CARD=rockchiphdmi0,DEV=0  (see `devices`).
+# If omitted, the persisted device (set-device) or an auto-detected HDMI PCM
+# is used.
+#
+# Deployed to /usr/local/bin/h96-audio-passthrough.
+
+set -uo pipefail
+
+[ -r /usr/local/lib/h96/banner.sh ] && . /usr/local/lib/h96/banner.sh
+command -v h96_banner >/dev/null 2>&1 || h96_banner() { :; }
+
+MPV_CONF="${H96_MPV_CONF:-/etc/mpv/mpv.conf}"
+FRAG="/etc/mpv/passthrough.conf"
+STATE="/etc/h96/audio-passthrough.state"
+WP_CONF="/etc/wireplumber/wireplumber.conf.d/51-h96-iec958.conf"
+
+BEGIN='# >>> h96-audio-passthrough >>>'
+END='# <<< h96-audio-passthrough <<<'
+
+# codecs advertised for bitstream. TrueHD/DTS-HD deliberately left out: HBR/MAT
+# over this dw-hdmi-qp stack is unverified (see NOTES / box-test).
+IEC958_CODECS='PCM AC3 DTS EAC3'
+
+err()  { printf '%s\n' "$*" >&2; }
+have() { command -v "$1" >/dev/null 2>&1; }
+
+need_root() {
+  if [ "$(id -u)" -ne 0 ]; then
+    err "This action changes system config; re-run as root (sudo $0 $*)."
+    exit 1
+  fi
+}
+
+# ---------------------------------------------------------------- state I/O
+STATE_MODE="off"; STATE_DEVICE=""; STATE_CHANNELS="7.1"
+load_state() {
+  [ -r "$STATE" ] || return 0
+  # shellcheck disable=SC1090
+  . "$STATE" 2>/dev/null || true
+  STATE_MODE="${MODE:-off}"
+  STATE_DEVICE="${DEVICE:-}"
+  STATE_CHANNELS="${CHANNELS:-7.1}"
+}
+save_state() {
+  mkdir -p "$(dirname "$STATE")"
+  {
+    echo "# h96-audio-passthrough state -- managed file, edited by the tool."
+    echo "MODE=$1"
+    echo "DEVICE=\"$2\""
+    echo "CHANNELS=\"$3\""
+  } > "$STATE"
+}
+
+# ---------------------------------------------------------------- discovery
+# Emit candidate HDMI PCM names, best first, one per line.
+# Prefers hdmi:CARD=... (does IEC958 status bits + channel map), then
+# iec958:CARD=..., then a raw hw: fallback derived from the card index.
+list_hdmi_pcms() {
+  if have aplay; then
+    aplay -L 2>/dev/null | grep -E '^(hdmi|iec958):CARD=' || true
+  fi
+  # raw hw: fallback from /proc/asound/cards -- match card whose id/name mentions hdmi
+  if [ -r /proc/asound/cards ]; then
+    awk '
+      /^[ ]*[0-9]+ \[/ {
+        idx=$1; name=$0
+        # id is the token inside [ ]
+        gsub(/^[ ]*[0-9]+ \[/,"",name); sub(/\].*/,"",name); gsub(/ /,"",name)
+        line=$0
+      }
+      tolower($0) ~ /hdmi/ && idx!="" {
+        if (!seen[idx]++) print "hw:" idx ",0   (card " idx " " name ")"
+      }
+    ' /proc/asound/cards 2>/dev/null | sed 's/  *(card.*)//'
+  fi
+}
+
+# The single best default PCM name (no annotations).
+detect_device() {
+  local d
+  d="$(list_hdmi_pcms | head -n1)"
+  # strip any trailing annotation
+  printf '%s\n' "$d" | awk '{print $1}'
+}
+
+# Resolve the device to use: explicit arg > persisted > auto.
+resolve_device() {
+  local arg="${1:-}"
+  if [ -n "$arg" ]; then printf '%s\n' "$arg"; return 0; fi
+  load_state
+  if [ -n "$STATE_DEVICE" ]; then printf '%s\n' "$STATE_DEVICE"; return 0; fi
+  detect_device
+}
+
+# ---------------------------------------------------------------- mpv block
+strip_block() {
+  # remove the managed marker block from mpv.conf (if present)
+  [ -f "$MPV_CONF" ] || return 0
+  if grep -qF "$BEGIN" "$MPV_CONF" 2>/dev/null; then
+    sed -i "/$(printf '%s' "$BEGIN" | sed 's/[][\.*^$/]/\\&/g')/,/$(printf '%s' "$END" | sed 's/[][\.*^$/]/\\&/g')/d" "$MPV_CONF"
+  fi
+}
+
+add_block() {
+  mkdir -p "$(dirname "$MPV_CONF")"
+  [ -f "$MPV_CONF" ] || : > "$MPV_CONF"
+  strip_block
+  # drop trailing blank lines then append the block
+  printf '\n%s\n' "$BEGIN" >> "$MPV_CONF"
+  printf 'include=%s\n' "$FRAG" >> "$MPV_CONF"
+  printf '%s\n' "$END" >> "$MPV_CONF"
+}
+
+write_frag_bitstream() {
+  local dev="$1"
+  mkdir -p "$(dirname "$FRAG")"
+  cat > "$FRAG" <<EOF
+# /etc/mpv/passthrough.conf -- managed by h96-audio-passthrough (mode: bitstream)
+# Edits here are overwritten on the next enable/disable. Included by mpv.conf
+# only while passthrough is ON.
+#
+# HDMI bitstream passthrough: AC3 (Dolby Digital), DTS and E-AC3 (DD+) are sent
+# COMPRESSED over IEC61937; the AV receiver decodes them. Everything else (AAC,
+# stereo, FLAC, TrueHD/Atmos, DTS-HD) is decoded on-box and sent as PCM.
+#
+# ALSA is used directly (ao=alsa) for the passthrough path: mpv->PipeWire
+# passthrough is unreliable on this stack ("no target node available"). ao falls
+# back to pipewire if the ALSA device is busy/absent.
+ao=alsa,pipewire
+audio-device=alsa/$dev
+audio-exclusive=yes
+audio-spdif=ac3,dts,eac3
+# base config sets hwdec=rkmpp/vo=gpu; audio-only lines here do not touch video.
+EOF
+}
+
+write_frag_lpcm() {
+  local dev="$1" ch="$2"
+  mkdir -p "$(dirname "$FRAG")"
+  cat > "$FRAG" <<EOF
+# /etc/mpv/passthrough.conf -- managed by h96-audio-passthrough (mode: lpcm)
+# Edits here are overwritten on the next enable/disable. Included by mpv.conf
+# only while passthrough is ON.
+#
+# Multichannel uncompressed LPCM over HDMI. mpv decodes on-box and sends
+# discrete channels to the receiver. Falls back down the channel list if the
+# sink/ELD cannot take the top layout.
+ao=alsa,pipewire
+audio-device=alsa/$dev
+audio-exclusive=yes
+audio-channels=$ch,5.1,stereo
+# no audio-spdif: send PCM, let the receiver render the speaker layout.
+EOF
+}
+
+# ---------------------------------------------------------------- pipewire
+wp_reload() {
+  # best-effort: nudge WirePlumber to pick up the dropped-in config
+  if have systemctl && systemctl --user show-environment >/dev/null 2>&1; then
+    systemctl --user restart wireplumber 2>/dev/null && return 0
+  fi
+  err "note: could not auto-restart WirePlumber. Log in as the desktop user and run"
+  err "      'systemctl --user restart wireplumber' (or reboot) to apply."
+  return 0
+}
+
+codecs_on() {
+  need_root "$@"
+  mkdir -p "$(dirname "$WP_CONF")"
+  local list quoted
+  quoted=""
+  for c in $IEC958_CODECS; do quoted="$quoted \"$c\""; done
+  cat > "$WP_CONF" <<EOF
+# /etc/wireplumber/wireplumber.conf.d/51-h96-iec958.conf
+# H96 Max V58 -- advertise IEC958 passthrough codecs on the HDMI-TX node so
+# PipeWire apps (Kodi, browsers) can bitstream AC3/DTS/E-AC3, and expose an
+# iec958 (passthrough) sink alongside the normal PCM sink. Managed by
+# h96-audio-passthrough; delete this file (or 'codecs off') to revert.
+#
+# TrueHD / DTS-HD are intentionally omitted -- HBR/MAT over dw-hdmi-qp is
+# unverified on this box (box-test).
+monitor.alsa.rules = [
+  {
+    matches = [
+      { node.name = "alsa_output.*hdmi.*" }
+      { node.name = "alsa_output.*platform-hdmi*" }
+    ]
+    actions = {
+      update-props = {
+        iec958.codecs = [$quoted ]
+      }
+    }
+  }
+]
+EOF
+  echo "advertised IEC958 codecs [$IEC958_CODECS ] on HDMI PipeWire nodes -> $WP_CONF"
+  wp_reload
+}
+
+codecs_off() {
+  need_root "$@"
+  if [ -f "$WP_CONF" ]; then rm -f "$WP_CONF"; echo "removed $WP_CONF"; wp_reload
+  else echo "not present: $WP_CONF"; fi
+}
+
+# ---------------------------------------------------------------- commands
+cmd_devices() {
+  h96_banner "A U D I O   P A S S T H R O U G H"
+  echo "-- ALSA HDMI / IEC958 PCMs (use one of these as DEV) --"
+  local pcms; pcms="$(list_hdmi_pcms)"
+  if [ -n "$pcms" ]; then printf '%s\n' "$pcms" | sed 's/^/  /'
+  else echo "  (none found -- no HDMI audio card exposed by ALSA)"; fi
+  echo
+  echo "-- aplay -l (card:device map) --"
+  if have aplay; then aplay -l 2>/dev/null | grep -iE 'card|hdmi' | sed 's/^/  /' || echo "  (aplay reported nothing)"
+  else echo "  aplay not installed (apt-get install alsa-utils)"; fi
+  echo
+  echo "-- PipeWire HDMI sinks --"
+  if have wpctl; then
+    wpctl status 2>/dev/null | sed -n '/Sinks:/,/Sources:/p' | grep -i hdmi | sed 's/^/  /' \
+      || echo "  (no HDMI sink listed by wpctl -- PipeWire may not be running for this user)"
+  else echo "  wpctl not available"; fi
+}
+
+cmd_status() {
+  load_state
+  h96_banner "A U D I O   P A S S T H R O U G H"
+  local dev; dev="$(resolve_device)"
+  echo "mode:            $STATE_MODE"
+  echo "device (chosen): ${STATE_DEVICE:-<auto>}"
+  echo "device (resolved): ${dev:-<none detected>}"
+  [ "$STATE_MODE" = "lpcm" ] && echo "channels:        $STATE_CHANNELS"
+  echo
+  echo "mpv config:      $MPV_CONF"
+  if [ -f "$MPV_CONF" ] && grep -qF "$BEGIN" "$MPV_CONF"; then
+    echo "  passthrough block: PRESENT"
+    [ -f "$FRAG" ] && sed 's/^/    /' "$FRAG" | grep -E 'mode:|ao=|audio-device=|audio-spdif=|audio-channels='
+  else
+    echo "  passthrough block: absent (mpv on base/PCM config)"
+  fi
+  echo
+  echo "PipeWire IEC958 advertise: $([ -f "$WP_CONF" ] && echo "on ($WP_CONF)" || echo off)"
+  echo
+  if [ -z "$dev" ]; then
+    echo "!! No HDMI audio PCM detected. Passthrough cannot work until the box"
+    echo "   exposes an HDMI sound card. Check: aplay -l ; dmesg | grep -i hdmi"
+  fi
+}
+
+enable_bitstream() {
+  need_root "$@"
+  local dev; dev="$(resolve_device "${1:-}")"
+  if [ -z "$dev" ]; then
+    err "No HDMI ALSA device detected and none given."
+    err "Run 'h96-audio-passthrough devices' and pass one, e.g.:"
+    err "  h96-audio-passthrough bitstream hdmi:CARD=rockchiphdmi0,DEV=0"
+    exit 1
+  fi
+  write_frag_bitstream "$dev"
+  add_block
+  save_state bitstream "$dev" "$STATE_CHANNELS"
+  echo "bitstream passthrough ON  ->  $dev"
+  echo "  AC3/DTS/EAC3 sent compressed; other formats decoded to PCM."
+  echo "  Restart mpv (and any player) to pick up the new config."
+}
+
+enable_lpcm() {
+  need_root "$@"
+  local dev ch
+  dev="$(resolve_device "${1:-}")"
+  ch="${2:-}"
+  [ -z "$ch" ] && { load_state; ch="$STATE_CHANNELS"; }
+  [ -z "$ch" ] && ch="7.1"
+  if [ -z "$dev" ]; then
+    err "No HDMI ALSA device detected and none given (see 'devices')."
+    exit 1
+  fi
+  case "$ch" in
+    5.1|7.1|stereo) : ;;
+    *) err "channels must be one of: stereo 5.1 7.1  (got '$ch')"; exit 1 ;;
+  esac
+  write_frag_lpcm "$dev" "$ch"
+  add_block
+  save_state lpcm "$dev" "$ch"
+  echo "multichannel LPCM passthrough ON  ->  $dev  (channels $ch,5.1,stereo)"
+  echo "  Restart mpv to pick up the new config."
+}
+
+cmd_off() {
+  need_root "$@"
+  strip_block
+  load_state
+  save_state off "$STATE_DEVICE" "$STATE_CHANNELS"
+  echo "passthrough OFF. mpv reverted to base config. ($FRAG left in place, unused.)"
+  echo "  (IEC958 PipeWire advertise unchanged; 'codecs off' to remove that too.)"
+}
+
+cmd_set_device() {
+  need_root "$@"
+  local dev="${1:-}"
+  [ -z "$dev" ] && { err "usage: set-device <ALSA-PCM>   (see 'devices')"; exit 1; }
+  load_state
+  save_state "$STATE_MODE" "$dev" "$STATE_CHANNELS"
+  echo "persisted device: $dev"
+  # if a mode is active, rewrite the fragment against the new device
+  case "$STATE_MODE" in
+    bitstream) write_frag_bitstream "$dev"; echo "  re-applied bitstream fragment." ;;
+    lpcm)      write_frag_lpcm "$dev" "$STATE_CHANNELS"; echo "  re-applied lpcm fragment." ;;
+  esac
+}
+
+cmd_test() {
+  h96_banner "A U D I O   P A S S T H R O U G H"
+  local rc=0 dev; dev="$(resolve_device)"
+  echo "1) mpv present:            $(have mpv && echo yes || { echo NO; rc=1; })"
+  if have mpv; then
+    if mpv --audio-spdif=help 2>&1 | grep -qiE 'ac3|dts' \
+       || mpv --list-options 2>/dev/null | grep -q -- '--audio-spdif'; then
+      echo "2) mpv --audio-spdif:      supported"
+    else
+      echo "2) mpv --audio-spdif:      UNKNOWN (option not advertised) "; rc=1
+    fi
+  fi
+  echo "3) HDMI PCM detected:      ${dev:-NONE}"
+  [ -z "$dev" ] && rc=1
+  if [ -n "$dev" ] && have speaker-test; then
+    echo "4) device opens (1ch, 1s): trying $dev ..."
+    if timeout 3 speaker-test -D "$dev" -c 2 -l 1 -t sine >/dev/null 2>&1; then
+      echo "   -> opened OK"
+    else
+      echo "   -> could NOT open (device busy, or needs the receiver connected)"; rc=1
+    fi
+  else
+    echo "4) device open test:       skipped (need alsa-utils speaker-test)"
+  fi
+  echo "5) PipeWire HDMI node:     $(have wpctl && (wpctl status 2>/dev/null | grep -qi hdmi && echo present || echo 'not listed') || echo 'wpctl absent')"
+  echo
+  if [ "$rc" -eq 0 ]; then echo "PASS (baseline). Real confirmation is on the receiver -- box-test."
+  else echo "Some checks failed; see above. Feature may be partially/unsupported here."; fi
+  return "$rc"
+}
+
+usage() {
+  cat <<EOF
+h96-audio-passthrough -- HDMI bitstream / multichannel LPCM to an AV receiver
+
+  status              (default) show detected device, mode, mpv + PW state
+  devices             list ALSA HDMI/IEC958 PCMs and PipeWire HDMI sinks
+  bitstream [DEV]     enable AC3/DTS/EAC3 compressed passthrough
+  lpcm [DEV] [CH]     enable multichannel LPCM (CH = stereo|5.1|7.1, default 7.1)
+  off                 disable passthrough, revert mpv to base config
+  set-device DEV      persist the HDMI ALSA device (see 'devices')
+  codecs on|off       (un)advertise IEC958 codecs on the PipeWire HDMI node
+  test                probe mpv spdif support + device open + PW node
+
+DEV example:  hdmi:CARD=rockchiphdmi0,DEV=0
+EOF
+}
+
+main() {
+  local cmd="${1:-status}"; shift || true
+  case "$cmd" in
+    status|"")     cmd_status ;;
+    devices|list)  cmd_devices ;;
+    bitstream|bs)  enable_bitstream "$@" ;;
+    lpcm|pcm)      enable_lpcm "$@" ;;
+    off|disable)   cmd_off "$@" ;;
+    set-device)    cmd_set_device "$@" ;;
+    codecs)        case "${1:-}" in
+                     on)  codecs_on ;;
+                     off) codecs_off ;;
+                     *)   err "usage: codecs on|off"; exit 1 ;;
+                   esac ;;
+    test)          cmd_test ;;
+    -h|--help|help) usage ;;
+    *)             err "unknown command: $cmd"; usage; exit 1 ;;
+  esac
+}
+
+main "$@"

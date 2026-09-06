@@ -1,0 +1,2 @@
+# Flat / EQ off. Sink stays active as the default; no gain applied.
+Preamp: 0 dB

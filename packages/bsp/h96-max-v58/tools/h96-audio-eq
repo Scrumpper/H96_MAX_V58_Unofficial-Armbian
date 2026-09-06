@@ -1,0 +1,491 @@
+#!/bin/bash
+# /usr/local/bin/h96-audio-eq
+#
+# System-wide parametric EQ (+ optional headphone crossfeed) for PipeWire on
+# the H96 Max V58 (RK3588). Native path: libpipewire-module-filter-chain with
+# the builtin `param_eq` node reading an AutoEQ / APO ParametricEQ.txt preset.
+# No extra runtime package required (filter-chain ships with PipeWire).
+#
+# The EQ is a virtual sink (effect_input.h96eq). `enable` makes it the default
+# sink so ALL apps route through it; its passive playback side is pinned to the
+# detected hardware sink (HDMI) so there is no feedback loop. Default routing is
+# stored by WirePlumber and survives reboot.
+#
+# Presets are plain AutoEQ text files in /etc/h96/eq/presets/*.txt . Drop an
+# AutoEQ / Squiglink headphone file or a Room-EQ-Wizard "Generic / APO" export
+# in there and it becomes selectable. Convolver (WAV impulse response) presets
+# are supported too: a *.wav in the preset dir is loaded via the builtin
+# `convolver` node instead of param_eq.
+set -u
+
+# ---- Scrumpper's theme banner (TTY-gated) -----------------------------------
+[ -r /usr/local/lib/h96/banner.sh ] && . /usr/local/lib/h96/banner.sh
+command -v h96_banner >/dev/null 2>&1 || h96_banner() { :; }
+
+# ---- paths ------------------------------------------------------------------
+EQ_DIR=/etc/h96/eq
+PRESET_DIR="$EQ_DIR/presets"
+ACTIVE_EQ="$EQ_DIR/active.txt"          # rendered AutoEQ file consumed by param_eq
+ACTIVE_IR="$EQ_DIR/active.wav"          # active convolver impulse response
+STATE="$EQ_DIR/state"                   # key=value runtime state
+PW_CONF=/etc/pipewire/pipewire.conf.d/90-h96-eq.conf
+SINK_NODE="effect_input.h96eq"          # the sink apps see
+OUT_NODE="effect_output.h96eq"          # passive playback into hardware
+SINK_DESC="H96 EQ Sink"
+
+# ---- privilege + user-bus helpers -------------------------------------------
+# /etc writes need root; PipeWire is a per-user service so systemctl --user and
+# wpctl must run in the desktop user's session bus. Detect that user (uid 1000
+# per the image convention; never hardcode the name).
+DESK_UID=1000
+DESK_USER="$(getent passwd "$DESK_UID" 2>/dev/null | cut -d: -f1)"
+RUNDIR="/run/user/$DESK_UID"
+
+_sudo() { if [ "$(id -u)" -eq 0 ]; then "$@"; else sudo "$@"; fi; }
+
+# run a command inside the desktop user's session (for wpctl / systemctl --user)
+user_run() {
+    if [ "$(id -u)" -eq "$DESK_UID" ]; then
+        "$@"
+    elif [ "$(id -u)" -eq 0 ] && [ -n "$DESK_USER" ]; then
+        sudo -u "$DESK_USER" \
+            XDG_RUNTIME_DIR="$RUNDIR" \
+            DBUS_SESSION_BUS_ADDRESS="unix:path=$RUNDIR/bus" \
+            PIPEWIRE_RUNTIME_DIR="$RUNDIR" "$@"
+    else
+        # some other non-root user: best effort with our own bus
+        "$@"
+    fi
+}
+
+have() { command -v "$1" >/dev/null 2>&1; }
+
+# ---- state ------------------------------------------------------------------
+st_get() { # st_get key default
+    local k="$1" d="${2:-}"
+    [ -r "$STATE" ] || { printf '%s' "$d"; return; }
+    local v; v="$(grep -E "^$k=" "$STATE" 2>/dev/null | tail -1 | cut -d= -f2-)"
+    [ -n "$v" ] && printf '%s' "$v" || printf '%s' "$d"
+}
+st_set() { # st_set key value
+    local k="$1" v="$2" tmp
+    _sudo mkdir -p "$EQ_DIR"
+    tmp="$(mktemp)"
+    [ -r "$STATE" ] && _sudo cat "$STATE" 2>/dev/null | grep -vE "^$k=" > "$tmp"
+    printf '%s=%s\n' "$k" "$v" >> "$tmp"
+    _sudo cp "$tmp" "$STATE"; rm -f "$tmp"
+}
+
+# ---- pipewire introspection (python3, no jq dependency) ---------------------
+# name -> node id
+pw_id_by_name() {
+    local name="$1" dump t
+    dump="$(user_run pw-dump 2>/dev/null)" || return 1
+    # Data via a FILE arg, program via the heredoc. `python3 - <<PY` reads the
+    # PROGRAM from stdin, so the old `... | python3 - <<PY` fed the JSON to the
+    # same stdin the heredoc owns; python got an empty stdin and every lookup
+    # failed. That is why enable could never detect a sink. (box-found, box-fixed)
+    t="$(mktemp)"; printf '%s' "$dump" > "$t"
+    python3 - "$t" "$name" <<'PY' 2>/dev/null
+import sys, json
+name = sys.argv[2]
+try:
+    data = json.load(open(sys.argv[1]))
+except Exception:
+    sys.exit(1)
+for o in data:
+    if o.get("type") != "PipeWire:Interface:Node":
+        continue
+    p = (o.get("info") or {}).get("props") or {}
+    if p.get("node.name") == name:
+        print(o.get("id")); break
+PY
+    rm -f "$t"
+}
+
+# find the best real hardware sink node.name (Audio/Sink, alsa_output.*, prefer hdmi)
+pw_hw_sink_name() {
+    local t; t="$(mktemp)"; user_run pw-dump 2>/dev/null > "$t"
+    python3 - "$t" <<'PY' 2>/dev/null
+import sys, json
+try:
+    data = json.load(open(sys.argv[1]))
+except Exception:
+    sys.exit(1)
+cands = []
+for o in data:
+    if o.get("type") != "PipeWire:Interface:Node":
+        continue
+    p = (o.get("info") or {}).get("props") or {}
+    if p.get("media.class") != "Audio/Sink":
+        continue
+    n = p.get("node.name","")
+    if not n.startswith("alsa_output"):   # real ALSA device only
+        continue
+    score = 0
+    blob = (n + " " + str(p.get("node.description",""))).lower()
+    if "hdmi" in blob: score += 10
+    cands.append((score, n))
+cands.sort(reverse=True)
+if cands: print(cands[0][1])
+PY
+    rm -f "$t"
+}
+
+pw_default_sink_name() {
+    local t; t="$(mktemp)"; user_run pw-dump 2>/dev/null > "$t"
+    python3 - "$t" <<'PY' 2>/dev/null
+import sys, json
+try:
+    data = json.load(open(sys.argv[1]))
+except Exception:
+    sys.exit(1)
+name = None
+for o in data:
+    if o.get("type") != "PipeWire:Interface:Metadata": continue
+    for m in o.get("metadata") or []:
+        if m.get("key") == "default.audio.sink":
+            v = m.get("value")
+            if isinstance(v, dict): name = v.get("name")
+            elif isinstance(v, str):
+                try: name = json.loads(v).get("name")
+                except Exception: name = v
+if name: print(name)
+PY
+    rm -f "$t"
+}
+
+# ---- config generation ------------------------------------------------------
+# Emit the filter.graph nodes/links for the active preset + crossfeed toggle,
+# then the full module config. Written to PW_CONF.
+gen_conf() {
+    local preset ptype crossfeed nodes links inputs outputs
+    preset="$(st_get preset flat)"
+    crossfeed="$(st_get crossfeed off)"
+    ptype="$(st_get ptype eq)"   # eq | convolver
+
+    if [ "$ptype" = convolver ]; then
+        # Stereo convolver: same IR both channels (channel = auto). One node,
+        # In/Out are mono, so we instance one convolver per channel.
+        nodes='        {
+          type = builtin, name = irL, label = convolver
+          config = { filename = "'"$ACTIVE_IR"'", channel = 0, gain = 1.0 }
+        }
+        {
+          type = builtin, name = irR, label = convolver
+          config = { filename = "'"$ACTIVE_IR"'", channel = 1, gain = 1.0 }
+        }'
+        inputs='[ "irL:In" "irR:In" ]'
+        local eqOut1='irL:Out' eqOut2='irR:Out'
+        links=''
+    else
+        # param_eq: one node, both channels, reads AutoEQ text file.
+        nodes='        {
+          type = builtin, name = eq, label = param_eq
+          config = { filename = "'"$ACTIVE_EQ"'" }
+        }'
+        inputs='[ "eq:In 1" "eq:In 2" ]'
+        local eqOut1='eq:Out 1' eqOut2='eq:Out 2'
+        links=''
+    fi
+
+    if [ "$crossfeed" = on ]; then
+        # EXPERIMENTAL simple crossfeed (Chu-Moy style): each ear gets its own
+        # signal plus a low-passed, attenuated copy of the opposite channel.
+        nodes="$nodes
+        { type = builtin, name = lpL, label = bq_lowpass, control = { \"Freq\" = 700, \"Q\" = 0.707 } }
+        { type = builtin, name = lpR, label = bq_lowpass, control = { \"Freq\" = 700, \"Q\" = 0.707 } }
+        { type = builtin, name = mixL, label = mixer, control = { \"Gain 1\" = 1.0, \"Gain 2\" = 0.45 } }
+        { type = builtin, name = mixR, label = mixer, control = { \"Gain 1\" = 1.0, \"Gain 2\" = 0.45 } }"
+        links="          { output = \"$eqOut1\" input = \"lpL:In\" }
+          { output = \"$eqOut2\" input = \"lpR:In\" }
+          { output = \"$eqOut1\" input = \"mixL:In 1\" }
+          { output = \"lpR:Out\" input = \"mixL:In 2\" }
+          { output = \"$eqOut2\" input = \"mixR:In 1\" }
+          { output = \"lpL:Out\" input = \"mixR:In 2\" }"
+        outputs='[ "mixL:Out" "mixR:Out" ]'
+    else
+        outputs='[ "'"$eqOut1"'" "'"$eqOut2"'" ]'
+    fi
+
+    # Pin passive playback to the detected hardware sink so it never loops back
+    # into this (default) virtual sink. Empty target => rely on session manager.
+    local target="$(st_get target '')"
+    local target_line=''
+    [ -n "$target" ] && target_line="        target.object = \"$target\""
+
+    cat <<EOF
+# 90-h96-eq.conf  --  H96 Max V58 system EQ (generated by h96-audio-eq)
+# preset=$preset  type=$ptype  crossfeed=$crossfeed
+context.modules = [
+  {
+    name = libpipewire-module-filter-chain
+    args = {
+      node.description = "$SINK_DESC"
+      media.name       = "$SINK_DESC"
+      filter.graph = {
+        nodes = [
+$nodes
+        ]
+        links = [
+$links
+        ]
+        inputs  = $inputs
+        outputs = $outputs
+      }
+      audio.channels = 2
+      audio.position = [ FL FR ]
+      capture.props = {
+        node.name    = "$SINK_NODE"
+        node.description = "$SINK_DESC"
+        media.class  = "Audio/Sink"
+        audio.channels = 2
+        audio.position = [ FL FR ]
+      }
+      playback.props = {
+        node.name    = "$OUT_NODE"
+        node.passive = true
+        audio.channels = 2
+        audio.position = [ FL FR ]
+$target_line
+      }
+    }
+  }
+]
+EOF
+}
+
+write_conf() {
+    _sudo mkdir -p "$(dirname "$PW_CONF")"
+    local tmp; tmp="$(mktemp)"
+    gen_conf > "$tmp" || { rm -f "$tmp"; return 1; }
+    _sudo cp "$tmp" "$PW_CONF"; rm -f "$tmp"
+}
+
+# ---- preset rendering -------------------------------------------------------
+# Resolve a preset name to a source file; set state ptype and copy into place.
+render_preset() {
+    local name="$1" src
+    _sudo mkdir -p "$EQ_DIR"
+    if [ -f "$PRESET_DIR/$name.txt" ]; then
+        src="$PRESET_DIR/$name.txt"
+        _sudo cp "$src" "$ACTIVE_EQ"
+        st_set ptype eq
+    elif [ -f "$PRESET_DIR/$name.wav" ]; then
+        src="$PRESET_DIR/$name.wav"
+        _sudo cp "$src" "$ACTIVE_IR"
+        st_set ptype convolver
+    elif [ "$name" = flat ]; then
+        printf 'Preamp: 0 dB\n' | _sudo tee "$ACTIVE_EQ" >/dev/null
+        st_set ptype eq
+    else
+        echo "h96-audio-eq: no preset '$name' (see: h96-audio-eq list)" >&2
+        return 1
+    fi
+    st_set preset "$name"
+}
+
+# ---- pipewire reload --------------------------------------------------------
+reload_pw() {
+    # Reload the config by bouncing the user PipeWire stack. param_eq/convolver
+    # read their files at module load, so a restart is required after load.
+    if ! user_run systemctl --user restart pipewire.service \
+                                       pipewire-pulse.service \
+                                       wireplumber.service 2>/dev/null; then
+        echo "h96-audio-eq: WARN could not restart user PipeWire services;" >&2
+        echo "  run 'systemctl --user restart pipewire wireplumber' in the desktop session." >&2
+        return 1
+    fi
+    # wait for our sink to appear (up to ~6s)
+    local i
+    for i in $(seq 1 24); do
+        [ -n "$(pw_id_by_name "$SINK_NODE")" ] && return 0
+        sleep 0.25
+    done
+    return 0
+}
+
+set_default_sink() { # set_default_sink <node.name>
+    local id; id="$(pw_id_by_name "$1")"
+    [ -z "$id" ] && return 1
+    user_run wpctl set-default "$id" >/dev/null 2>&1
+}
+
+# ---- preflight --------------------------------------------------------------
+preflight() {
+    if ! have pw-dump || ! have wpctl; then
+        echo "h96-audio-eq: PipeWire tools (pw-dump/wpctl) not found. This image" >&2
+        echo "  ships PipeWire; if missing, install 'pipewire' + 'wireplumber'." >&2
+        return 1
+    fi
+    if [ -z "$(user_run pw-dump 2>/dev/null)" ]; then
+        echo "h96-audio-eq: no live PipeWire session for uid $DESK_UID." >&2
+        echo "  Log in to the desktop first, or run this as the desktop user." >&2
+        return 1
+    fi
+    return 0
+}
+
+# ---- commands ---------------------------------------------------------------
+cmd_list() {
+    h96_banner "A U D I O   E Q"
+    echo "Presets (/etc/h96/eq/presets):"
+    printf '  %-18s built-in flat (EQ off, sink still active)\n' flat
+    local f n
+    if [ -d "$PRESET_DIR" ]; then
+        for f in "$PRESET_DIR"/*.txt "$PRESET_DIR"/*.wav; do
+            [ -e "$f" ] || continue
+            n="$(basename "$f")"; n="${n%.*}"
+            case "$f" in
+                *.wav) printf '  %-18s convolver IR (%s)\n' "$n" "$(basename "$f")" ;;
+                *)     printf '  %-18s param_eq  (%s)\n' "$n" "$(basename "$f")" ;;
+            esac
+        done
+    fi
+    echo
+    echo "Load:      h96-audio-eq load <name>"
+    echo "Add your own: drop an AutoEQ/REW .txt (or IR .wav) in $PRESET_DIR"
+}
+
+cmd_status() {
+    h96_banner "A U D I O   E Q"
+    local enabled preset ptype cf def
+    enabled="$(st_get enabled 0)"
+    preset="$(st_get preset flat)"
+    ptype="$(st_get ptype eq)"
+    cf="$(st_get crossfeed off)"
+    echo "config file : $PW_CONF $( [ -f "$PW_CONF" ] && echo '(installed)' || echo '(absent)')"
+    echo "enabled     : $( [ "$enabled" = 1 ] && echo yes || echo no)"
+    echo "preset      : $preset ($ptype)"
+    echo "crossfeed   : $cf"
+    if preflight 2>/dev/null; then
+        def="$(pw_default_sink_name)"
+        echo "default sink: ${def:-unknown}"
+        if [ "$def" = "$SINK_NODE" ]; then
+            echo "  -> audio is routing through the H96 EQ sink."
+        else
+            echo "  -> EQ sink is NOT the default; run: h96-audio-eq enable"
+        fi
+        echo "hw sink     : $(pw_hw_sink_name)"
+    else
+        echo "(PipeWire session not queryable from here)"
+    fi
+}
+
+cmd_enable() {
+    preflight || return 1
+    local hw; hw="$(pw_hw_sink_name)"
+    if [ -z "$hw" ]; then
+        # fall back to whatever is currently default, if it is not our sink
+        local d; d="$(pw_default_sink_name)"
+        [ "$d" != "$SINK_NODE" ] && hw="$d"
+    fi
+    if [ -z "$hw" ]; then
+        echo "h96-audio-eq: could not detect a hardware output sink." >&2
+        echo "  Passive playback will rely on the session manager (may loop)." >&2
+    else
+        st_set target "$hw"
+        echo "routing EQ output -> $hw"
+    fi
+    # ensure a preset is rendered
+    [ -f "$ACTIVE_EQ" ] || [ -f "$ACTIVE_IR" ] || render_preset "$(st_get preset flat)"
+    write_conf || { echo "h96-audio-eq: failed to write $PW_CONF" >&2; return 1; }
+    reload_pw
+    if set_default_sink "$SINK_NODE"; then
+        st_set enabled 1
+        echo "H96 EQ sink is now the default output. Preset: $(st_get preset flat)"
+    else
+        echo "h96-audio-eq: EQ sink did not appear. Check: journalctl --user -u pipewire" >&2
+        echo "  (config left in place at $PW_CONF; run 'h96-audio-eq disable' to revert)" >&2
+        return 1
+    fi
+}
+
+cmd_disable() {
+    local purge=0
+    [ "${1:-}" = "--purge" ] && purge=1
+    if preflight 2>/dev/null; then
+        local hw; hw="$(pw_hw_sink_name)"
+        [ -n "$hw" ] && set_default_sink "$hw" && echo "default sink restored -> $hw"
+    fi
+    _sudo rm -f "$PW_CONF"
+    st_set enabled 0
+    reload_pw 2>/dev/null
+    if [ "$purge" = 1 ]; then
+        _sudo rm -f "$ACTIVE_EQ" "$ACTIVE_IR"
+        echo "purged active EQ/IR files."
+    fi
+    echo "EQ disabled; virtual sink removed."
+}
+
+cmd_load() {
+    local name="${1:-}"
+    [ -z "$name" ] && { echo "usage: h96-audio-eq load <preset>"; return 1; }
+    render_preset "$name" || return 1
+    echo "loaded preset: $name"
+    if [ "$(st_get enabled 0)" = 1 ]; then
+        write_conf; reload_pw; set_default_sink "$SINK_NODE"
+        echo "applied live."
+    else
+        echo "(EQ not enabled; run: h96-audio-eq enable)"
+    fi
+}
+
+cmd_crossfeed() {
+    case "${1:-}" in
+        on|off) st_set crossfeed "$1"; echo "crossfeed: $1 (experimental)";;
+        *) echo "usage: h96-audio-eq crossfeed on|off"; return 1;;
+    esac
+    if [ "$(st_get enabled 0)" = 1 ]; then
+        write_conf; reload_pw; set_default_sink "$SINK_NODE"; echo "applied live."
+    fi
+}
+
+cmd_easyeffects() {
+    echo "Optional GUI EQ (EasyEffects) via Flatpak. This fetches over the"
+    echo "internet and is independent of the native filter-chain path above."
+    if ! have flatpak; then
+        echo "flatpak not installed. Install with: sudo apt-get install flatpak" >&2
+        return 1
+    fi
+    echo "Installing com.github.wwmm.easyeffects (Flathub, aarch64)..."
+    flatpak remote-add --if-not-exists flathub \
+        https://flathub.org/repo/flathub.flatpakrepo 2>/dev/null
+    if flatpak install -y flathub com.github.wwmm.easyeffects; then
+        echo "Done. Launch: flatpak run com.github.wwmm.easyeffects"
+        echo "NOTE: run EasyEffects OR h96-audio-eq's filter-chain, not both on"
+        echo "the same sink. Disable the native EQ first: h96-audio-eq disable"
+    else
+        echo "EasyEffects install failed (arch/Flathub availability)." >&2
+        return 1
+    fi
+}
+
+usage() {
+    h96_banner "A U D I O   E Q"
+    cat <<EOF
+System-wide parametric EQ (+ optional crossfeed) on PipeWire.
+
+  h96-audio-eq status              show state / routing
+  h96-audio-eq list                list presets
+  h96-audio-eq load <preset>       select a preset (AutoEQ .txt or IR .wav)
+  h96-audio-eq enable              make the EQ sink the default output
+  h96-audio-eq disable [--purge]   revert to hardware sink (--purge drops files)
+  h96-audio-eq crossfeed on|off    toggle experimental headphone crossfeed
+  h96-audio-eq easyeffects-install optional Flatpak GUI EQ (fetches online)
+
+Presets live in $PRESET_DIR ; drop AutoEQ/Squiglink/REW files there.
+EOF
+}
+
+case "${1:-}" in
+    status|"")      cmd_status ;;
+    list|ls)        cmd_list ;;
+    load|preset)    shift; cmd_load "$@" ;;
+    enable|on)      cmd_enable ;;
+    disable|off)    shift; cmd_disable "$@" ;;
+    crossfeed)      shift; cmd_crossfeed "$@" ;;
+    easyeffects-install|easyeffects) cmd_easyeffects ;;
+    help|-h|--help) usage ;;
+    *) echo "h96-audio-eq: unknown command '$1'"; usage; exit 1 ;;
+esac

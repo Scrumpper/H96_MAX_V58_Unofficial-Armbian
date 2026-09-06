@@ -1,0 +1,16 @@
+[Unit]
+# H96 Max V58 - route Bluetooth SCO (HFP voice) audio over HCI on the Broadcom
+# BCM4362A2 UART controller, so the headset microphone carries data.
+# Broadcom vendor command 0xFC1C, byte0 = 0x01 = Transport (HCI). Install to
+# /etc/systemd/system/ and: systemctl enable bt-sco-hci.service
+Description=H96 route Bluetooth SCO audio over HCI (Broadcom VSC 0xFC1C)
+After=bluetooth.service
+Wants=bluetooth.service
+
+[Service]
+Type=oneshot
+ExecStartPre=/bin/sh -c "for i in $(seq 1 20); do [ -e /sys/class/bluetooth/hci0 ] && exit 0; sleep 0.5; done"
+ExecStart=/usr/bin/hcitool -i hci0 cmd 0x3f 0x1c 0x01 0x00 0x00 0x00 0x00
+
+[Install]
+WantedBy=multi-user.target

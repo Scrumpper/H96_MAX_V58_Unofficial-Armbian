@@ -1,0 +1,8 @@
+# Dialogue / speech intelligibility boost for movies and TV. Rolls down
+# rumble with a low shelf, lifts the vocal presence band, tames sibilance.
+Preamp: -2.0 dB
+Filter 1: ON LSC Fc 90 Hz Gain -4.0 dB Q 0.707
+Filter 2: ON PK Fc 250 Hz Gain -2.0 dB Q 1.00
+Filter 3: ON PK Fc 2000 Hz Gain 3.0 dB Q 1.20
+Filter 4: ON PK Fc 3500 Hz Gain 2.5 dB Q 1.40
+Filter 5: ON PK Fc 7000 Hz Gain -2.0 dB Q 2.00

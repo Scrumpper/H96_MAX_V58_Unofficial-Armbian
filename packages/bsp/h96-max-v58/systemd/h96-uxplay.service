@@ -1,0 +1,23 @@
+# h96-uxplay.service - AirPlay screen/video mirroring receiver -> HDMI
+# TEMPLATE. Placeholders __DESKTOP_USER__ __UID__ __HOME__ substituted by
+# h96-cast at 'enable'. Needs X11 DISPLAY + PipeWire session of desktop user.
+[Unit]
+Description=h96 AirPlay screen mirroring receiver (uxplay -> HDMI)
+Documentation=https://github.com/FDH2/UxPlay
+After=network-online.target avahi-daemon.service graphical.target sound.target
+Wants=network-online.target avahi-daemon.service
+
+[Service]
+User=__DESKTOP_USER__
+Group=__DESKTOP_USER__
+Environment=XDG_RUNTIME_DIR=/run/user/__UID__
+Environment=PULSE_SERVER=unix:/run/user/__UID__/pulse/native
+Environment=DISPLAY=:0
+Environment=XAUTHORITY=__HOME__/.Xauthority
+ExecStartPre=/bin/sh -c 'for i in $(seq 1 30); do [ -S /run/user/__UID__/pulse/native ] && exit 0; sleep 1; done; exit 0'
+ExecStart=/usr/bin/uxplay -n "H96 Max V58" -nh -fs -as pulsesink
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

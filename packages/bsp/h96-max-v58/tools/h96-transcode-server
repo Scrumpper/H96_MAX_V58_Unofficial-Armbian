@@ -1,0 +1,166 @@
+#!/bin/bash
+# =============================================================================
+# h96-transcode-server - network hardware transcode node for the H96 Max V58.
+#
+# Drop a video file into the IN dir (over SFTP/SSH, or a Samba/NFS share of it);
+# the daemon hardware-transcodes it on the RK3588 VPU (rkmpp: hw decode + hw
+# encode, ~7x realtime for 1080p) and writes the result to the OUT dir. The CPU
+# stays almost idle. NOT an AI upscaler - this is the codec engine, which is the
+# one part of this box that is genuinely fast.
+#
+# OPT-IN: nothing runs until you enable it. Ships disabled; no extra packages (uses
+# the image's rkmpp ffmpeg + /dev/mpp_service), so it adds no weight until turned on.
+#   sudo h96-transcode-server enable    create the folders + start the watch service
+#   sudo h96-transcode-server disable   stop it (kept files under /srv stay)
+#   h96-transcode-server status     dirs, config, service state, recent jobs
+#   h96-transcode-server logs       tail the job log
+#   h96-transcode-server once IN OUT   transcode a single file now (no service)
+#   h96-transcode-server daemon     the watch loop itself (systemd runs this)
+#
+# Config: /etc/h96/transcode.conf  (codec, bitrate, container, scale, dirs).
+# Folders default under /srv/h96-transcode so they are easy to Samba/NFS export.
+# =============================================================================
+set -uo pipefail
+
+CONF=/etc/h96/transcode.conf
+LOG=/var/log/h96-transcode.log
+
+# ---- defaults (overridden by CONF) -----------------------------------------
+ROOT=/srv/h96-transcode
+IN_DIR=""; OUT_DIR=""; DONE_DIR=""; FAIL_DIR=""
+CODEC=hevc            # hevc | h264 | mjpeg
+BITRATE=6M
+CONTAINER=mp4         # output container/extension
+SCALE=""             # e.g. 1280x720 to downscale, empty = keep source size
+HWDEC=1              # 1 = try rkmpp hardware decode first
+POLL=3               # seconds between scans
+KEEP_SOURCE=1        # 1 = move original to done/ ; 0 = delete it
+
+[ -r "$CONF" ] && . "$CONF"
+IN_DIR="${IN_DIR:-$ROOT/in}"; OUT_DIR="${OUT_DIR:-$ROOT/out}"
+DONE_DIR="${DONE_DIR:-$ROOT/done}"; FAIL_DIR="${FAIL_DIR:-$ROOT/failed}"
+
+case "$CODEC" in
+    hevc|h265) ENC=hevc_rkmpp ;;
+    h264)      ENC=h264_rkmpp ;;
+    mjpeg)     ENC=mjpeg_rkmpp ;;
+    *) echo "h96-transcode-server: unknown CODEC '$CODEC'" >&2; exit 1 ;;
+esac
+
+log() { printf '%s %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*" | tee -a "$LOG"; }
+
+ensure_dirs() { mkdir -p "$IN_DIR" "$OUT_DIR" "$DONE_DIR" "$FAIL_DIR"; }
+
+is_video() {
+    case "${1,,}" in
+        *.mp4|*.mkv|*.mov|*.avi|*.m4v|*.ts|*.webm|*.flv|*.wmv|*.mpg|*.mpeg|*.m2ts|*.3gp) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+# a file is "ready" when its size has not changed across one poll (upload done)
+stable() {
+    local f="$1" a b
+    a=$(stat -c%s "$f" 2>/dev/null) || return 1
+    sleep "$POLL"
+    b=$(stat -c%s "$f" 2>/dev/null) || return 1
+    [ "$a" = "$b" ] && [ "$a" -gt 0 ]
+}
+
+# transcode $1 -> $2 with layered fallback (hw dec+enc -> sw dec+hw enc; audio
+# copy -> aac). Prints nothing; returns 0 on success.
+transcode() {
+    # Temp file keeps the OUTPUT extension (e.g. foo.part.mp4): ffmpeg picks the
+    # muxer from the extension, so a bare "foo.mp4.part" makes it fail with
+    # "Unable to find a suitable output format". Rename to the final name on success.
+    local src="$1" out="$2" tmp="${2%.*}.part.${2##*.}" vf=()
+    [ -n "$SCALE" ] && vf=(-vf "scale=${SCALE/x/:}")
+    local base=(-hide_banner -nostdin -loglevel error -y)
+    local enc=(-c:v "$ENC" -b:v "$BITRATE")
+    # 1: hw decode + hw encode, copy audio
+    if [ "$HWDEC" = 1 ] && ffmpeg "${base[@]}" -hwaccel rkmpp -i "$src" "${vf[@]}" "${enc[@]}" -c:a copy "$tmp"; then
+        mv -f "$tmp" "$out"; return 0
+    fi
+    # 2: sw decode + hw encode, copy audio
+    if ffmpeg "${base[@]}" -i "$src" "${vf[@]}" "${enc[@]}" -c:a copy "$tmp"; then
+        mv -f "$tmp" "$out"; return 0
+    fi
+    # 3: sw decode + hw encode, re-encode audio to AAC (container incompatibility)
+    if ffmpeg "${base[@]}" -i "$src" "${vf[@]}" "${enc[@]}" -c:a aac -b:a 192k "$tmp"; then
+        mv -f "$tmp" "$out"; return 0
+    fi
+    rm -f "$tmp"; return 1
+}
+
+process_one() {
+    local src="$1" name base out t0 t1 dur
+    name="$(basename "$src")"; base="${name%.*}"
+    out="$OUT_DIR/${base}.${CONTAINER}"
+    # avoid clobbering an existing result
+    [ -e "$out" ] && out="$OUT_DIR/${base}.$(date +%s).${CONTAINER}"
+    log "START $name -> $(basename "$out")  ($CODEC $BITRATE${SCALE:+ scale=$SCALE})"
+    t0=$SECONDS
+    if transcode "$src" "$out"; then
+        t1=$SECONDS; dur=$((t1 - t0))
+        local isz osz; isz=$(stat -c%s "$src"); osz=$(stat -c%s "$out" 2>/dev/null || echo 0)
+        log "OK    $name  ${dur}s  ${isz}->${osz} bytes"
+        if [ "$KEEP_SOURCE" = 1 ]; then mv -f "$src" "$DONE_DIR/"; else rm -f "$src"; fi
+    else
+        log "FAIL  $name (all ffmpeg attempts failed) -> failed/"
+        mv -f "$src" "$FAIL_DIR/" 2>/dev/null || true
+    fi
+}
+
+daemon() {
+    ensure_dirs
+    command -v ffmpeg >/dev/null || { log "ffmpeg not found"; exit 1; }
+    [ -e /dev/mpp_service ] || log "WARN /dev/mpp_service missing - hardware encode may be unavailable"
+    log "h96-transcode-server up. watch=$IN_DIR out=$OUT_DIR codec=$CODEC bitrate=$BITRATE poll=${POLL}s"
+    while true; do
+        shopt -s nullglob dotglob
+        for f in "$IN_DIR"/*; do
+            [ -f "$f" ] || continue
+            case "$(basename "$f")" in .*|*.part) continue ;; esac
+            is_video "$f" || { log "SKIP $(basename "$f") (not a recognised video)"; mv -f "$f" "$FAIL_DIR/" 2>/dev/null; continue; }
+            stable "$f" || continue     # still uploading
+            process_one "$f"
+        done
+        shopt -u nullglob dotglob
+        sleep "$POLL"
+    done
+}
+
+svc_state() { systemctl is-active h96-transcode-server.service 2>/dev/null || echo "inactive"; }
+
+status() {
+    echo "h96-transcode-server"
+    echo "  service   : $(svc_state)   ($(systemctl is-enabled h96-transcode-server.service 2>/dev/null || echo disabled))"
+    echo "  codec     : $CODEC ($ENC)  bitrate=$BITRATE  container=$CONTAINER${SCALE:+  scale=$SCALE}  hwdec=$HWDEC"
+    echo "  in    dir : $IN_DIR   ($(ls -1 "$IN_DIR" 2>/dev/null | wc -l) waiting)"
+    echo "  out   dir : $OUT_DIR  ($(ls -1 "$OUT_DIR" 2>/dev/null | wc -l) done)"
+    echo "  done  dir : $DONE_DIR"
+    echo "  failed dir: $FAIL_DIR ($(ls -1 "$FAIL_DIR" 2>/dev/null | wc -l))"
+    echo "  /dev/mpp_service : $([ -e /dev/mpp_service ] && echo present || echo MISSING)"
+    echo "  drop files into IN over SFTP:  sftp root@<box>:$IN_DIR/"
+    echo "  recent jobs:"
+    tail -n 6 "$LOG" 2>/dev/null | sed 's/^/    /' || echo "    (no log yet)"
+}
+
+need_root() { [ "$(id -u)" = 0 ] || { echo "h96-transcode-server: run '$1' with sudo" >&2; exit 1; }; }
+
+case "${1:-status}" in
+    enable)  need_root enable; ensure_dirs
+             systemctl enable --now h96-transcode-server.service
+             echo "h96-transcode-server: ON. Drop videos into $IN_DIR"
+             echo "  over SFTP:  sftp root@<box>:$IN_DIR/    results -> $OUT_DIR"
+             echo "  settings:   $CONF   (codec=$CODEC bitrate=$BITRATE)" ;;
+    disable) need_root disable
+             systemctl disable --now h96-transcode-server.service
+             echo "h96-transcode-server: OFF (files under $ROOT kept)." ;;
+    daemon)  daemon ;;
+    once)    [ $# -ge 3 ] || { echo "usage: h96-transcode-server once IN OUT" >&2; exit 1; }
+             ensure_dirs; transcode "$2" "$3" && echo "ok -> $3" || { echo "transcode failed" >&2; exit 1; } ;;
+    status)  status ;;
+    logs)    tail -f "$LOG" ;;
+    *) echo "usage: h96-transcode-server {enable|disable|status|logs|once IN OUT|daemon}" >&2; exit 1 ;;
+esac

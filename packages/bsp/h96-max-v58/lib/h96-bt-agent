@@ -1,0 +1,183 @@
+#!/usr/bin/env python3
+# h96-bt-agent -- headless "Just Works" BlueZ pairing agent for the H96 Max V58.
+#
+# WHAT THIS DOES
+#   Registers an org.bluez.Agent1 with capability NoInputNoOutput and makes it
+#   the default agent. That capability forces "Just Works" SSP pairing: no PIN,
+#   no passkey confirmation UI. This agent auto-accepts every pairing and
+#   service-authorization request and marks each freshly paired device Trusted,
+#   so a phone can pair to the box with no keyboard/screen on the box and
+#   reconnect later without re-authorizing.
+#
+#   It is deliberately promiscuous: while it runs, ANY device that finds the
+#   box discoverable can pair. h96-bt-speaker starts it only while the box is in
+#   speaker mode and stops it (and drops discoverable) on `off`.
+#
+# SCOPE
+#   Pairing/authorization only. It does NOT set the adapter discoverable/
+#   pairable (h96-bt-speaker does that via bluetoothctl) and does NOT route
+#   audio (h96-bt-loopback does that in the PipeWire session).
+#
+#   Talks to the SYSTEM bus (org.bluez). Runs as root under h96-bt-speaker.
+#
+# Deployed to /usr/local/lib/h96/h96-bt-agent (0755). Not on $PATH by design.
+
+import sys
+
+AGENT_PATH = "/org/h96/btspeaker/agent"
+CAPABILITY = "NoInputNoOutput"
+
+# Audio-relevant service UUIDs we explicitly want authorized. We accept
+# everything anyway (appliance in speaker mode), but these are the ones that
+# matter for A2DP playback + AVRCP transport controls.
+A2DP_SINK   = "0000110b-0000-1000-8000-00805f9b34fb"
+A2DP_SOURCE = "0000110a-0000-1000-8000-00805f9b34fb"
+AVRCP_TG    = "0000110c-0000-1000-8000-00805f9b34fb"
+AVRCP_CT    = "0000110e-0000-1000-8000-00805f9b34fb"
+AV_REMOTE   = "0000110f-0000-1000-8000-00805f9b34fb"
+
+try:
+    import dbus
+    import dbus.service
+    import dbus.mainloop.glib
+    from gi.repository import GLib
+except Exception as e:  # noqa: BLE001
+    sys.stderr.write(
+        "h96-bt-agent: python D-Bus bindings not available (%s).\n"
+        "Install with: sudo apt install -y python3-dbus python3-gi\n" % e
+    )
+    sys.exit(3)
+
+BLUEZ = "org.bluez"
+
+
+def log(msg):
+    sys.stderr.write("h96-bt-agent: %s\n" % msg)
+    sys.stderr.flush()
+
+
+def set_trusted(path):
+    """Mark a device Trusted so future connects skip authorization."""
+    try:
+        bus = dbus.SystemBus()
+        dev = dbus.Interface(
+            bus.get_object(BLUEZ, path),
+            "org.freedesktop.DBus.Properties",
+        )
+        dev.Set("org.bluez.Device1", "Trusted", dbus.Boolean(True))
+        log("trusted %s" % path)
+    except Exception as e:  # noqa: BLE001
+        log("could not set trusted on %s: %s" % (path, e))
+
+
+class Rejected(dbus.DBusException):
+    _dbus_error_name = "org.bluez.Error.Rejected"
+
+
+class Agent(dbus.service.Object):
+    # Signature strings follow the org.bluez Agent1 API.
+
+    @dbus.service.method("org.bluez.Agent1", in_signature="", out_signature="")
+    def Release(self):
+        log("released")
+
+    @dbus.service.method("org.bluez.Agent1", in_signature="os", out_signature="")
+    def AuthorizeService(self, device, uuid):
+        # Accept audio profiles explicitly; accept anything else too while in
+        # speaker mode. Trust the device so it reconnects silently.
+        log("authorize service %s uuid=%s" % (device, uuid))
+        set_trusted(device)
+        return
+
+    @dbus.service.method("org.bluez.Agent1", in_signature="o", out_signature="s")
+    def RequestPinCode(self, device):
+        log("request pincode %s -> 0000" % device)
+        set_trusted(device)
+        return "0000"
+
+    @dbus.service.method("org.bluez.Agent1", in_signature="o", out_signature="u")
+    def RequestPasskey(self, device):
+        log("request passkey %s -> 0" % device)
+        set_trusted(device)
+        return dbus.UInt32(0)
+
+    @dbus.service.method("org.bluez.Agent1", in_signature="ouq", out_signature="")
+    def DisplayPasskey(self, device, passkey, entered):
+        log("display passkey %s %06u entered=%u" % (device, passkey, entered))
+
+    @dbus.service.method("org.bluez.Agent1", in_signature="os", out_signature="")
+    def DisplayPinCode(self, device, pincode):
+        log("display pincode %s %s" % (device, pincode))
+
+    @dbus.service.method("org.bluez.Agent1", in_signature="ou", out_signature="")
+    def RequestConfirmation(self, device, passkey):
+        # Just Works: accept without asking.
+        log("confirm %s passkey=%06u -> accept" % (device, passkey))
+        set_trusted(device)
+        return
+
+    @dbus.service.method("org.bluez.Agent1", in_signature="o", out_signature="")
+    def RequestAuthorization(self, device):
+        log("authorize %s -> accept" % device)
+        set_trusted(device)
+        return
+
+    @dbus.service.method("org.bluez.Agent1", in_signature="", out_signature="")
+    def Cancel(self):
+        log("cancelled")
+
+
+def main():
+    dbus.mainloop.glib.DBusGMainLoop(set_as_default=True)
+    bus = dbus.SystemBus()
+
+    try:
+        Agent(bus, AGENT_PATH)
+    except Exception as e:  # noqa: BLE001
+        log("failed to export agent object: %s" % e)
+        return 1
+
+    try:
+        mgr = dbus.Interface(
+            bus.get_object(BLUEZ, "/org/bluez"), "org.bluez.AgentManager1"
+        )
+        mgr.RegisterAgent(AGENT_PATH, CAPABILITY)
+        mgr.RequestDefaultAgent(AGENT_PATH)
+    except dbus.DBusException as e:
+        name = e.get_dbus_name() if hasattr(e, "get_dbus_name") else ""
+        if "AlreadyExists" in str(name):
+            log("an agent is already registered; another instance running?")
+        else:
+            log("RegisterAgent failed: %s" % e)
+        return 1
+    except Exception as e:  # noqa: BLE001
+        log("RegisterAgent failed: %s" % e)
+        return 1
+
+    log("registered default agent (%s), Just Works pairing armed" % CAPABILITY)
+
+    loop = GLib.MainLoop()
+
+    def _quit(*_a):
+        try:
+            mgr.UnregisterAgent(AGENT_PATH)
+        except Exception:  # noqa: BLE001
+            pass
+        loop.quit()
+        return False
+
+    try:
+        GLib.unix_signal_add(GLib.PRIORITY_HIGH, 15, _quit)  # SIGTERM
+        GLib.unix_signal_add(GLib.PRIORITY_HIGH, 2, _quit)   # SIGINT
+    except Exception:  # noqa: BLE001
+        pass
+
+    try:
+        loop.run()
+    except KeyboardInterrupt:
+        _quit()
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

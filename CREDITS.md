@@ -21,6 +21,23 @@ This board support builds on work of others.
 - **Rockchip RKNPU / RKNN**: NPU driver and `librknnrt` inference runtime.
   Runtime is proprietary and is therefore **not** distributed with this image --
   `h96-npu-setup` fetches it from Rockchip, showing their licence first.
+- **Waydroid**: LXC-based Android-in-a-container runtime driven by `h96-waydroid`.
+  Not bundled; installed on demand from upstream. <https://waydro.id>
+- **LineageOS**: Android system images Waydroid runs, both the official
+  Waydroid LineageOS 20 (Android 13) build and the Panthor-in-image Android 11
+  build used by `h96-waydroid init gpu`. <https://lineageos.org>
+- **Weston** (freedesktop.org reference Wayland compositor): nested compositor
+  `h96-waydroid start` runs inside X11 so Waydroid has a Wayland output.
+- **RetroArch / libretro**, **Dolphin**, **PPSSPP**, **Flycast**, **melonDS**,
+  **Rosalie's Mupen GUI**, **Azahar** and **Cemu**: emulator projects installed by
+  `h96-emulators`. All fetched from upstream on demand; no emulator and no game
+  code is bundled. Bring your own dumps and BIOS.
+- **box64** by ptitSeb: x86-64 to ARM64 translation layer that runs Cemu, which
+  has no ARM build. <https://github.com/ptitSeb/box64>
+- **Flathub** and **Flatpak**: distribution path for the seven native ARM64
+  emulator builds. <https://flathub.org>
+- **mGBA** and **ScummVM**: named in `h96-emulators` as the CPU-rendered systems
+  it deliberately does not install, since both are already packaged for this box.
 - **Armbian community forums**: RK3588 TV-box bring-up discussions that made
   this possible.
 

@@ -1,0 +1,8 @@
+# Re-run the EDID adapt only on a genuine display HOTPLUG (cable plug/unplug).
+# NOT on the plain "change" (modeset) events a desktop emits constantly during
+# startup and mode switches: those carry no HOTPLUG property, and running our
+# script on each one forked i2c reads inside the udev worker (blocking it) many
+# times during KDE first-run. Gating on HOTPLUG=1 fires only on real cable
+# events, and SYSTEMD_WANTS launches the service ASYNCHRONOUSLY so a udev worker
+# is never blocked. The service still debounces (identical EDID = no-op).
+ACTION=="change", SUBSYSTEM=="drm", KERNEL=="card0", ENV{HOTPLUG}=="1", TAG+="systemd", ENV{SYSTEMD_WANTS}+="h96-edid-adapt.service"

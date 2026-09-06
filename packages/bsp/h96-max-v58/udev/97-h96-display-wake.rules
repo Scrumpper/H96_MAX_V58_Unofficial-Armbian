@@ -1,0 +1,4 @@
+# Re-check the HDMI output after a real hotplug (monitor powered back on,
+# cable replugged). HOTPLUG=1 distinguishes hotplug from plain modeset "change"
+# events; SYSTEMD_WANTS keeps the handler async (never blocks udev).
+ACTION=="change", SUBSYSTEM=="drm", KERNEL=="card0", ENV{HOTPLUG}=="1", TAG+="systemd", ENV{SYSTEMD_WANTS}+="h96-display-wake-once.service"

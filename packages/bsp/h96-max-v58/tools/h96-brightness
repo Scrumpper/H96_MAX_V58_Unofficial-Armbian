@@ -1,0 +1,155 @@
+#!/usr/bin/env python3
+"""
+h96-brightness - control a connected monitor's REAL backlight over DDC/CI.
+
+HOW THIS WORKS ON THIS BOX
+--------------------------
+The SoC's HDMI DDC i2c controller never completes a transaction on this kernel
+(root-caused, closed), so the pins' native function is dead. The h96-ddc-i2c-gpio
+device-tree overlay instead exposes those two pins (SCL=GPIO4_B7, SDA=GPIO4_C0) as
+a kernel i2c-gpio bus named "i2c-ddc" at ~100 kHz. ddcutil drives DDC/CI over it,
+which is genuine monitor brightness (VCP 0x10), not a software gamma dim.
+
+Validated 2026-08-25: a Dell P2419H tracks setvcp 30/75/15/60 exactly with visible
+on-screen change. NOTE: this needs a display that honours DDC/CI *writes*. Most PC
+monitors do (enable "DDC/CI" in the OSD if not). Many TVs gate DDC/CI behind an
+HDMI/CEC handshake this box cannot perform, so brightness control will be
+unavailable on those - the tool says so rather than failing silently.
+
+Usage:
+  h96-brightness              show current brightness
+  h96-brightness <0-100>      set brightness
+  h96-brightness up [step]    raise (default step 10)
+  h96-brightness down [step]  lower
+"""
+import argparse
+import os
+import re
+import subprocess
+import sys
+
+sys.path.insert(0, "/usr/local/lib/h96")
+
+BUS_NAME = "i2c-ddc"   # the adapter name our overlay gives the DDC i2c-gpio bus
+VCP_BRIGHTNESS = "10"
+
+
+def banner(sub=""):
+    try:
+        from banner import banner as b
+        b(sub)
+    except Exception:
+        pass
+
+
+def die(m, code=1):
+    print(f"h96-brightness: {m}", file=sys.stderr)
+    sys.exit(code)
+
+
+def find_bus():
+    """Return the i2c bus number of the DDC i2c-gpio adapter, or None."""
+    base = "/sys/class/i2c-dev"
+    try:
+        entries = os.listdir(base)
+    except OSError:
+        return None
+    for e in sorted(entries):
+        try:
+            name = open(f"{base}/{e}/name").read().strip()
+        except OSError:
+            continue
+        if name == BUS_NAME:
+            # e is like "i2c-10"
+            m = re.match(r"i2c-(\d+)$", e)
+            if m:
+                return m.group(1)
+    return None
+
+
+def ddcutil(bus, *args):
+    return subprocess.run(
+        ["ddcutil", "--bus", bus, *args],
+        capture_output=True, text=True, timeout=20,
+    )
+
+
+def get_brightness(bus):
+    """Return (current, maximum) or None if no DDC/CI display answers."""
+    r = ddcutil(bus, "getvcp", VCP_BRIGHTNESS)
+    m = re.search(r"current value\s*=\s*(\d+),\s*max value\s*=\s*(\d+)", r.stdout)
+    if not m:
+        return None
+    return int(m.group(1)), int(m.group(2))
+
+
+def set_brightness(bus, value):
+    r = ddcutil(bus, "setvcp", VCP_BRIGHTNESS, str(value))
+    if re.search(r"Verification failed|DDCRC", r.stdout + r.stderr):
+        die(f"the display did not accept the change (is DDC/CI enabled in its menu?)")
+    return True
+
+
+def require_ddc_display(bus):
+    got = get_brightness(bus)
+    if got is None:
+        die("no DDC/CI display is responding on the DDC bus.\n"
+            "  Monitors: enable 'DDC/CI' in the on-screen menu.\n"
+            "  TVs: most gate DDC/CI behind an HDMI/CEC handshake this box cannot do,\n"
+            "  so real brightness control is not available on them.", code=2)
+    return got
+
+
+def main():
+    if not any(os.path.exists(os.path.join(p, "ddcutil"))
+               for p in os.environ.get("PATH", "").split(":")):
+        die("ddcutil is not installed (needed to talk DDC/CI)")
+
+    bus = find_bus()
+    if bus is None:
+        die("the DDC i2c bus is not present.\n"
+            "  The h96-ddc-i2c-gpio overlay must be enabled "
+            "(user_overlays=h96-ddc-i2c-gpio in /boot/armbianEnv.txt), then reboot.", code=2)
+
+    p = argparse.ArgumentParser(prog="h96-brightness", add_help=True,
+                                description="control a monitor's real backlight over DDC/CI")
+    p.add_argument("action", nargs="?", default="show",
+                   help="0-100 | show | up | down")
+    p.add_argument("step", nargs="?", type=int, default=10,
+                   help="step for up/down (default 10)")
+    args = p.parse_args()
+
+    if args.action in ("show", ""):
+        cur, mx = require_ddc_display(bus)
+        banner("B R I G H T N E S S")
+        print(f"  brightness: {cur} / {mx}  (bus i2c-{bus})")
+        return
+
+    if args.action.isdigit():
+        target = int(args.action)
+        if not 0 <= target <= 100:
+            die("brightness must be 0-100")
+        require_ddc_display(bus)
+        set_brightness(bus, target)
+        print(f"h96-brightness: set to {target}")
+        return
+
+    if args.action in ("up", "down"):
+        cur, mx = require_ddc_display(bus)
+        step = args.step
+        target = cur + step if args.action == "up" else cur - step
+        target = max(0, min(mx, target))
+        set_brightness(bus, target)
+        print(f"h96-brightness: {cur} -> {target}")
+        return
+
+    die(f"unknown action '{args.action}' (try: show, up, down, or 0-100)")
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except subprocess.TimeoutExpired:
+        die("ddcutil timed out talking to the display")
+    except KeyboardInterrupt:
+        sys.exit(130)

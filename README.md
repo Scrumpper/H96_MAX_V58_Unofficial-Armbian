@@ -33,25 +33,57 @@ GPL-2.0. See [`LICENSE`](LICENSE) and [`CREDITS.md`](CREDITS.md).
 
 ---
 
-## Release images (v4.2.1)
+## Release images (v5.0)
 
-The current release is **v4.2.1**, shipped as one pre-built full image. It boots to a
+The current release is **v5.0**, shipped as one pre-built full image. It boots to a
 text console and does not pre-install a desktop.
 
 | Image | Boots to | GPU | Desktop | Zip size |
 |---|---|---|---|---|
-| **v4.2.1** (full) | console | Mali-G610 (Panthor) + Mesa | installed on demand via `armbian-config` | ~1.22 GB |
+| **v5.0** (full) | console | Mali-G610 (Panthor) + Mesa | installed on demand via `armbian-config` | 1.22 GB |
 
-- **v4.2.1** adds the `h96` command index: type `h96` for a categorized list of every
-  command, or `h96 <command>` for its help. Otherwise identical to v4.2.
+- **Kernel rebuilt with `CONFIG_PSI=y`** (`PSI_DEFAULT_DISABLED` off), from
+  armbian/linux-rockchip, branch `rk-6.1-rkr5.1`, commit `95e85f6c`. Android 11 and later
+  `init`/`lmkd` hard-require `/proc/pressure`; without it the Waydroid container boots and
+  then dies in about 15 seconds. This is an **Image-only rebuild**: PSI is built in and the
+  kernel release string is unchanged at 6.1.115, so `/lib/modules/6.1.115` stays valid and
+  no module is rebuilt. Verified on hardware: 69 modules load with zero ABI errors.
+  **Existing users cannot `apt upgrade` into this kernel. It needs the new image.**
+- **New `h96-waydroid`**: Android in a container (Waydroid 1.6.2 plus a nested Weston
+  window on X11). `init gapps|vanilla`, the default, fetches the official Waydroid
+  LineageOS 20 (Android 13, vendor type MAINLINE, about 900 MB) and wires the Mali-G610:
+  `dumpsys SurfaceFlinger` reports `GLES: Mesa, Mali-G610 MC4 (Panfrost), OpenGL ES 3.1
+  Mesa 26.0.1`, GPU load `0@300000000Hz` at idle, 50 percent at 1000 MHz under UI activity
+  and 19 to 26 percent at 600 MHz, with `boot_completed=1` about 8 seconds in and no
+  cgroup v1 shims needed. `init gpu` is the LEGACY path for the third-party Panthor
+  Android 11 image (LineageOS 18.1, about 5 GB, user-supplied, Mesa 24.0.5, GPU load 27 to
+  41 percent at 300 to 700 MHz), unsigned and abandoned since April 2024. `init custom
+  <dir>` takes your own arm64 Waydroid-style `system.img` plus `vendor.img` pair. Images
+  are **not** bundled. `hw off` forces software rendering for diagnosis. The container
+  **cannot use the RK3588 NPU**: its `vendor.img` carries no RKNN libraries and no
+  neuralnetworks HAL.
+- **New `h96-emulators`**: 8 GPU-accelerated systems (`retroarch`, `dolphin`, `ppsspp`,
+  `flycast`, `melonds`, `rmg`, `azahar` as native ARM64 Flatpaks through PanVK/Panfrost,
+  plus `cemu` as the x86-64 build under `box64`). `install` wires each Flatpak sandbox to
+  the Mali GPU and then verifies it, warning when an emulator would silently fall back to
+  `llvmpipe` software rendering.
+- **`h96-npu` gains `power [performance|balanced|powersave|sync|status]`.** The NPU devfreq
+  had been pinned at 1000 MHz for 100 percent of uptime while unused; `powersave` parks it
+  at 300 MHz. `power sync` matches the NPU to the system CPU and GPU profile, and `sync on`
+  makes it follow `h96-perf` automatically. `h96-perf` is now listed in the `h96` command
+  index.
+- **Efficiency:** two units that failed every boot are fixed, so `systemctl --failed`
+  reports zero. `rsyslog` is disabled (`/var/log` measured 33 MB before and 3.6 MB right after; the journal is capped at 200 MB;
+  `journalctl` is unaffected), and `lxc`, `lxc-net` and `lxc-monitord` are disabled.
+- **v4.2.1** added the `h96` command index: type `h96` for a categorized list of every
+  command, or `h96 <command>` for its help. **v4.2** was an efficiency delta on v4.1:
+  faster boot, zram zstd compression, and VM sysctl tuning baked into the image.
 - The full image boots to a console and does **not** ship KDE pre-installed.
   Install the desktop when you want it through `armbian-config`; first launch of Plasma
   applies the H96 desktop settings.
 - The shipped flasher is slim-capable: from the full image it can strip to a headless
   (nodesktop), no-GPU, or bare-server build before writing, so one download covers desktop,
   headless, and server use. Free space is reclaimed with `zerofree` after stripping.
-- v4.2 is an efficiency delta on v4.1: faster boot, zram zstd compression, and VM sysctl
-  tuning baked into the image. Same kernel, device tree, and hardware enablement.
 
 These sources cover the kernel, device tree, and BSP package the image is built from; the
 desktop and headless split is a userspace and packaging step and is not selected from this
@@ -78,9 +110,11 @@ repo.
 | IR remote | ✅ | `gpio-ir-receiver` overlay, learn with `ir-keytable` |
 | eMMC storage | ✅ | |
 | GPU upscaling | ✅ | `ravu-lite-ar-r4` as an mpv user shader via `h96-upscale`; measured ~10-13% extra GPU time. Needs a desktop session |
-| NPU (3-core, ~6 TOPS) | ✅ | Driver `v0.9.8`, IOMMU mode, 1000 MHz, per-core load via `h96-npu`. `h96-npu bench` runs an INT8 matmul (~625 GOPS one core; `bench all` ~1.29 TOPS across 3 cores). Inference runtime is proprietary and fetched on demand with `h96-npu-setup`, never bundled |
+| NPU (3-core, ~6 TOPS) | ✅ | Driver `v0.9.8`, IOMMU mode, per-core load via `h96-npu`. `h96-npu bench` runs an INT8 matmul (~625 GOPS one core; `bench all` ~1.29 TOPS across 3 cores). v5.0 adds `h96-npu power [performance\|balanced\|powersave\|sync\|status]`: the devfreq had been pinned at 1000 MHz for 100 percent of uptime while unused, `powersave` parks it at 300 MHz, `power sync` matches the CPU and GPU profile. Inference runtime is proprietary and fetched on demand with `h96-npu-setup`, never bundled |
 | System monitor | ✅ | `scrumptop`: per-core CPU (A76/A55 topology) with per-cluster temperature gauges, GPU/NPU load, network rates, Bluetooth, IR activity, eMMC I/O, peripheral batteries. `b` = NPU bench, `+`/`-` = polling rate |
 | Desktop lock screen | ✅ | v4.0 corrects `/etc/shadow` group ownership from base rootfs. Lock screens rejected correct passwords in every earlier release. Fix for earlier releases is in CHANGELOG |
+| Android apps (Waydroid) | ✅ | v5.0 `h96-waydroid`. Needs the v5.0 `CONFIG_PSI=y` kernel. `init gapps\|vanilla` (default) runs the official LineageOS 20 (Android 13, MAINLINE vendor) on the Mali-G610 in hardware: `GLES: Mesa, Mali-G610 MC4 (Panfrost), OpenGL ES 3.1 Mesa 26.0.1`, 50 percent GPU at 1000 MHz under UI activity. `init gpu` is the legacy third-party Android 11 Panthor image (Mesa 24.0.5, unsigned, abandoned April 2024). Window is fixed size on purpose. Container **cannot** use the NPU |
+| GPU emulators | ✅ | v5.0 `h96-emulators`: `retroarch`, `dolphin`, `ppsspp`, `flycast`, `melonds`, `rmg`, `azahar` as native ARM64 Flatpaks on PanVK/Panfrost, `cemu` as the x86-64 build under `box64`. `install` verifies each one is not falling back to `llvmpipe` |
 
 > **Note on Ethernet.** Onboard RTL8211F PHY may spend an extended time attempting
 > Gigabit auto-negotiation before downshifting to 100Mbps, so link can take minutes
@@ -89,9 +123,32 @@ repo.
 > speed 100Mbps, check cabling!`. Measured at 26 s, 128 s and 190 s across boots on one
 > unit. **On measured unit, cause was far end, not board:**
 > link partner advertised only 10/100, so board was correctly asking for a
-> speed nothing answered. Check what router or switch actually supports before
+> speed nothing answered. Check what router or switch supports before
 > suspecting box. Try a different cable or switch port first; `ethtool -s eth0 speed 100 duplex
 > full autoneg off` skips Gigabit negotiation at cost of capping port.
+
+---
+
+## Thermals
+
+Read from `/sys/class/thermal` on the shipped image. Trip points are the SoC BSP
+defaults; nothing here changes them.
+
+| Zone | Passive trips | Critical |
+|---|---|---|
+| `soc-thermal` | 80 C, 95 C | 115 C |
+| `bigcore0-thermal` | 75 C | 115 C |
+| `bigcore1-thermal` | 75 C | 115 C |
+| `littlecore-thermal` | 75 C | 115 C |
+| `center-thermal` | 75 C | 115 C |
+| `gpu-thermal` | 75 C | 115 C |
+| `npu-thermal` | 75 C | 115 C |
+
+Cooling devices: `cpufreq-cpu0`, `cpufreq-cpu1`, `cpufreq-cpu3`, `devfreq-fb000000.gpu`.
+
+Measured on one unit: idle about 52 to 61 C. A sustained all-core `performance` load
+reached 85 C, above the `soc-thermal` passive trip, so the box throttles under sustained
+load. That is expected for this SoC in this chassis and is not a fault.
 
 ---
 
@@ -129,7 +186,9 @@ packages/
                                   h96-npu, h96-encode, h96-upscale, h96-npu-setup,
                                   h96-subtitles, h96-subtitles-setup, scrumptop,
                                   h96-display, h96-display-wake.sh, h96-brightness,
-                                  h96-scale, h96-widevine-setup, h96-autologin-setup
+                                  h96-scale, h96-widevine-setup, h96-autologin-setup,
+                                  h96-waydroid (v5.0, Android in a container),
+                                  h96-emulators (v5.0, GPU emulator suite)
     lib/                          shared banner library + mpv overlay client
                                   (installed under /usr/local/lib/h96/)
     udev/99-h96-dma-heap.rules    DMA-heap group/mode rule (hardware video decode
@@ -213,7 +272,7 @@ Full detail in [`docs/DEVICE-TREE-CHANGES.md`](docs/DEVICE-TREE-CHANGES.md). In 
 - **Reduced boot output:** disable unused `es8311`/`i2s0`, drop serial `dmas`
   that emitted repeated errors.
 
-Build DTBs standalone if you just want those:
+Build DTBs standalone if you want only those:
 
 ```bash
 dtc -@ -I dts -O dtb -o rk3588-h96-max-v58.dtb   patch/kernel/rk3588-h96-max-v58.dts
@@ -257,8 +316,9 @@ Do **not** install `libmali` blob packages: they shadow Mesa's EGL/Vulkan.
 
 ## Flashing
 
-RK3588 flashes over USB with **`rkdeveloptool`** in Maskrom mode (hold
-recessed reset pin while connecting USB), or with Rockchip's RKDevTool GUI on
+RK3588 flashes over USB with **`rkdeveloptool`** in Maskrom mode (hold the
+recessed reset pinhole, rear panel, in the gap between the two WiFi antenna
+posts, while connecting USB), or with Rockchip's RKDevTool GUI on
 Windows. Write Armbian image (`.img`) to eMMC. This is standard RK3588
 procedure and is not specific to this repo.
 

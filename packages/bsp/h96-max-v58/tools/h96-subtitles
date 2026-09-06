@@ -1,0 +1,388 @@
+#!/usr/bin/env python3
+"""
+h96-subtitles - generate a timed .srt from any media file, on the box.
+
+WHY THIS IS A CPU FEATURE AND NOT AN NPU ONE
+--------------------------------------------
+It was built to showcase the NPU. Measured on this board, the NPU LOSES:
+
+    NPU  (rknn, 3 cores)          RTF 0.271
+    CPU  int8, ONE A76 core       RTF 0.124     <- 2.2x faster than the whole NPU
+    CPU  int8, 4 A76 threads      RTF 0.147     <- more threads is SLOWER
+
+So the default engine is one CPU core. That is not a consolation prize: RTF 0.12 means a
+2-hour film transcribes in about 15 minutes while seven cores stay free for playback.
+`--engine npu` exists for comparison, and is expected to be slower.
+
+QUALITY, MEASURED
+-----------------
+WER 1.09% on LibriSpeech test-clean (human ground truth; 30 utterances, 644 words, 7 errors).
+On real 1936 film dialogue with music and period noise it stays coherent and usable, and beat
+Internet Archive's own ASR on the same passage. Modern film audio should sit between the two.
+
+NOTHING IS BUNDLED
+------------------
+The ASR binary and the model are fetched by `h96-subtitles-setup`, not shipped in the image.
+The models are Apache-2.0 and could arguably be bundled; they are ~300 MB, which is the real
+reason not to.
+
+Deployed to /usr/local/bin/h96-subtitles.
+"""
+import argparse, json, math, os, re, shutil, subprocess, sys, tempfile, time
+
+sys.path.insert(0, "/usr/local/lib/h96")
+
+ASR_HOME  = "/var/lib/h96/subtitles"
+BIN       = f"{ASR_HOME}/bin/sherpa-onnx"
+LIBS      = f"{ASR_HOME}/lib"
+MODELS    = f"{ASR_HOME}/models"
+BIG_CORES = "1,2,3,4"          # RK3588 topology is NOT contiguous: policy0 = cpus 0,5,6,7
+CHUNK_S   = 60                 # transcribe in chunks so progress is visible and RAM is bounded
+BATCH     = 10                 # chunks per engine invocation; amortises the ~4s recognizer load
+
+
+def banner(sub=""):
+    try:
+        from banner import banner as b
+        b(sub)
+    except Exception:
+        pass
+
+
+def die(m):
+    print(f"h96-subtitles: {m}", file=sys.stderr)
+    sys.exit(1)
+
+
+def have_engine():
+    return os.path.isfile(BIN) and os.path.isdir(MODELS)
+
+
+def model_dir(lang):
+    want = "bilingual" if lang not in ("en", "english") else "-en-"
+    for d in sorted(os.listdir(MODELS)) if os.path.isdir(MODELS) else []:
+        p = os.path.join(MODELS, d)
+        if os.path.isdir(p) and want in d:
+            return p
+    # fall back to any model present
+    for d in sorted(os.listdir(MODELS)) if os.path.isdir(MODELS) else []:
+        p = os.path.join(MODELS, d)
+        if os.path.isdir(p) and os.path.isfile(os.path.join(p, "tokens.txt")):
+            return p
+    return None
+
+
+def model_files(d, engine):
+    """Return (encoder, decoder, joiner, tokens) for the chosen engine."""
+    toks = os.path.join(d, "tokens.txt")
+    if engine == "npu":
+        trio = [os.path.join(d, f"{n}.rknn") for n in ("encoder", "decoder", "joiner")]
+        if all(os.path.isfile(f) for f in trio):
+            return (*trio, toks)
+        return None
+    # CPU: prefer int8 (what the WER above was measured with)
+    for suffix in (".int8.onnx", ".onnx"):
+        trio = []
+        for n in ("encoder", "decoder", "joiner"):
+            hits = [f for f in os.listdir(d) if f.startswith(n) and f.endswith(suffix)]
+            if not hits:
+                trio = []
+                break
+            trio.append(os.path.join(d, sorted(hits)[0]))
+        if trio:
+            return (*trio, toks)
+    return None
+
+
+def ts(sec):
+    if sec < 0:
+        sec = 0
+    h = int(sec // 3600); m = int(sec % 3600 // 60); s = int(sec % 60)
+    ms = int(round((sec - int(sec)) * 1000))
+    if ms == 1000:
+        s += 1; ms = 0
+    return f"{h:02d}:{m:02d}:{s:02d},{ms:03d}"
+
+
+def cues_from_tokens(tokens, times, offset, max_chars=42, max_gap=0.8, max_dur=6.0):
+    """Group BPE tokens into readable, timed subtitle cues.
+
+    Tokens beginning with a space start a new word; a long pause or an over-long line
+    closes the cue. This is what turns raw token timings into something watchable.
+    """
+    cues, cur, start, last = [], "", None, None
+    for tok, t in zip(tokens, times):
+        t = t + offset
+        if start is None:
+            start = t
+        gap = (t - last) if last is not None else 0
+        too_long = len(cur) + len(tok) > max_chars
+        too_slow = gap > max_gap
+        too_wide = last is not None and (t - start) > max_dur
+        if cur and (too_long or too_slow or too_wide) and tok.startswith(" "):
+            cues.append((start, last + 0.25, cur.strip()))
+            cur, start = "", t
+        cur += tok
+        last = t
+    if cur.strip():
+        cues.append((start, (last or start) + 0.25, cur.strip()))
+    return cues
+
+
+def run_chunk(wavs, enc, dec, joi, toks, engine, threads):
+    """Transcribe one or more wavs in a SINGLE invocation.
+
+    Creating the recognizer costs ~4s, and it happens once per process. Passing a batch of
+    chunks amortises that: per-chunk invocation measured RTF 0.190 where the engine itself
+    manages 0.124.
+    """
+    if isinstance(wavs, str):
+        wavs = [wavs]
+    cmd = []
+    if engine == "cpu":
+        cmd += ["taskset", "-c", BIG_CORES]
+    cmd += [BIN, f"--tokens={toks}", f"--encoder={enc}", f"--decoder={dec}",
+            f"--joiner={joi}", f"--provider={'rknn' if engine == 'npu' else 'cpu'}",
+            f"--num-threads={threads}", *wavs]
+    env = dict(os.environ)
+    env["LD_LIBRARY_PATH"] = LIBS + ":" + env.get("LD_LIBRARY_PATH", "")
+    r = subprocess.run(cmd, capture_output=True, text=True, env=env)
+    # sherpa-onnx prints its JSON result on STDERR; stdout only carries
+    # "Recognizer created". Scan both so this does not silently find nothing.
+    # sherpa-onnx prints its JSON on STDERR (stdout only carries "Recognizer created"),
+    # and for a batch it prints the wav path before each result. Map results back by path.
+    out, cur = {}, None
+    for stream in (r.stderr, r.stdout):
+        for line in stream.splitlines():
+            line = line.strip()
+            if line.endswith(".wav") and os.path.basename(line) in {os.path.basename(w) for w in wavs}:
+                cur = os.path.basename(line)
+            elif line.startswith('{ "text"'):
+                try:
+                    j = json.loads(line)
+                except Exception:
+                    continue
+                out[cur if cur else f"_{len(out)}"] = j
+                cur = None
+    if out:
+        return out
+    if "Too many open files" in (r.stdout + r.stderr):
+        die("the ASR runtime ran out of file descriptors.\n"
+            "  This is the RKNN EMFILE bug. Re-run with a raised limit:\n"
+            "      ulimit -n 65536 && h96-subtitles ...")
+    return None
+
+
+def cmd_file(args):
+    src = args.path
+    if not os.path.isfile(src):
+        die(f"no such file: {src}")
+    if not have_engine():
+        die("the ASR engine is not installed. Run:  sudo h96-subtitles-setup")
+    for t in ("ffmpeg", "ffprobe"):
+        if not shutil.which(t):
+            die(f"{t} is required but not installed")
+
+    engine = args.engine
+    d = model_dir(args.lang)
+    if not d:
+        die(f"no model found under {MODELS}. Run:  sudo h96-subtitles-setup")
+    if engine == "auto":
+        engine = "cpu"          # measured: one A76 core beats the NPU by 2.2x
+    mf = model_files(d, engine)
+    if not mf and engine == "npu":
+        print("  no .rknn model present; falling back to the CPU engine (which is faster anyway)")
+        engine = "cpu"; mf = model_files(d, engine)
+    if not mf:
+        die(f"model directory {d} has no usable model files")
+    enc, dec, joi, toks = mf
+
+    out = args.out or os.path.splitext(src)[0] + ".srt"
+    if os.path.exists(out) and not args.force:
+        die(f"{out} already exists (use --force to overwrite)")
+
+    dur = float(subprocess.run(
+        ["ffprobe", "-v", "error", "-show_entries", "format=duration",
+         "-of", "default=nw=1:nk=1", src],
+        capture_output=True, text=True).stdout.strip() or 0)
+    if dur <= 0:
+        die("could not determine the media duration")
+
+    banner("S U B T I T L E S")
+    print(f"  source   {os.path.basename(src)}  ({dur/60:.1f} min)")
+    print(f"  engine   {engine}" + ("  (one A76 core)" if engine == "cpu" else "  (NPU - measured slower)"))
+    print(f"  model    {os.path.basename(d)}")
+    print(f"  output   {out}\n")
+
+    tmp = tempfile.mkdtemp(prefix="h96-subs-")
+    all_cues, t0 = [], time.time()
+    n = max(1, math.ceil(dur / CHUNK_S))
+    try:
+        for b0 in range(0, n, BATCH):
+            batch, offs = [], {}
+            for i in range(b0, min(b0 + BATCH, n)):
+                off = i * CHUNK_S
+                wav = os.path.join(tmp, f"c{i:05d}.wav")
+                subprocess.run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
+                                "-ss", str(off), "-i", src, "-t", str(CHUNK_S),
+                                "-vn", "-ar", "16000", "-ac", "1", "-c:a", "pcm_s16le", wav],
+                               check=False)
+                if os.path.isfile(wav) and os.path.getsize(wav) > 1000:
+                    batch.append(wav); offs[os.path.basename(wav)] = off
+            if batch:
+                res = run_chunk(batch, enc, dec, joi, toks, engine, args.threads)
+                if res:
+                    for key, j in res.items():
+                        if j.get("tokens"):
+                            all_cues += cues_from_tokens(
+                                j["tokens"], j.get("timestamps", []), offs.get(key, 0))
+                for w in batch:
+                    try: os.unlink(w)
+                    except OSError: pass
+            done = min(dur, min(b0 + BATCH, n) * CHUNK_S)
+            el = time.time() - t0
+            rate = done / el if el > 0 else 0
+            eta = (dur - done) / rate if rate > 0 else 0
+            print(f"\r  {done/dur*100:5.1f}%   {done/60:5.1f}/{dur/60:.1f} min   "
+                  f"{rate:.1f}x realtime   eta {eta/60:4.1f} min ", end="", flush=True)
+        print()
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+    if not all_cues:
+        die("no speech was recognised - is there an audio track?")
+
+    with open(out, "w", encoding="utf-8") as fh:
+        for i, (a, b, text) in enumerate(all_cues, 1):
+            fh.write(f"{i}\n{ts(a)} --> {ts(max(b, a + 0.4))}\n{text}\n\n")
+
+    el = time.time() - t0
+    print(f"\n  wrote {len(all_cues)} cues to {out}")
+    print(f"  {el/60:.1f} min for {dur/60:.1f} min of audio  "
+          f"(RTF {el/dur:.3f}, {dur/el:.1f}x realtime)")
+
+
+
+# ---------------------------------------------------------------------------
+# LIVE  (experimental)
+# ---------------------------------------------------------------------------
+# Each piece below is verified INDIVIDUALLY on this board:
+#   * streaming ASR   2.5x realtime through the websocket server, ~3.2 hypothesis
+#                     updates/sec, correct text (measured)
+#   * mpv renderer    osd-overlay accepted, 5/5 repeat draws on ONE persistent
+#                     socket (measured -- overlays die if the client disconnects)
+#   * chunk latency   ~640 ms algorithmic (chunk-16 x 4 subsampling x 10 ms)
+#
+# What is NOT verified is the three of them wired together, because that needs a
+# desktop session (PipeWire is absent on the headless image) and a display. Treat
+# `live` as experimental until someone runs it on a box with a desktop installed.
+WS_PORT = 6006
+
+
+def cmd_live(args):
+    if not have_engine():
+        die("the ASR engine is not installed. Run:  sudo h96-subtitles-setup")
+    server = os.path.join(os.path.dirname(BIN), "sherpa-onnx-online-websocket-server")
+    if not os.path.isfile(server):
+        die("the streaming server is missing. Re-run:  sudo h96-subtitles-setup")
+    if not os.path.exists(args.socket):
+        die(f"no mpv IPC socket at {args.socket}\n"
+            f"  start mpv with:  mpv --input-ipc-server={args.socket} ...")
+    if not shutil.which("pw-record") and not shutil.which("parec"):
+        die("no PipeWire capture tool (pw-record/parec) found.\n"
+            "  Live capture needs an audio session - install a desktop first.")
+
+    d = model_dir(args.lang)
+    mf = model_files(d, "cpu") if d else None
+    if not mf:
+        die("no usable model; run:  sudo h96-subtitles-setup")
+    enc, dec, joi, toks = mf
+
+    sys.path.insert(0, "/usr/local/lib/h96/subtitles")
+    try:
+        from render import MpvOverlay
+    except ImportError:
+        die("renderer missing at /usr/local/lib/h96/subtitles/render.py")
+
+    env = dict(os.environ)
+    env["LD_LIBRARY_PATH"] = LIBS + ":" + env.get("LD_LIBRARY_PATH", "")
+    srv = subprocess.Popen(
+        [server, f"--port={WS_PORT}", "--num-work-threads=2", f"--tokens={toks}",
+         f"--encoder={enc}", f"--decoder={dec}", f"--joiner={joi}", "--provider=cpu"],
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env=env)
+    banner("L I V E   S U B T I T L E S")
+    print("  starting the streaming recogniser ...")
+    time.sleep(10)
+    if srv.poll() is not None:
+        die("the streaming server exited immediately")
+
+    cap = shutil.which("pw-record") or shutil.which("parec")
+    cmd = ([cap, "--target", args.sink, "-P", '{"stream.capture.sink":true}',
+            "--rate", "16000", "--channels", "1", "--format", "s16", "--latency", "20ms", "-"]
+           if cap.endswith("pw-record") else
+           [cap, "--device", args.sink, "--rate=16000", "--channels=1", "--format=s16le"])
+    print(f"  capturing from {args.sink} via {os.path.basename(cap)}")
+    print("  Ctrl-C to stop\n")
+
+    ov = MpvOverlay(args.socket, font_size=args.font_size)
+    ov.connect()
+    try:
+        # audio -> server over the websocket client is not wired here; the loop below is
+        # the render half, kept deliberately simple until the pipeline is verified end to end
+        raise NotImplementedError(
+            "live capture is not wired end to end yet - see the note above. "
+            "Milestones 1-4 are complete; this needs a desktop session to finish and test.")
+    except NotImplementedError as e:
+        ov.close()
+        srv.terminate()
+        die(str(e))
+
+
+def cmd_status(_):
+    banner("S U B T I T L E S")
+    print(f"  engine binary  {BIN if os.path.isfile(BIN) else 'NOT INSTALLED'}")
+    if os.path.isdir(MODELS):
+        ms = [d for d in sorted(os.listdir(MODELS)) if os.path.isdir(os.path.join(MODELS, d))]
+        print(f"  models         {', '.join(ms) if ms else 'none'}")
+    else:
+        print("  models         none")
+    print(f"  ffmpeg         {shutil.which('ffmpeg') or 'MISSING'}")
+    if not have_engine():
+        print("\n  Not set up yet:  sudo h96-subtitles-setup")
+    print("""
+  Measured on this board:
+    CPU int8, one A76 core   RTF 0.124   <- the default
+    NPU (rknn, 3 cores)      RTF 0.271   <- 2.2x slower, --engine npu if you want it
+    WER 1.09% on LibriSpeech test-clean (human ground truth)
+""")
+
+
+def main():
+    p = argparse.ArgumentParser(prog="h96-subtitles", add_help=True,
+                                description="Generate a timed .srt from a media file.")
+    sub = p.add_subparsers(dest="cmd")
+    f = sub.add_parser("file", help="transcribe a media file to .srt")
+    f.add_argument("path")
+    f.add_argument("-o", "--out", help="output .srt (default: alongside the source)")
+    f.add_argument("-e", "--engine", choices=("auto", "cpu", "npu"), default="auto")
+    f.add_argument("-l", "--lang", default="en", help="en (default) or zh-en")
+    f.add_argument("-t", "--threads", type=int, default=1,
+                   help="ASR threads (default 1 - more measured SLOWER on this SoC)")
+    f.add_argument("--force", action="store_true", help="overwrite an existing .srt")
+    f.set_defaults(fn=cmd_file)
+    lv = sub.add_parser("live", help="(experimental) live subtitles over mpv")
+    lv.add_argument("--socket", default="/tmp/mpv-socket", help="mpv --input-ipc-server path")
+    lv.add_argument("--sink", default="@DEFAULT_SINK@", help="PipeWire sink to tap")
+    lv.add_argument("-l", "--lang", default="en")
+    lv.add_argument("--font-size", type=int, default=42)
+    lv.set_defaults(fn=cmd_live)
+    s = sub.add_parser("status", help="show what is installed")
+    s.set_defaults(fn=cmd_status)
+    a = p.parse_args()
+    if not a.cmd:
+        cmd_status(a); return
+    a.fn(a)
+
+
+if __name__ == "__main__":
+    main()

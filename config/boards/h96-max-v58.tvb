@@ -9,16 +9,24 @@
 BOARD_NAME="H96 Max V58"
 BOARDFAMILY="rockchip-rk3588"
 BOARD_MAINTAINER=""
-KERNEL_TARGET="edge"
-KERNEL_TEST_TARGET="edge"
+# vendor = the rk-6.1-rkr5.1 BSP kernel with real RK3588 drivers. NOT edge: on this family
+# edge is rolling mainline (7.2+) with no vendor drivers - console boots, nothing works (issue #5).
+KERNEL_TARGET="vendor"
+KERNEL_TEST_TARGET="vendor"
 FULL_DESKTOP="yes"
 BOOT_LOGO="desktop"
 BOOT_FDT_FILE="rockchip/rk3588-h96-max-v58.dtb"
+# A u-boot defconfig IS REQUIRED. The rockchip-rk3588 family derives BOOT_SOC from
+# BOOTCONFIG and prepare_boot_configuration() needs it; with neither set the build
+# produced an empty config and "*** .config not found" (issue #5). H96 is a generic
+# rk3588 board, so it reuses rock-5b's SPL-blobs u-boot config (NOT the vendor EVB
+# rk3588_defconfig, which pulls OP-TEE); only the DTB below makes it an H96.
+BOOT_SOC="rk3588"
+BOOTCONFIG="rock-5b-rk3588_defconfig"
 BOOT_SCENARIO="spl-blobs"
-BOOTBRANCH_BOARD="tag:v2024.10"
-BOOTPATCHDIR="v2024.10"
-DDR_BLOB="rk35/rk3588_ddr_lp4_2112MHz_lp5_2736MHz_v1.16.bin"
-BL31_BLOB="rk35/rk3588_bl31_v1.45.elf"
+# DDR/BL31 blobs, the u-boot branch and the patch dir all come from the family via
+# BOOT_SOC (exactly like rock-5b). Do NOT hardcode them or a v2024.10 tag/patchdir
+# that does not exist in the Radxa tree.
 DEFAULT_CONSOLE="serial"
 SERIALCON="ttyS2"
 # eMMC is the internal storage; there is no SD slot exposed as bootable on most units.

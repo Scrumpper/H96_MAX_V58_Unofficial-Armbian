@@ -1,0 +1,36 @@
+#!/bin/bash
+# h96-autologin-setup — enable lightdm autologin for the desktop user.
+#
+# Runs at boot. It is a no-op until armbian-firstlogin has created the human
+# user, then it points lightdm autologin at that user. This removes the manual
+# password each boot and, importantly, makes a logout re-apply a display-scale
+# change automatically (on X11, scale only takes effect at login). To require a
+# login each boot again: delete /etc/lightdm/lightdm.conf.d/70-h96-autologin.conf
+# and `systemctl disable h96-autologin.service`.
+set -uo pipefail
+
+CONF=/etc/lightdm/lightdm.conf.d/70-h96-autologin.conf
+
+SESSION=plasmax11
+if [ ! -e "/usr/share/xsessions/$SESSION.desktop" ]; then
+    SESSION=$(basename "$(ls /usr/share/xsessions/plasma*.desktop 2>/dev/null | head -1)" .desktop 2>/dev/null)
+fi
+[ -n "$SESSION" ] || exit 0
+
+U=$(awk -F: '$3>=1000 && $3<65534 {print $1; exit}' /etc/passwd)
+[ -n "$U" ] || exit 0                     # no human user yet (pre-firstlogin)
+
+if [ -f "$CONF" ] && grep -q "^autologin-user=$U$" "$CONF"; then
+    exit 0                                # already correct
+fi
+
+install -d -m 0755 /etc/lightdm/lightdm.conf.d
+cat > "$CONF" <<EOF
+# H96: auto-login the desktop user so display-scale changes (and normal use)
+# apply on logout->login with no manual password step. Delete to require login.
+[Seat:*]
+autologin-user=$U
+autologin-session=$SESSION
+autologin-user-timeout=0
+EOF
+echo "h96-autologin: enabled for $U (session $SESSION)"

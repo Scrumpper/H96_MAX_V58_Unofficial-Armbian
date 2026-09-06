@@ -1,0 +1,1839 @@
+#!/usr/bin/env python3
+"""scrumptop - single-file stdlib-only terminal system monitor for the
+H96 Max V58 (Rockchip RK3588) running Armbian. btop/htop-style raw-ANSI
+truecolor UI. No external packages.
+"""
+
+import argparse
+import os
+import re
+import select
+import signal
+import struct
+import subprocess
+import sys
+import termios
+import threading
+import time
+import tty
+from collections import deque
+
+# =====================================================================
+# MODULE: sensors  (exposes: read_all, BIG_CORES, LITTLE_CORES)
+# =====================================================================
+
+# RK3588 CPU topology is NON-CONTIGUOUS: big A76 = cpu 1,2,3,4; little A55 = cpu 0,5,6,7.
+BIG_CORES = {1, 2, 3, 4}
+LITTLE_CORES = {0, 5, 6, 7}
+
+_EXPECTED_ZONES = {
+    "soc-thermal",
+    "bigcore0-thermal",
+    "bigcore1-thermal",
+    "littlecore-thermal",
+    "center-thermal",
+    "gpu-thermal",
+    "npu-thermal",
+}
+
+# IR receiver input device: re-resolve at most this often once it fails.
+_IR_RETRY_INTERVAL_S = 30.0
+
+
+def _read_file(path, default=""):
+    """Read a file safely; return default if missing or unreadable."""
+    try:
+        with open(path, "r") as f:
+            return f.read().strip()
+    except (OSError, ValueError):
+        return default
+
+
+def _read_thermal_zones():
+    """Read thermal zones, matched by 'type' string (never assume index order).
+
+    Returns dict {zone_type: temp_c}; missing zones simply absent.
+    """
+    zones = {}
+    for i in range(10):  # scan thermal_zone0..thermal_zone9
+        zone_type = _read_file(f"/sys/class/thermal/thermal_zone{i}/type", "")
+        if zone_type in _EXPECTED_ZONES:
+            temp_milli = _read_file(f"/sys/class/thermal/thermal_zone{i}/temp", "")
+            try:
+                zones[zone_type] = float(temp_milli) / 1000.0
+            except (ValueError, TypeError):
+                pass
+    return zones
+
+
+def _parse_cpu_stat(stat_line):
+    """Parse a /proc/stat 'cpuN ...' line -> (user, nice, system, idle, iowait) ticks."""
+    parts = stat_line.split()
+    if len(parts) < 6:
+        return (0, 0, 0, 0, 0)
+    try:
+        return (
+            int(parts[1]),  # user
+            int(parts[2]),  # nice
+            int(parts[3]),  # system
+            int(parts[4]),  # idle
+            int(parts[5]),  # iowait
+        )
+    except (ValueError, IndexError):
+        return (0, 0, 0, 0, 0)
+
+
+def _read_cpu_stat():
+    """Read /proc/stat -> {'total': ticks, 0: ticks, ..., 7: ticks}. {} if unreadable."""
+    content = _read_file("/proc/stat", "")
+    if not content:
+        return {}
+
+    result = {}
+    for line in content.split("\n"):
+        if not line.startswith("cpu"):
+            continue
+        parts = line.split()
+        if len(parts) < 2:
+            continue
+        key = parts[0]
+        ticks = _parse_cpu_stat(line)
+        if key == "cpu":
+            result["total"] = ticks
+        else:
+            try:
+                core_id = int(key[3:])
+                result[core_id] = ticks
+            except (ValueError, IndexError):
+                pass
+    return result
+
+
+def _cpu_pct_delta(prev_ticks, cur_ticks):
+    """CPU% from two tick snapshots. active=user+nice+system, idle=idle+iowait.
+
+    Clamped to [0,100]; a counter reset (negative delta) yields 0.0 rather than
+    a nonsensical or crashing result.
+    """
+    if prev_ticks is None or cur_ticks is None:
+        return 0.0
+
+    p_user, p_nice, p_sys, p_idle, p_iowait = prev_ticks
+    c_user, c_nice, c_sys, c_idle, c_iowait = cur_ticks
+
+    delta_active = (c_user - p_user) + (c_nice - p_nice) + (c_sys - p_sys)
+    delta_idle = (c_idle - p_idle) + (c_iowait - p_iowait)
+    delta_total = delta_active + delta_idle
+
+    if delta_total <= 0 or delta_active < 0:
+        return 0.0
+
+    return max(0.0, min(100.0, (delta_active / delta_total) * 100.0))
+
+
+def _read_cpu_mhz(core_id):
+    """Current CPU frequency in MHz for a core; 0 if unreadable."""
+    freq_khz_str = _read_file(
+        f"/sys/devices/system/cpu/cpu{core_id}/cpufreq/scaling_cur_freq", ""
+    )
+    try:
+        return int(freq_khz_str) // 1000
+    except (ValueError, TypeError):
+        return 0
+
+
+def _read_gpu_load():
+    """Parse /sys/class/devfreq/fb000000.gpu/load: 'N@FreqHz' -> (pct, mhz)."""
+    load_str = _read_file("/sys/class/devfreq/fb000000.gpu/load", "")
+    match = re.match(r"(\d+)@(\d+)Hz", load_str)
+    if not match:
+        return (0.0, 0)
+    try:
+        pct = float(match.group(1))
+        mhz = int(match.group(2)) // 1_000_000
+        return (pct, mhz)
+    except (ValueError, IndexError):
+        return (0.0, 0)
+
+
+def _read_npu_load():
+    """Parse /proc/rknpu/load 'Core0: 74%, Core1: 0%, Core2: 0%,' -> [p0,p1,p2]."""
+    content = _read_file("/proc/rknpu/load", "")
+    cores = [0.0, 0.0, 0.0]
+    if not content:
+        return cores
+    for m in re.finditer(r"Core(\d):\s*(\d+)%", content):
+        try:
+            idx = int(m.group(1))
+            if 0 <= idx < 3:
+                cores[idx] = float(m.group(2))
+        except (ValueError, IndexError):
+            pass
+    return cores
+
+
+def _read_npu_mhz():
+    """NPU frequency in MHz from devfreq cur_freq; 0 if unreadable."""
+    freq_hz_str = _read_file("/sys/class/devfreq/fdab0000.npu/cur_freq", "")
+    try:
+        return int(freq_hz_str) // 1_000_000
+    except (ValueError, TypeError):
+        return 0
+
+
+_npu_rt_cache = [None, 0.0]   # [value, monotonic timestamp]
+
+
+def _read_npu_runtime_uncached():
+    """True if librknnrt.so is present: either in `ldconfig -p` output or on disk.
+
+    Never pipes through `grep -q` under pipefail (that trap can silently report
+    absent-when-present); instead captures ldconfig's stdout as a string and
+    searches it directly. Any failure (missing binary, timeout, etc.) is
+    swallowed and falls back to the direct file-existence check.
+    """
+    npu_lib = "/usr/lib/aarch64-linux-gnu/librknnrt.so"
+    if os.path.exists(npu_lib):
+        return True
+    try:
+        result = subprocess.run(
+            ["ldconfig", "-p"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            timeout=3,
+            text=True,
+        )
+        return "librknnrt.so" in result.stdout
+    except (OSError, subprocess.SubprocessError):
+        return False
+
+
+def _read_npu_runtime():
+    """Cached: the runtime's presence changes at most once per session, and the
+    uncached check forks ldconfig. Re-checked every 30 s."""
+    now = time.monotonic()
+    if _npu_rt_cache[0] is None or now - _npu_rt_cache[1] > 30.0:
+        _npu_rt_cache[0] = _read_npu_runtime_uncached()
+        _npu_rt_cache[1] = now
+    return _npu_rt_cache[0]
+
+
+def _read_meminfo():
+    """Read /proc/meminfo -> (total_kb, avail_kb); (0,0) if unreadable."""
+    content = _read_file("/proc/meminfo", "")
+    total_kb = 0
+    avail_kb = 0
+    if not content:
+        return (0, 0)
+    for line in content.split("\n"):
+        parts = line.split(":")
+        if len(parts) != 2:
+            continue
+        key = parts[0].strip()
+        try:
+            val_kb = int(parts[1].strip().split()[0])
+        except (ValueError, IndexError):
+            continue
+        if key == "MemTotal":
+            total_kb = val_kb
+        elif key == "MemAvailable":
+            avail_kb = val_kb
+    return (total_kb, avail_kb)
+
+
+# ---- network / bluetooth ----
+
+def _read_net_dev_bytes():
+    """Read /proc/net/dev -> {iface: (rx_bytes, tx_bytes)}. {} if unreadable."""
+    content = _read_file("/proc/net/dev", "")
+    result = {}
+    if not content:
+        return result
+    for line in content.split("\n"):
+        if ":" not in line:
+            continue
+        name, _, rest = line.partition(":")
+        iface = name.strip()
+        fields = rest.split()
+        if len(fields) < 9:
+            continue
+        try:
+            result[iface] = (int(fields[0]), int(fields[8]))
+        except (ValueError, IndexError):
+            pass
+    return result
+
+
+def _read_wifi_signal_dbm():
+    """Parse /proc/net/wireless for the 'wlan0:' line -> signal level in dBm, or None.
+
+    Fields after the iface colon are: status, link-quality., level(dBm)., noise.
+    (trailing dots on numeric fields). The wlan0 line is simply absent when the
+    interface is down, which is not an error.
+    """
+    content = _read_file("/proc/net/wireless", "")
+    if not content:
+        return None
+    for line in content.split("\n"):
+        stripped = line.strip()
+        if not stripped.startswith("wlan0:"):
+            continue
+        _, _, rest = stripped.partition(":")
+        fields = rest.split()
+        if len(fields) < 3:
+            return None
+        try:
+            # fields: [0]=status [1]=link-quality. [2]=level(dBm). [3]=noise.
+            return int(float(fields[2].rstrip(".")))
+        except (ValueError, IndexError):
+            return None
+    return None
+
+
+def _read_bt_state():
+    """Read Bluetooth adapter presence, rfkill block state, and connection count.
+
+    Returns (present, blocked, connections).
+    """
+    present = os.path.exists("/sys/class/bluetooth/hci0")
+    connections = 0
+    blocked = False
+
+    if present:
+        try:
+            entries = os.listdir("/sys/class/bluetooth/hci0")
+            connections = sum(1 for e in entries if e.startswith("hci0:"))
+        except OSError:
+            pass
+
+        try:
+            for name in os.listdir("/sys/class/rfkill"):
+                rf_name = _read_file(f"/sys/class/rfkill/{name}/name", "")
+                if "hci0" in rf_name:
+                    soft = _read_file(f"/sys/class/rfkill/{name}/soft", "0")
+                    hard = _read_file(f"/sys/class/rfkill/{name}/hard", "0")
+                    blocked = (soft.strip() == "1") or (hard.strip() == "1")
+                    break
+        except OSError:
+            pass
+
+    return (present, blocked, connections)
+
+
+def _read_net(prev_net_bytes, dt):
+    """Read eth0/wlan0/bt state -> dict, plus rates computed from prev byte counters.
+
+    Returns dict:
+      eth0: {state, speed_mbps, rx_bps, tx_bps}
+      wlan0: {state, signal_dbm, rx_bps, tx_bps}
+      bt: {present, blocked, connections}
+    """
+    eth_state = _read_file("/sys/class/net/eth0/operstate", "down")
+    eth_speed_str = _read_file("/sys/class/net/eth0/speed", "")
+    try:
+        eth_speed = int(eth_speed_str)
+    except (ValueError, TypeError):
+        eth_speed = 0
+
+    wlan_state = _read_file("/sys/class/net/wlan0/operstate", "down")
+    wifi_dbm = _read_wifi_signal_dbm()
+
+    bt_present, bt_blocked, bt_conn = _read_bt_state()
+
+    cur_bytes = _read_net_dev_bytes()
+
+    def _rates(iface):
+        rx_bps = 0.0
+        tx_bps = 0.0
+        if prev_net_bytes and dt > 0:
+            prev = prev_net_bytes.get(iface)
+            cur = cur_bytes.get(iface)
+            if prev and cur:
+                rx_bps = max(0.0, (cur[0] - prev[0]) / dt)
+                tx_bps = max(0.0, (cur[1] - prev[1]) / dt)
+        return rx_bps, tx_bps
+
+    eth_rx, eth_tx = _rates("eth0")
+    wlan_rx, wlan_tx = _rates("wlan0")
+
+    net = {
+        "eth0": {
+            "state": eth_state,
+            "speed_mbps": eth_speed,
+            "rx_bps": eth_rx,
+            "tx_bps": eth_tx,
+        },
+        "wlan0": {
+            "state": wlan_state,
+            "signal_dbm": wifi_dbm,
+            "rx_bps": wlan_rx,
+            "tx_bps": wlan_tx,
+        },
+        "bt": {
+            "present": bt_present,
+            "blocked": bt_blocked,
+            "connections": bt_conn,
+        },
+    }
+    return net, cur_bytes
+
+
+# ---- IR receiver ----
+
+# Module-level singleton fd so we never open/close the device per tick.
+_ir_fd = None
+_ir_last_retry_ts = None  # time.monotonic() of last failed resolve attempt
+_ir_last_press_ts = None  # time.monotonic() of last observed keypress
+_ir_last_code = None
+
+
+def _resolve_ir_event_path():
+    """Scan /proc/bus/input/devices for Name="fd8b0030.pwm" and return its
+    /dev/input/eventN path, or None if not found. Never hardcodes eventN.
+    """
+    content = _read_file("/proc/bus/input/devices", "")
+    if not content:
+        return None
+
+    blocks = content.split("\n\n")
+    for block in blocks:
+        if 'Name="fd8b0030.pwm"' not in block:
+            continue
+        for line in block.split("\n"):
+            if line.startswith("H:"):
+                m = re.search(r"event(\d+)", line)
+                if m:
+                    return f"/dev/input/event{m.group(1)}"
+    return None
+
+
+def _read_ir():
+    """Read pending IR events off the singleton fd (non-blocking, drains all).
+
+    Returns {present, last_age_s, last_code}. Never raises; a missing/unopenable
+    device just yields present=False, retried at most every 30s.
+    """
+    global _ir_fd, _ir_last_retry_ts, _ir_last_press_ts, _ir_last_code
+
+    now = time.monotonic()
+
+    if _ir_fd is None:
+        if _ir_last_retry_ts is not None and (now - _ir_last_retry_ts) < _IR_RETRY_INTERVAL_S:
+            return {"present": False, "last_age_s": None, "last_code": _ir_last_code}
+
+        _ir_last_retry_ts = now
+        event_path = _resolve_ir_event_path()
+        if not event_path:
+            return {"present": False, "last_age_s": None, "last_code": _ir_last_code}
+
+        try:
+            _ir_fd = os.open(event_path, os.O_RDONLY | os.O_NONBLOCK)
+        except OSError:
+            _ir_fd = None
+            return {"present": False, "last_age_s": None, "last_code": _ir_last_code}
+
+    # Drain all pending events; aarch64 struct input_event is 24 bytes:
+    # 16B timeval (2x unsigned long) + u16 type + u16 code + s32 value.
+    try:
+        while True:
+            buf = os.read(_ir_fd, 24)
+            if not buf or len(buf) < 24:
+                break
+            _sec, _usec, ev_type, code, value = struct.unpack("<QQHHi", buf)
+            if ev_type == 1 and value == 1:  # EV_KEY press
+                _ir_last_press_ts = time.monotonic()
+                _ir_last_code = code
+    except BlockingIOError:
+        pass
+    except OSError:
+        # fd went bad; close and let the next call retry resolution.
+        try:
+            os.close(_ir_fd)
+        except OSError:
+            pass
+        _ir_fd = None
+        _ir_last_retry_ts = now
+        return {"present": False, "last_age_s": None, "last_code": _ir_last_code}
+
+    last_age_s = None
+    if _ir_last_press_ts is not None:
+        last_age_s = time.monotonic() - _ir_last_press_ts
+
+    return {"present": True, "last_age_s": last_age_s, "last_code": _ir_last_code}
+
+
+# ---- disk / swap / load / uptime / peripheral battery ----
+
+def _read_diskstats_sectors():
+    """Read /proc/diskstats for mmcblk0 (whole device) else mmcblk0p2.
+
+    Returns (device_key, read_sectors, write_sectors) or (None, 0, 0).
+    Field layout after the 3 id fields: [3]=reads [5]=sectors read
+    [7]=writes [9]=sectors written.
+    """
+    content = _read_file("/proc/diskstats", "")
+    if not content:
+        return (None, 0, 0)
+
+    found = {}
+    for line in content.split("\n"):
+        parts = line.split()
+        if len(parts) < 10:
+            continue
+        device = parts[2]
+        if device not in ("mmcblk0", "mmcblk0p2"):
+            continue
+        try:
+            read_sectors = int(parts[5])
+            write_sectors = int(parts[9])
+            found[device] = (read_sectors, write_sectors)
+        except (ValueError, IndexError):
+            pass
+
+    if "mmcblk0" in found:
+        return ("mmcblk0", found["mmcblk0"][0], found["mmcblk0"][1])
+    if "mmcblk0p2" in found:
+        return ("mmcblk0p2", found["mmcblk0p2"][0], found["mmcblk0p2"][1])
+    return (None, 0, 0)
+
+
+def _read_swap():
+    """Parse /proc/swaps for zram0 -> (used_pct, total_mb)."""
+    content = _read_file("/proc/swaps", "")
+    if not content:
+        return (0.0, 0.0)
+    lines = content.split("\n")
+    for line in lines[1:]:  # skip header
+        parts = line.split()
+        if len(parts) < 4 or "zram0" not in parts[0]:
+            continue
+        try:
+            total_kb = int(parts[2])
+            used_kb = int(parts[3])
+        except (ValueError, IndexError):
+            continue
+        used_pct = 0.0
+        if total_kb > 0:
+            used_pct = max(0.0, min(100.0, (used_kb / total_kb) * 100.0))
+        return (used_pct, total_kb / 1024.0)
+    return (0.0, 0.0)
+
+
+def _read_loadavg():
+    """Read /proc/loadavg -> (avg1, avg5, avg15)."""
+    content = _read_file("/proc/loadavg", "")
+    parts = content.split()
+    if len(parts) < 3:
+        return (0.0, 0.0, 0.0)
+    try:
+        return (float(parts[0]), float(parts[1]), float(parts[2]))
+    except (ValueError, IndexError):
+        return (0.0, 0.0, 0.0)
+
+
+def _read_uptime_s():
+    """Read /proc/uptime -> seconds (float)."""
+    content = _read_file("/proc/uptime", "")
+    parts = content.split()
+    if not parts:
+        return 0.0
+    try:
+        return float(parts[0])
+    except (ValueError, IndexError):
+        return 0.0
+
+
+def _read_peripheral_batteries():
+    """Iterate /sys/class/power_supply/ generically; keep entries with a capacity.
+
+    Returns list of {model_name, capacity_pct}. Skips anything lacking capacity
+    (the board itself has no voltage sensor; do not invent one).
+    """
+    batteries = []
+    try:
+        entries = os.listdir("/sys/class/power_supply")
+    except OSError:
+        return batteries
+
+    for entry in entries:
+        base = f"/sys/class/power_supply/{entry}"
+        model = _read_file(f"{base}/model_name", entry) or entry
+        cap_str = _read_file(f"{base}/capacity", "")
+        if cap_str:
+            try:
+                batteries.append({"model_name": model, "capacity_pct": int(cap_str)})
+                continue
+            except ValueError:
+                pass
+        # HID++ peripherals (e.g. the Logitech K400) expose only capacity_level
+        # ("Full"/"Normal"/"Low"/"Critical", or "Unknown" until the device has
+        # reported in). Show the level rather than dropping the battery.
+        level = _read_file(f"{base}/capacity_level", "")
+        if level:
+            batteries.append({"model_name": model, "level": level})
+
+    return batteries
+
+
+def _read_sysinfo(prev_disk, dt):
+    """Read disk usage/IO, swap, load, uptime, peripheral batteries.
+
+    Returns dict:
+      disk: {used_pct, total_gb}
+      io: {read_bps, write_bps}
+      swap: {used_pct, total_mb}
+      load: {avg1, avg5, avg15}
+      uptime_s
+      batteries: list[{model_name, capacity_pct}]
+    plus internal "_disk_sectors": (device_key, read_sectors, write_sectors)
+    for the caller to thread into next tick's state.
+    """
+    # ---- DISK USAGE ----
+    try:
+        st = os.statvfs("/")
+        total_bytes = st.f_blocks * st.f_frsize
+        avail_bytes = st.f_bavail * st.f_frsize
+        used_bytes = max(0, total_bytes - avail_bytes)
+        used_pct = 0.0
+        if total_bytes > 0:
+            used_pct = max(0.0, min(100.0, (used_bytes / total_bytes) * 100.0))
+        total_gb = total_bytes / (1024 ** 3)
+    except OSError:
+        used_pct = 0.0
+        total_gb = 0.0
+
+    # ---- DISK I/O RATE ----
+    device_key, read_sectors, write_sectors = _read_diskstats_sectors()
+    read_bps = 0.0
+    write_bps = 0.0
+    if prev_disk and device_key and dt > 0:
+        prev_key, prev_read_sec, prev_write_sec = prev_disk
+        if prev_key == device_key:
+            read_bps = max(0.0, (read_sectors - prev_read_sec) * 512 / dt)
+            write_bps = max(0.0, (write_sectors - prev_write_sec) * 512 / dt)
+
+    swap_used_pct, swap_total_mb = _read_swap()
+    avg1, avg5, avg15 = _read_loadavg()
+    uptime_s = _read_uptime_s()
+    batteries = _read_peripheral_batteries()
+
+    return {
+        "disk": {"used_pct": used_pct, "total_gb": total_gb},
+        "io": {"read_bps": read_bps, "write_bps": write_bps},
+        "swap": {"used_pct": swap_used_pct, "total_mb": swap_total_mb},
+        "load": {"avg1": avg1, "avg5": avg5, "avg15": avg15},
+        "uptime_s": uptime_s,
+        "batteries": batteries,
+        "_disk_sectors": (device_key, read_sectors, write_sectors) if device_key else None,
+    }
+
+
+def read_all(prev_stat=None):
+    """Read all sensors -> (snap, cur_stat).
+
+    prev_stat: the cur_stat returned by the previous call (or None on first
+    call, in which case per-core/overall CPU% reads 0.0 for this tick, and
+    net/disk rates read 0.0 too).
+
+    Backward compatible: prev_stat may be the OLD plain cpu-stat dict (just
+    {'total': ticks, 0: ticks, ...}) from before net/disk/IR were added, or
+    the NEW extended dict {'cpu': ..., 'net_bytes': ..., 'disk_sectors': ...,
+    'ts': ...}. Detected by the presence of the 'cpu' key.
+    """
+    ts = time.monotonic()
+    cur_cpu_stat = _read_cpu_stat()
+
+    if prev_stat and "cpu" in prev_stat:
+        prev_cpu_stat = prev_stat.get("cpu")
+        prev_net_bytes = prev_stat.get("net_bytes")
+        prev_disk = prev_stat.get("disk_sectors")
+        prev_ts = prev_stat.get("ts", ts)
+    else:
+        # Old-format prev_stat (plain cpu dict) or None.
+        prev_cpu_stat = prev_stat
+        prev_net_bytes = None
+        prev_disk = None
+        prev_ts = ts
+
+    dt = max(0.0, ts - prev_ts)
+
+    # ---- CPU ----
+    prev_total = prev_cpu_stat.get("total") if prev_cpu_stat else None
+    cur_total = cur_cpu_stat.get("total") if cur_cpu_stat else None
+    cpu_overall = _cpu_pct_delta(prev_total, cur_total)
+
+    cpu_cores = []
+    for core_id in range(8):
+        prev_ticks = prev_cpu_stat.get(core_id) if prev_cpu_stat else None
+        cur_ticks = cur_cpu_stat.get(core_id) if cur_cpu_stat else None
+        pct = _cpu_pct_delta(prev_ticks, cur_ticks)
+        mhz = _read_cpu_mhz(core_id)
+        cls = "A76" if core_id in BIG_CORES else "A55"
+        cpu_cores.append({"id": core_id, "pct": pct, "mhz": mhz, "cls": cls})
+
+    # ---- MEM ----
+    total_kb, avail_kb = _read_meminfo()
+    used_pct = 0.0
+    if total_kb > 0:
+        used_pct = max(0.0, min(100.0, (1.0 - (avail_kb / total_kb)) * 100.0))
+
+    # ---- GPU ----
+    gpu_pct, gpu_mhz = _read_gpu_load()
+
+    # ---- NPU ----
+    npu_cores = _read_npu_load()
+    npu_mhz = _read_npu_mhz()
+    npu_runtime = _read_npu_runtime()
+
+    # ---- THERMAL ----
+    zones = _read_thermal_zones()
+
+    # ---- NETWORK / BT ----
+    net, cur_net_bytes = _read_net(prev_net_bytes, dt)
+
+    # ---- IR ----
+    ir = _read_ir()
+
+    # ---- DISK / SWAP / LOAD / UPTIME / BATTERY ----
+    sysinfo = _read_sysinfo(prev_disk, dt)
+
+    snap = {
+        "ts": ts,
+        "cpu": {"overall": cpu_overall, "cores": cpu_cores},
+        "mem": {"total_kb": total_kb, "avail_kb": avail_kb, "used_pct": used_pct},
+        "gpu": {"pct": gpu_pct, "mhz": gpu_mhz, "temp_c": zones.get("gpu-thermal", 0.0)},
+        "npu": {
+            "cores": npu_cores,
+            "mhz": npu_mhz,
+            "temp_c": zones.get("npu-thermal", 0.0),
+            "runtime": npu_runtime,
+        },
+        "temps": {
+            "soc": zones.get("soc-thermal", 0.0),
+            "bigcore0": zones.get("bigcore0-thermal", 0.0),
+            "bigcore1": zones.get("bigcore1-thermal", 0.0),
+            "littlecore": zones.get("littlecore-thermal", 0.0),
+            "center": zones.get("center-thermal", 0.0),
+            "gpu": zones.get("gpu-thermal", 0.0),
+            "npu": zones.get("npu-thermal", 0.0),
+        },
+        "net": net,
+        "ir": ir,
+        "disk": sysinfo["disk"],
+        "io": sysinfo["io"],
+        "swap": sysinfo["swap"],
+        "load": sysinfo["load"],
+        "uptime_s": sysinfo["uptime_s"],
+        "batteries": sysinfo["batteries"],
+    }
+
+    cur_stat = {
+        "cpu": cur_cpu_stat,
+        "net_bytes": cur_net_bytes,
+        "disk_sectors": sysinfo["_disk_sectors"],
+        "ts": ts,
+    }
+
+    return (snap, cur_stat)
+
+
+# =====================================================================
+# MODULE: render (pure, no I/O)
+# exposes: PURPLE, GREEN, AMBER, RED, FG, DIM, BG, fg, load_rgb, temp_rgb,
+#          hbar, sparkline, panel, banner
+# =====================================================================
+
+PURPLE = (180, 92, 255)   # frames, titles, banner, labels
+GREEN = (62, 245, 138)    # low load / cool
+AMBER = (255, 207, 58)    # mid
+RED = (255, 77, 94)       # high load / hot
+# One shade darker variants, used ONLY for the bar/gauge level ramp so the
+# meters sit back visually while status dots and accents keep the bright set.
+GREEN_D = (48, 190, 108)
+AMBER_D = (200, 162, 44)
+RED_D = (200, 60, 74)
+FG = (222, 222, 232)      # normal text
+DIM = (110, 110, 128)     # chrome / empty bar cells
+BG = (18, 16, 26)         # optional bg
+
+_ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
+
+
+_FG_CACHE = {}
+
+
+def fg(text, rgb):
+    """Wrap text in ANSI truecolor foreground + reset. The escape prefix is
+    cached per colour: fg() runs thousands of times per frame and the f-string
+    formatting was measurable."""
+    pre = _FG_CACHE.get(rgb)
+    if pre is None:
+        pre = "\x1b[38;2;%d;%d;%dm" % rgb
+        _FG_CACHE[rgb] = pre
+    return pre + text + "\x1b[0m"
+
+
+def load_rgb(pct):
+    """darker green<50, darker amber<80, darker red>=80 (bar-ramp shades)."""
+    if pct < 50:
+        return GREEN_D
+    elif pct < 80:
+        return AMBER_D
+    else:
+        return RED_D
+
+
+def temp_rgb(c):
+    """darker green<55, darker amber<75, darker red>=75 (bar-ramp shades)."""
+    if c < 55:
+        return GREEN_D
+    elif c < 75:
+        return AMBER_D
+    else:
+        return RED_D
+
+
+def _visible_len(s):
+    """Visible character count, ignoring ANSI truecolor escape sequences."""
+    return len(_ANSI_RE.sub("", s))
+
+
+def _pad_visible(s, target_width):
+    """Pad/truncate a (possibly ANSI-coloured) string to an exact visible width."""
+    cur = _visible_len(s)
+    if cur < target_width:
+        return s + " " * (target_width - cur)
+    if cur > target_width:
+        # Truncate on visible chars, stripping ANSI first (safe fallback —
+        # callers avoid over-length strings, this just guards width contracts).
+        stripped = _ANSI_RE.sub("", s)
+        return stripped[:target_width]
+    return s
+
+
+def hbar(pct, width, rgb=None, seg=True, fill=None):
+    """Bar of filled cells (coloured) + '░' empty (DIM). seg=True renders the
+    filled cells as hairline-gapped '▊' segments; seg=False as solid '█'. Pass
+    `fill` to override the glyph (e.g. a narrower '▍' for temp bars)."""
+    if rgb is None:
+        rgb = GREEN
+    width = max(0, width)
+    pct = max(0, min(100, pct))
+    filled = int(round((pct / 100) * width))
+    filled = max(0, min(width, filled))
+    empty = width - filled
+
+    # "▊" is a 7/8-width block (Block Elements range, universally covered by
+    # monospace fonts): each filled cell leaves a hairline gap on its right, so
+    # the bar reads as discrete segments instead of one solid slab.
+    fill_ch = fill if fill else ("▊" if seg else "█")
+    out = ""
+    if filled:
+        out += fg(fill_ch * filled, rgb)
+    if empty:
+        out += fg("░" * empty, DIM)
+    return out
+
+
+def sparkline(vals, width):
+    """Unicode sparkline (▁▂▃▄▅▆▇█) from a list of 0..100 values, in FG colour."""
+    SPARKS = "▁▂▃▄▅▆▇█"
+    width = max(0, width)
+    vals = list(vals)
+    if len(vals) < width:
+        vals = [0] * (width - len(vals)) + vals
+    elif len(vals) > width:
+        vals = vals[-width:]
+
+    chars = []
+    for v in vals:
+        v = max(0, min(100, v))
+        idx = int((v / 100) * (len(SPARKS) - 1))
+        chars.append(SPARKS[idx])
+    return fg("".join(chars), FG)
+
+
+def panel(title, body_lines, width, accent=PURPLE):
+    """Rounded box (╭╮╰╯─│), title in accent, body padded to an exact visible width.
+
+    `width` is the visible interior width (not counting the two border columns),
+    matching how callers size their content. Every returned line has visible
+    width == width + 2.
+    """
+    width = max(0, width)
+    result = []
+
+    title_display = title if _visible_len(title) <= width else title[:max(0, width)]
+    border_fill = max(0, width - _visible_len(title_display))
+
+    top_line = (
+        fg("╭", accent)
+        + fg(title_display, accent)
+        + fg("─" * border_fill, accent)
+        + fg("╮", accent)
+    )
+    result.append(top_line)
+
+    left_border = fg("│", accent)
+    right_border = fg("│", accent)
+    for line in body_lines:
+        padded = _pad_visible(line, width)
+        result.append(left_border + padded + right_border)
+
+    bottom_line = fg("╰", accent) + fg("─" * width, accent) + fg("╯", accent)
+    result.append(bottom_line)
+
+    return result
+
+
+def _fmt_rate(bps):
+    """Format bytes/sec as a fixed-width 10-char right-aligned string.
+
+    B/s -> KB/s -> MB/s, 1 decimal place, so columns never wobble between
+    ticks.
+    """
+    if bps is None:
+        bps = 0.0
+    if bps >= 1024 * 1024:
+        value = bps / (1024 * 1024)
+        unit = "MB/s"
+    elif bps >= 1024:
+        value = bps / 1024
+        unit = "KB/s"
+    else:
+        value = bps
+        unit = "B/s"
+    text = f"{value:.1f}{unit}"
+    return text.rjust(10)
+
+
+def hpair(left_lines, right_lines, width, gap=2):
+    """Place two rendered panels side by side.
+
+    Each half gets (width - gap) // 2 visible width. Returns list of lines
+    padded to exact width, with the shorter panel bottom-padded to match height.
+    """
+    half_w = max(0, (width - gap) // 2)
+    left_padded = [_pad_visible(line, half_w) for line in left_lines]
+    right_padded = [_pad_visible(line, half_w) for line in right_lines]
+
+    max_h = max(len(left_padded), len(right_padded))
+    left_padded.extend([" " * half_w] * (max_h - len(left_padded)))
+    right_padded.extend([" " * half_w] * (max_h - len(right_padded)))
+
+    used_w = half_w * 2 + gap
+    remainder = max(0, width - used_w)
+
+    result = []
+    for l, r in zip(left_padded, right_padded):
+        result.append(l + " " * gap + r + " " * remainder)
+
+    return result
+
+
+# Layered header shades: deep purples for the banner texture.
+P_EDGE = (108, 54, 156)
+P_MID = (74, 38, 110)
+P_DIM = (48, 26, 72)
+
+_BANNER_ART = [
+    "███████╗ ██████╗██████╗ ██╗   ██╗███╗   ███╗██████╗ ████████╗ ██████╗ ██████╗ ",
+    "██╔════╝██╔════╝██╔══██╗██║   ██║████╗ ████║██╔══██╗╚══██╔══╝██╔═══██╗██╔══██╗",
+    "███████╗██║     ██████╔╝██║   ██║██╔████╔██║██████╔╝   ██║   ██║   ██║██████╔╝",
+    "╚════██║██║     ██╔══██╗██║   ██║██║╚██╔╝██║██╔═══╝    ██║   ██║   ██║██╔═══╝ ",
+    "███████║╚██████╗██║  ██║╚██████╔╝██║ ╚═╝ ██║██║        ██║   ╚██████╔╝██║     ",
+    "╚══════╝ ╚═════╝╚═╝  ╚═╝ ╚═════╝ ╚═╝     ╚═╝╚═╝        ╚═╝    ╚═════╝ ╚═╝     ",
+]
+
+
+def _noise(x, seed):
+    """Deterministic per-column pseudo-noise in [0,1): stable across frames so
+    the sporadic texture does not flicker between redraws."""
+    h = (x * 2654435761 + seed * 40503) & 0xFFFFFFFF
+    h ^= h >> 13
+    h = (h * 2246822519) & 0xFFFFFFFF
+    return ((h >> 8) & 0xFF) / 255.0
+
+
+def _noise_cell(x, width, seed):
+    """One sporadic texture cell: dense dark speckle at the edges thinning
+    into scattered dim dashes and gaps toward the centre."""
+    half = max(1.0, (width - 1) / 2.0)
+    e = min(x, width - 1 - x) / half
+    d = 1.0 - e
+    r = _noise(x, seed)
+    if r < d * 0.55:
+        return fg("▓", P_EDGE)
+    if r < d * 0.55 + 0.22:
+        return fg("▒", P_MID)
+    if r < d * 0.55 + 0.40:
+        return fg("░", P_DIM)
+    if r < 0.72:
+        return fg("╌", P_DIM)
+    return " "
+
+
+_banner_cache = {}
+_texture_cache = {}
+
+
+def _texture_row(width, seed):
+    """One full-width row of the banner's sporadic purple texture. Cached per
+    (width, seed) so filling bottom deadspace costs nothing after the first
+    frame and never flickers between redraws."""
+    key = (width, seed)
+    cached = _texture_cache.get(key)
+    if cached is not None:
+        return cached
+    row = "".join(_noise_cell(x, width, seed) for x in range(width))
+    _texture_cache[key] = row
+    return row
+
+
+def banner(width):
+    """Block-letter SCRUMPTOP in GREEN, set into a dark sporadic purple
+    texture, with a hardware subtitle rule. Static per width, so it is
+    rendered once and cached (it was one of the larger per-frame costs)."""
+    cached = _banner_cache.get(width)
+    if cached is not None:
+        return cached
+    if width < 40:
+        rows = [fg("S C R U M P T O P".center(width), GREEN)]
+        _banner_cache[width] = rows
+        return rows
+    art_w = max(len(r.rstrip()) for r in _BANNER_ART)
+    pad = max(0, (width - art_w) // 2)
+    rows = []
+    for ri, art in enumerate(_BANNER_ART):
+        art = art.rstrip()
+        cells = []
+        for x in range(width):
+            ax = x - pad
+            ch = art[ax] if 0 <= ax < len(art) else " "
+            if ch != " ":
+                cells.append(fg(ch, GREEN))
+            else:
+                cells.append(_noise_cell(x, width, ri + 1))
+        rows.append("".join(cells))
+    sub = "H96 MAX V58  ·  RK3588  ·  UNOFFICIAL ARMBIAN"
+    side = max(1, (width - len(sub) - 4) // 2)
+    rows.append(fg("╌" * side + "╢ ", P_DIM) + fg(sub, P_MID)
+                + fg(" ╟" + "╌" * (width - len(sub) - 4 - side), P_DIM))
+    _banner_cache[width] = rows
+    return rows
+
+
+# =====================================================================
+# MODULE: app (exposes: render_frame, run)
+# =====================================================================
+
+def _init_state():
+    """Initialize app state: history deques + bench status."""
+    return {
+        "history": {
+            "cpu_overall": deque(maxlen=60),
+            "mem": deque(maxlen=60),
+            "gpu": deque(maxlen=60),
+            "temp_soc": deque(maxlen=60),
+        },
+        "bench_running": False,
+        "bench_thread": None,
+        "bench_proc": None,    # Popen handle so 'b' can cancel a running bench
+        "bench_stopped": False,
+        "bench_result": None,  # (gops_str, tops_str) | "SETUP" | "STOPPED" | None
+        "paused": False,
+        "show_help": True,
+        "interval": 1.0,  # polling rate in seconds; +/- steps through presets
+    }
+
+
+_POLL_STEPS = (0.25, 0.5, 1.0, 2.0, 3.0, 5.0, 10.0)
+
+
+def _step_interval(cur, faster):
+    """Snap to the nearest polling preset, then step one faster or slower."""
+    idx = min(range(len(_POLL_STEPS)), key=lambda i: abs(_POLL_STEPS[i] - cur))
+    idx += -1 if faster else 1
+    return _POLL_STEPS[max(0, min(len(_POLL_STEPS) - 1, idx))]
+
+
+def _update_history(state, snap):
+    """Append current snapshot values to history deques (unless paused)."""
+    if state["paused"]:
+        return
+    state["history"]["cpu_overall"].append(snap["cpu"]["overall"])
+    state["history"]["mem"].append(snap["mem"]["used_pct"])
+    state["history"]["gpu"].append(snap["gpu"]["pct"])
+    state["history"]["temp_soc"].append(snap["temps"]["soc"])
+
+
+def _run_npu_bench(state):
+    """Run 'h96-npu bench all' (one job per core) in a background thread and
+    populate state['bench_result']. Runs in its own session so 'b' can cancel
+    the whole job tree -- the wrapper backgrounds three npuload children."""
+    try:
+        proc = subprocess.Popen(
+            ["h96-npu", "bench", "all"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            start_new_session=True,   # own process group -> killpg reaches children
+        )
+        state["bench_proc"] = proc
+        try:
+            out, err = proc.communicate(timeout=120)
+        except subprocess.TimeoutExpired:
+            _kill_bench_group(proc)
+            proc.communicate()
+            if not state.get("bench_stopped"):
+                state["bench_result"] = ("ERR", "ERR")
+            return
+
+        if state.get("bench_stopped"):
+            return  # user cancelled; _stop_npu_bench already set the result
+
+        output = (out or "") + (err or "")
+        gops_str = "N/A"
+        tops_str = "N/A"
+        found = False
+        # 'bench all' prints an AGGREGATE line last, so the final GOPS/TOPS match
+        # is the whole-NPU total; per-core lines above it are overwritten.
+        for line in output.split("\n"):
+            m = re.search(r"([\d.]+)\s*GOPS", line, re.IGNORECASE)
+            if m:
+                gops_str = m.group(1)
+                found = True
+            m = re.search(r"([\d.]+)\s*TOPS", line, re.IGNORECASE)
+            if m:
+                tops_str = m.group(1)
+                found = True
+
+        if not found and re.search(r"not installed|h96-npu-setup", output, re.IGNORECASE):
+            # runtime is fetch-on-demand and absent; tell the user how to enable it
+            state["bench_result"] = "SETUP"
+        else:
+            state["bench_result"] = (gops_str, tops_str)
+    except (OSError, subprocess.SubprocessError):
+        state["bench_result"] = ("ERR", "ERR")
+    finally:
+        state["bench_proc"] = None
+        state["bench_running"] = False
+
+
+def _kill_bench_group(proc):
+    """Terminate a bench subprocess and its backgrounded npuload children."""
+    try:
+        os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
+    except (ProcessLookupError, PermissionError, OSError):
+        try:
+            proc.terminate()
+        except (ProcessLookupError, OSError):
+            pass
+
+
+def _stop_npu_bench(state):
+    """Cancel a running bench (second press of 'b')."""
+    state["bench_stopped"] = True
+    proc = state.get("bench_proc")
+    if proc is not None and proc.poll() is None:
+        _kill_bench_group(proc)
+    state["bench_result"] = "STOPPED"
+    state["bench_running"] = False
+
+
+# ---- panel content builders ----
+
+_TEMP_MINMAX = {}
+
+
+def _temp_gauge(temp_c, cells=10, label=None):
+    """Small temperature gauge: bar scaled 0-100°C, coloured by the temp ramp,
+    followed by the reading. Used on every component's own panel so each item
+    carries its temp as a gauge, not bare text. When a zone `label` is given,
+    the session min/max for that zone is tracked and shown dim after the value
+    (e.g. '56.0°C 48/61')."""
+    # narrower glyph than the '▊' load bars so temp gauges read as a finer scale
+    bar = hbar(min(100.0, max(0.0, temp_c)), cells, temp_rgb(temp_c), fill="▍")
+    val = fg(f"{temp_c:4.1f}°C", temp_rgb(temp_c))
+    if label and temp_c > 0.0:
+        mn, mx = _TEMP_MINMAX.get(label, (temp_c, temp_c))
+        if temp_c < mn:
+            mn = temp_c
+        if temp_c > mx:
+            mx = temp_c
+        _TEMP_MINMAX[label] = (mn, mx)
+        return f"{bar} {val} {fg(f'{mn:.0f}/{mx:.0f}', DIM)}"
+    return f"{bar} {val}"
+
+
+def _render_cpu_panel(snap, width, state):
+    overall_pct = snap["cpu"]["overall"]
+    body_lines = []
+
+    temps = snap.get("temps", {})
+
+    def _core_zone(core_id):
+        # bigcore0-thermal covers CPU1/2, bigcore1-thermal covers CPU3/4,
+        # littlecore-thermal covers the A55s
+        if core_id in (1, 2):
+            return "bigcore0"
+        if core_id in (3, 4):
+            return "bigcore1"
+        return "littlecore"
+
+    def _core_temp(core_id):
+        return temps.get(_core_zone(core_id), 0.0)
+
+    bar_width = max(4, width - 40)
+    bar_str = hbar(overall_pct, bar_width, load_rgb(overall_pct))
+    body_lines.append(
+        f"  Overall: {bar_str} {overall_pct:5.1f}% {_temp_gauge(temps.get('soc', 0.0), 5, 'soc')}"
+    )
+
+    big_cores = [c for c in snap["cpu"]["cores"] if c["cls"] == "A76"]
+    little_cores = [c for c in snap["cpu"]["cores"] if c["cls"] == "A55"]
+    core_bar_width = max(4, width - 54)
+
+    if big_cores:
+        body_lines.append("")
+        body_lines.append(f"  {fg('A76 Big Cores', PURPLE)}")
+        for core in big_cores:
+            bar_str = hbar(core["pct"], core_bar_width, load_rgb(core["pct"]))
+            body_lines.append(
+                f"    CPU{core['id']}: {bar_str} {core['pct']:5.1f}% @ {core['mhz']:4d}MHz"
+                f" {_temp_gauge(_core_temp(core['id']), 5, _core_zone(core['id']))}"
+            )
+
+    if little_cores:
+        body_lines.append("")
+        body_lines.append(f"  {fg('A55 Little Cores', PURPLE)}")
+        for core in little_cores:
+            bar_str = hbar(core["pct"], core_bar_width, load_rgb(core["pct"]))
+            body_lines.append(
+                f"    CPU{core['id']}: {bar_str} {core['pct']:5.1f}% @ {core['mhz']:4d}MHz"
+                f" {_temp_gauge(_core_temp(core['id']), 5, _core_zone(core['id']))}"
+            )
+
+    if state["history"]["cpu_overall"]:
+        body_lines.append("")
+        spark_str = sparkline(list(state["history"]["cpu_overall"]), max(4, width - 4))
+        body_lines.append(f"  {spark_str}")
+
+    return panel("CPU", body_lines, width, accent=PURPLE)
+
+
+def _render_mem_panel(snap, width):
+    total_kb = snap["mem"]["total_kb"]
+    avail_kb = snap["mem"]["avail_kb"]
+    used_pct = snap["mem"]["used_pct"]
+
+    total_gb = total_kb / (1024 * 1024)
+    avail_gb = avail_kb / (1024 * 1024)
+    used_gb = total_gb - avail_gb
+
+    bar_width = max(4, width - 12)
+    bar_str = hbar(used_pct, bar_width, load_rgb(used_pct))
+
+    body_lines = [
+        f"  {bar_str} {used_pct:5.1f}%",
+        f"  Used: {used_gb:6.2f} GB / {total_gb:6.2f} GB",
+    ]
+    return panel("Memory", body_lines, width, accent=PURPLE)
+
+
+def _render_gpu_panel(snap, width):
+    gpu_pct = snap["gpu"]["pct"]
+    gpu_mhz = snap["gpu"]["mhz"]
+    gpu_temp = snap["gpu"]["temp_c"]
+
+    bar_width = max(4, width - 58)
+    bar_str = hbar(gpu_pct, bar_width, load_rgb(gpu_pct))
+
+    body_lines = [
+        f"  {bar_str} {gpu_pct:5.1f}% @ {gpu_mhz:4d} MHz | {_temp_gauge(gpu_temp, 10, 'gpu')}"
+    ]
+    return panel("GPU", body_lines, width, accent=PURPLE)
+
+
+def _render_npu_panel(snap, width, state):
+    npu_cores = snap["npu"]["cores"]
+    npu_mhz = snap["npu"]["mhz"]
+    npu_temp = snap["npu"]["temp_c"]
+    npu_runtime = snap["npu"]["runtime"]
+
+    title = "NPU" + (" (runtime)" if npu_runtime else " (no runtime)")
+    bar_width = max(4, width - 18)
+
+    body_lines = []
+    for i, pct in enumerate(npu_cores):
+        bar_str = hbar(pct, bar_width, load_rgb(pct))
+        body_lines.append(f"  Core{i}: {bar_str} {pct:5.1f}%")
+
+    # bench result rides on the temp line, right of the NPU temp readout
+    if state["bench_running"]:
+        bench_suffix = f" | {fg('benching 3c (b=stop)', AMBER)}"
+    elif state["bench_result"] == "SETUP":
+        bench_suffix = f" | {fg('run h96-npu-setup', AMBER)}"
+    elif state["bench_result"] == "STOPPED":
+        bench_suffix = f" | {fg('bench stopped', AMBER)}"
+    elif state["bench_result"]:
+        gops, tops = state["bench_result"]
+        bench_suffix = f" | {gops} GOPS/{tops} TOPS"
+    else:
+        bench_suffix = ""
+
+    body_lines.append(
+        f"  Freq: {npu_mhz:4d} MHz | {_temp_gauge(npu_temp, 10, 'npu')}{bench_suffix}"
+    )
+
+    return panel(title, body_lines, width, accent=PURPLE)
+
+
+def _render_net_panel(snap, width):
+    """Network panel: ETH state/speed/rates, WiFi state/signal/rates, BT, IR.
+
+    Rates colour green when the link is up; link-down / blocked / absent is
+    shown DIM (never RED — absence is not an alarm).
+    """
+    net = snap["net"]
+    ir = snap["ir"]
+    body_lines = []
+
+    # ---- ETH ----
+    eth = net["eth0"]
+    eth_up = eth["state"] == "up"
+    eth_dot = fg("●", GREEN if eth_up else DIM)
+    eth_rx = _fmt_rate(eth["rx_bps"]) if eth_up else fg("       --", DIM)
+    eth_tx = _fmt_rate(eth["tx_bps"]) if eth_up else fg("       --", DIM)
+    if eth_up:
+        speed_str = f"{eth['speed_mbps']:4d}Mbps"
+    else:
+        speed_str = fg(f"{eth['state']:>8s}", DIM)
+    body_lines.append(f"  {eth_dot} Eth  {speed_str}  RX {eth_rx}  TX {eth_tx}")
+
+    # ---- WIFI ----
+    wlan = net["wlan0"]
+    wlan_up = wlan["state"] == "up"
+    wlan_dot = fg("●", GREEN if wlan_up else DIM)
+    wlan_rx = _fmt_rate(wlan["rx_bps"]) if wlan_up else fg("       --", DIM)
+    wlan_tx = _fmt_rate(wlan["tx_bps"]) if wlan_up else fg("       --", DIM)
+    if wlan_up and wlan["signal_dbm"] is not None:
+        dbm = wlan["signal_dbm"]
+        sig_color = GREEN if dbm > -70 else AMBER
+        sig_str = fg(f"{dbm:4d}dBm", sig_color)
+    else:
+        sig_str = fg(f"{wlan['state']:>8s}", DIM)
+    body_lines.append(f"  {wlan_dot} WiFi {sig_str}  RX {wlan_rx}  TX {wlan_tx}")
+
+    # ---- BLUETOOTH ----
+    bt = net["bt"]
+    if not bt["present"]:
+        bt_dot = fg("●", DIM)
+        bt_line = f"  {bt_dot} BT   {fg('absent', DIM)}"
+    elif bt["blocked"]:
+        bt_dot = fg("●", DIM)
+        bt_line = f"  {bt_dot} BT   {fg('blocked', DIM)}"
+    else:
+        bt_dot = fg("●", GREEN)
+        bt_line = f"  {bt_dot} BT   {fg('on', GREEN)}  {bt['connections']} device(s)"
+    body_lines.append(bt_line)
+
+    # ---- IR ----
+    if not ir["present"]:
+        ir_dot = fg("●", DIM)
+        ir_line = f"  {ir_dot} IR   {fg('absent', DIM)}"
+    else:
+        ir_dot = fg("●", GREEN)
+        if ir["last_age_s"] is None:
+            ir_line = f"  {ir_dot} IR   {fg('no activity yet', DIM)}"
+        else:
+            age = ir["last_age_s"]
+            ir_line = f"  {ir_dot} IR   last: {age:6.1f}s ago  code {ir['last_code']}"
+    body_lines.append(ir_line)
+
+    return panel("Network", body_lines, width, accent=PURPLE)
+
+
+def _render_system_panel(snap, width):
+    """System panel: disk bar, I/O rates, swap bar, load, uptime, batteries."""
+    body_lines = []
+
+    # ---- DISK ----
+    disk_pct = snap["disk"]["used_pct"]
+    disk_total_gb = snap["disk"]["total_gb"]
+    disk_used_gb = disk_total_gb * (disk_pct / 100.0)
+    bar_width = max(4, width - 36)
+    disk_bar = hbar(disk_pct, bar_width, load_rgb(disk_pct))
+    body_lines.append(
+        f"  Disk: {disk_bar} {disk_pct:5.1f}%  {disk_used_gb:6.1f}/{disk_total_gb:6.1f}GB"
+    )
+
+    # ---- I/O RATES ----
+    read_str = _fmt_rate(snap["io"]["read_bps"])
+    write_str = _fmt_rate(snap["io"]["write_bps"])
+    body_lines.append(f"  I/O:  Read {read_str}   Write {write_str}")
+
+    # ---- SWAP ----
+    swap_pct = snap["swap"]["used_pct"]
+    swap_total_mb = snap["swap"]["total_mb"]
+    if swap_total_mb > 0:
+        swap_bar_width = max(4, width - 24)
+        swap_bar = hbar(swap_pct, swap_bar_width, load_rgb(swap_pct))
+        body_lines.append(f"  Swap: {swap_bar} {swap_pct:5.1f}%")
+    else:
+        body_lines.append(f"  Swap: {fg('none', DIM)}")
+
+    # ---- LOAD / UPTIME ----
+    load = snap["load"]
+    uptime_s = snap["uptime_s"]
+    d = int(uptime_s // 86400)
+    h = int((uptime_s % 86400) // 3600)
+    m = int((uptime_s % 3600) // 60)
+    uptime_str = f"{d}d {h:02d}h {m:02d}m"
+    body_lines.append(
+        f"  Load: {load['avg1']:5.2f} {load['avg5']:5.2f} {load['avg15']:5.2f}"
+        f"   Up: {uptime_str}"
+    )
+
+    # center-thermal (package interior) -- the only zone not shown on a
+    # component bar elsewhere
+    center_t = snap.get("temps", {}).get("center", 0.0)
+    if center_t:
+        body_lines.append(f"  Pkg temp: {_temp_gauge(center_t, 5, 'center')}")
+
+    # ---- PERIPHERAL BATTERIES ----
+    _LEVEL_RGB = {"full": GREEN, "high": GREEN, "normal": GREEN,
+                  "low": AMBER, "critical": RED}
+    for b in snap["batteries"]:
+        model = b["model_name"]
+        if "capacity_pct" in b:
+            pct = b["capacity_pct"]
+            body_lines.append(f"  {model}: {fg(f'{pct:3d}%', load_rgb(100 - pct))}")
+        else:
+            lvl = b.get("level", "unknown")
+            body_lines.append(f"  {model}: {fg(lvl.lower(), _LEVEL_RGB.get(lvl.lower(), DIM))}")
+
+    return panel("System", body_lines, width, accent=PURPLE)
+
+
+def _render_footer(state, cols):
+    poll = f"poll {state.get('interval', 1.0):g}s"
+    if state["show_help"]:
+        text = f"q: quit | p: pause | b: bench/stop | +/-: {poll} | h: toggle help"
+        if state["paused"]:
+            text += "  [PAUSED]"
+    else:
+        text = f"[PAUSED]  {poll}" if state["paused"] else poll
+
+    text = _pad_visible(text, cols)
+    return fg(text, DIM)
+
+
+_chrome_cache = {}
+
+
+def _gradient_rule(width):
+    """Separator rule between the banner and the panels, in the frame colour.
+    Cached per width."""
+    key = ("rule", width)
+    v = _chrome_cache.get(key)
+    if v is None:
+        v = fg("━" * width, PURPLE)
+        _chrome_cache[key] = v
+    return v
+
+
+def _frame_top(width, tag):
+    """Outer frame top border with the wordmark badged in the centre:
+    ╭──┤ tag ├──╮ sized to exactly `width` visible columns."""
+    inner = width - 2
+    label = f"┤ {tag} ├"
+    lab_w = _visible_len(label) if "_visible_len" in globals() else len(tag) + 4
+    left = max(1, (inner - lab_w) // 2)
+    right = max(1, inner - lab_w - left)
+    key = ("top", width, tag)
+    v = _chrome_cache.get(key)
+    if v is None:
+        v = (fg("╭" + "─" * left, PURPLE) + fg("┤ ", PURPLE)
+             + fg(tag, GREEN) + fg(" ├", PURPLE)
+             + fg("─" * right + "╮", PURPLE))
+        _chrome_cache[key] = v
+    return v
+
+
+def _frame_bottom(width, tag):
+    inner = width - 2
+    label_w = len(tag) + 4
+    left = max(1, (inner - label_w) // 2)
+    right = max(1, inner - label_w - left)
+    return (fg("╰" + "─" * left, PURPLE) + fg("┤ ", PURPLE)
+            + fg(tag, DIM) + fg(" ├", PURPLE)
+            + fg("─" * right + "╯", PURPLE))
+
+
+def render_frame(snap, cols, rows, state):
+    """Render one full frame: exactly `rows` lines, each visually `cols` wide.
+
+    The whole terminal is wrapped in a purple outer frame: wordmark badged in
+    the top border, key hints in the bottom border, side rails down both
+    edges, and a palette-gradient rule between the banner and the panels.
+    Panels are generated against the frame's interior (cols - 4) and every
+    interior line is padded ANSI-aware before the rails are attached, so the
+    exactly-rows-by-cols contract is unchanged.
+
+    NET and SYSTEM panels are placed side-by-side when the interior >= 96,
+    else stacked like the rest.
+    """
+    cols = max(24, cols)
+    rows = max(5, rows)
+    inner_w = cols - 2              # inside the side rails
+    interior = max(4, inner_w - 2)  # panel interior (panel adds its own borders)
+
+    blocks = []
+    blocks.append(banner(inner_w))
+    blocks.append([_gradient_rule(inner_w)])
+    blocks.append(_render_cpu_panel(snap, interior, state))
+    blocks.append(_render_gpu_panel(snap, interior))
+    blocks.append(_render_mem_panel(snap, interior))
+    blocks.append(_render_npu_panel(snap, interior, state))
+    # no dedicated TEMPS panel: every zone now rides its component's own bar
+    # (soc on Overall, bigcore0/1 + littlecore per-core, gpu/npu on theirs);
+    # the one zone with no home, center-thermal, lives in the SYSTEM panel.
+
+    if inner_w >= 96:
+        half_interior = max(4, (inner_w - 2) // 2 - 2)
+        net_lines = _render_net_panel(snap, half_interior)
+        sys_lines = _render_system_panel(snap, half_interior)
+        blocks.append(hpair(net_lines, sys_lines, inner_w))
+    else:
+        blocks.append(_render_net_panel(snap, interior))
+        blocks.append(_render_system_panel(snap, interior))
+
+    lines = []
+    for block in blocks:
+        lines.extend(block)
+
+    # Frame top/bottom eat two rows; everything else fits between the rails.
+    body_rows = rows - 2
+    if len(lines) > body_rows:
+        lines = lines[:body_rows]
+    else:
+        # fill bottom deadspace with the banner's sporadic purple texture
+        # instead of blank rows, so the frame reads as one piece
+        for r in range(body_rows - len(lines)):
+            lines.append(_texture_row(inner_w, 101 + r))
+
+    rail = fg("│", PURPLE)
+    out = [_frame_top(cols, "S C R U M P P E R ' S")]
+    for line in lines:
+        out.append(rail + _pad_visible(line, inner_w) + rail)
+
+    poll = f"poll {state.get('interval', 1.0):g}s"
+    if state.get("show_help", True):
+        hint = f"q quit · p pause · b bench/stop · +/- {poll} · h help"
+    else:
+        hint = f"{poll}" + ("  [PAUSED]" if state.get("paused") else "")
+    if state.get("paused") and state.get("show_help", True):
+        hint += "  [PAUSED]"
+    # bottom border must fit the hint; fall back to a plain border when narrow
+    if len(hint) + 6 <= cols:
+        out.append(_frame_bottom(cols, hint))
+    else:
+        out.append(fg("╰" + "─" * (cols - 2) + "╯", PURPLE))
+
+    if len(out) < rows:
+        out.extend([" " * cols] * (rows - len(out)))
+    out = out[:rows]
+    return out
+
+
+# ---- terminal handling ----
+
+class RawMode:
+    """Context manager for raw terminal mode; restores prior settings on exit."""
+
+    def __init__(self):
+        self.fd = sys.stdin.fileno()
+        self.old_settings = None
+
+    def __enter__(self):
+        try:
+            self.old_settings = termios.tcgetattr(self.fd)
+            tty.setraw(self.fd)
+        except (termios.error, OSError):
+            self.old_settings = None
+        return self
+
+    def __exit__(self, *args):
+        if self.old_settings is not None:
+            try:
+                termios.tcsetattr(self.fd, termios.TCSADRAIN, self.old_settings)
+            except (termios.error, OSError):
+                pass
+        return False
+
+
+def _ansi_enter_alt_screen():
+    sys.stdout.write("\x1b[?1049h")
+    sys.stdout.flush()
+
+
+def _ansi_exit_alt_screen():
+    sys.stdout.write("\x1b[?1049l")
+    sys.stdout.flush()
+
+
+def _ansi_hide_cursor():
+    sys.stdout.write("\x1b[?25l")
+    sys.stdout.flush()
+
+
+def _ansi_show_cursor():
+    sys.stdout.write("\x1b[?25h")
+    sys.stdout.flush()
+
+
+def _ansi_clear_screen():
+    sys.stdout.write("\x1b[2J\x1b[H")
+    sys.stdout.flush()
+
+
+def _ansi_home_cursor():
+    """Move cursor to top-left without clearing (avoids full-screen flicker)."""
+    sys.stdout.write("\x1b[H")
+    sys.stdout.flush()
+
+
+def _get_terminal_size():
+    """(rows, cols); falls back to (24, 80) if not a real terminal."""
+    try:
+        size = os.get_terminal_size(sys.stdout.fileno())
+        return (size.lines, size.columns)
+    except (AttributeError, ValueError, OSError):
+        return (24, 80)
+
+
+def _read_key_nonblock():
+    """Read one key without blocking; None if nothing available."""
+    try:
+        ready, _, _ = select.select([sys.stdin], [], [], 0)
+        if ready:
+            ch = sys.stdin.read(1)
+            return ch if ch else None
+        return None
+    except (select.error, OSError, ValueError):
+        return None
+
+
+_resize_pending = False
+
+
+def _sigwinch_handler(signum, frame):
+    global _resize_pending
+    _resize_pending = True
+
+
+def _set_process_identity():
+    """Show up as 'scrumptop', not 'python3', in ps/top and the terminal tab.
+
+    /proc/self/comm is the stdlib-only equivalent of prctl(PR_SET_NAME); the
+    OSC 0 escape names the terminal tab/window. Both best-effort.
+    """
+    try:
+        with open("/proc/self/comm", "w") as f:
+            f.write("scrumptop")
+    except OSError:
+        pass
+    try:
+        if sys.stdout.isatty():
+            sys.stdout.write("\x1b]0;scrumptop\x07")
+            sys.stdout.flush()
+    except OSError:
+        pass
+
+
+def run():
+    """Main entry point. Parses CLI args and either prints one snapshot frame
+    or runs the interactive alternate-screen loop. Returns process exit code.
+    """
+    global _resize_pending
+    _set_process_identity()
+    parser = argparse.ArgumentParser(description="scrumptop: H96 Max V58 system monitor")
+    parser.add_argument("--interval", type=float, default=1.0, help="Refresh interval in seconds")
+    parser.add_argument("--snapshot", action="store_true", help="Print one frame and exit")
+    parser.add_argument("--cols", type=int, default=None, help="Override terminal width")
+    parser.add_argument("--rows", type=int, default=None, help="Override terminal height")
+    args = parser.parse_args()
+
+    if args.snapshot:
+        prev_stat = None
+        # Sample twice (net/disk counters included) so rate fields are
+        # non-zero in a single-shot snapshot instead of always reading 0.
+        _, prev_stat = read_all(prev_stat)
+        time.sleep(0.15)
+        snap, prev_stat = read_all(prev_stat)
+
+        state = _init_state()
+        _update_history(state, snap)
+
+        rows, cols = _get_terminal_size()
+        if args.cols:
+            cols = args.cols
+        if args.rows:
+            rows = args.rows
+
+        frame = render_frame(snap, cols, rows, state)
+        sys.stdout.write("\n".join(frame) + "\n")
+        sys.stdout.flush()
+        return 0
+
+    # Interactive mode.
+    state = _init_state()
+    state["interval"] = min(10.0, max(0.25, args.interval))
+    prev_stat = None
+    prev_frame = None
+    last_refresh = 0.0
+    running = True
+    alt_screen_active = False
+
+    def signal_handler(signum, frame):
+        nonlocal running
+        running = False
+
+    try:
+        _ansi_enter_alt_screen()
+        alt_screen_active = True
+        _ansi_hide_cursor()
+        # Disable auto-wrap: every frame line is exactly terminal-width, and
+        # without this, painting the bottom-right cell scrolls some terminals.
+        sys.stdout.write("\x1b[?7l")
+        _ansi_clear_screen()
+
+        old_sigint = signal.signal(signal.SIGINT, signal_handler)
+        old_sigterm = signal.signal(signal.SIGTERM, signal_handler)
+        try:
+            old_sigwinch = signal.signal(signal.SIGWINCH, _sigwinch_handler)
+        except (ValueError, AttributeError):
+            old_sigwinch = None
+
+        with RawMode():
+            rows, cols = _get_terminal_size()
+            if args.cols:
+                cols = args.cols
+            if args.rows:
+                rows = args.rows
+            while running:
+                # Event-driven wait: block in select() until a key is ready or
+                # the next refresh is due, instead of a 10 ms busy-poll. Idle
+                # wakeups drop from ~100/s to the refresh rate, and keypresses
+                # are handled the instant they arrive. The 0.1 s cap keeps a
+                # pending SIGWINCH resize flag responsive (the handler only sets
+                # a flag, so select is not interrupted straight back to us).
+                timeout = last_refresh + state["interval"] - time.time()
+                timeout = max(0.0, min(0.1, timeout))
+                try:
+                    ready, _, _ = select.select([sys.stdin], [], [], timeout)
+                except (InterruptedError, OSError):
+                    ready = ()
+
+                if ready:
+                    key = _read_key_nonblock()
+                    if key:
+                        if key == "q" or key == "\x03":
+                            running = False
+                            break
+                        elif key == "p":
+                            state["paused"] = not state["paused"]
+                        elif key == "h":
+                            state["show_help"] = not state["show_help"]
+                        elif key in ("+", "="):
+                            state["interval"] = _step_interval(state["interval"], True)
+                            last_refresh = 0.0   # repaint now so the footer shows it
+                        elif key in ("-", "_"):
+                            state["interval"] = _step_interval(state["interval"], False)
+                            last_refresh = 0.0
+                        elif key == "b":
+                            if state["bench_running"]:
+                                _stop_npu_bench(state)   # second press cancels
+                            else:
+                                state["bench_running"] = True
+                                state["bench_stopped"] = False
+                                state["bench_result"] = None
+                                t = threading.Thread(
+                                    target=_run_npu_bench, args=(state,), daemon=True
+                                )
+                                t.start()
+                                state["bench_thread"] = t
+                            last_refresh = 0.0   # reflect the bench state at once
+
+                if _resize_pending:
+                    _resize_pending = False
+                    rows, cols = _get_terminal_size()   # re-read only on resize
+                    if args.cols:
+                        cols = args.cols
+                    if args.rows:
+                        rows = args.rows
+                    _ansi_clear_screen()   # geometry changed: one real clear
+                    prev_frame = None      # force a full repaint
+                    last_refresh = 0.0     # and repaint immediately at the new size
+
+                now = time.time()
+                if now - last_refresh >= state["interval"]:
+                    snap, prev_stat = read_all(prev_stat)
+                    _update_history(state, snap)
+
+                    frame = render_frame(snap, cols, rows, state)
+                    # Line-diff rendering: only lines that CHANGED since the
+                    # previous frame are rewritten (cursor-addressed), inside
+                    # one DEC-2026 synchronized write. On an idle box most
+                    # lines are identical, so per-tick output drops from the
+                    # full ~20 KB frame to a few hundred bytes, which is less
+                    # work for the terminal, the compositor, and the GPU.
+                    # Geometry change = full repaint (prev no longer aligns).
+                    if prev_frame is None or len(prev_frame) != len(frame):
+                        sys.stdout.write(
+                            "\x1b[?2026h\x1b[H" + "\r\n".join(frame) + "\x1b[?2026l"
+                        )
+                    else:
+                        parts = []
+                        for i, line in enumerate(frame):
+                            if line != prev_frame[i]:
+                                parts.append("\x1b[%d;1H%s" % (i + 1, line))
+                        if parts:
+                            sys.stdout.write(
+                                "\x1b[?2026h" + "".join(parts) + "\x1b[?2026l"
+                            )
+                    sys.stdout.flush()
+                    prev_frame = frame
+
+                    last_refresh = now
+
+        if old_sigwinch is not None:
+            try:
+                signal.signal(signal.SIGWINCH, old_sigwinch)
+            except (ValueError, AttributeError):
+                pass
+        signal.signal(signal.SIGINT, old_sigint)
+        signal.signal(signal.SIGTERM, old_sigterm)
+
+        return 0
+
+    except KeyboardInterrupt:
+        return 0
+
+    finally:
+        # Always restore the terminal, even on an unhandled exception.
+        sys.stdout.write("\x1b[?7h")   # re-enable auto-wrap
+        _ansi_show_cursor()
+        if alt_screen_active:
+            _ansi_exit_alt_screen()
+        try:
+            if sys.stdout.isatty():
+                sys.stdout.write("\x1b]0;\x07")   # hand the tab title back
+        except OSError:
+            pass
+        sys.stdout.flush()
+
+
+if __name__ == "__main__":
+    sys.exit(run())

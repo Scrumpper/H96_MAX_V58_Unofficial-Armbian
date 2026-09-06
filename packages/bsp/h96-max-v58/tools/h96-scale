@@ -1,0 +1,91 @@
+#!/bin/bash
+# h96-scale — set KDE Plasma global display scale (X11) and apply it live.
+#
+# Plasma's "Global Scale" slider on X11 only affects newly-started processes, so
+# a running desktop does not visibly change until the next login. This tool
+# writes the same config the slider does (kdeglobals ScaleFactor +
+# ScreenScaleFactors, kcmfonts forceFontDPI), sets live X font DPI, and restarts
+# the Plasma shell, so scale applies immediately with no logout. Already-open
+# apps rescale when relaunched, or at the next login (autologin reduces that
+# to one logout).
+#
+# Runs from a desktop terminal, or over SSH with sudo. Deployed to
+# /usr/local/bin/h96-scale.
+
+set -uo pipefail
+
+[ -r /usr/local/lib/h96/banner.sh ] && . /usr/local/lib/h96/banner.sh
+command -v h96_banner >/dev/null 2>&1 || h96_banner() { :; }
+
+die() { echo "h96-scale: $*" >&2; exit 1; }
+
+# Locate the running Plasma session and its environment, whether this runs as
+# the desktop user or as root over SSH.
+PID=$(pgrep -x plasmashell 2>/dev/null | head -1) || true
+[ -n "${PID:-}" ] || die "no running Plasma session found (start the desktop first)"
+SESS_USER=$(ps -o user= -p "$PID" 2>/dev/null | tr -d ' ')
+[ -n "$SESS_USER" ] || die "cannot identify the desktop user"
+getenv() { tr '\0' '\n' < "/proc/$PID/environ" 2>/dev/null | sed -n "s/^$1=//p" | head -1; }
+D=$(getenv DISPLAY); XA=$(getenv XAUTHORITY)
+DB=$(getenv DBUS_SESSION_BUS_ADDRESS); XR=$(getenv XDG_RUNTIME_DIR)
+[ -n "$D" ] || die "cannot read the desktop session environment (run as $SESS_USER, or with sudo)"
+
+as_user() {
+  if [ "$(id -un)" = "$SESS_USER" ]; then
+    env DISPLAY="$D" XAUTHORITY="$XA" DBUS_SESSION_BUS_ADDRESS="$DB" XDG_RUNTIME_DIR="$XR" "$@"
+  else
+    sudo -u "$SESS_USER" env DISPLAY="$D" XAUTHORITY="$XA" \
+      DBUS_SESSION_BUS_ADDRESS="$DB" XDG_RUNTIME_DIR="$XR" "$@"
+  fi
+}
+
+show_current() {
+  local sf dpi
+  sf=$(as_user kreadconfig6 --file kdeglobals --group KScreen --key ScaleFactor 2>/dev/null)
+  dpi=$(as_user xrdb -query 2>/dev/null | awk '/Xft.dpi/{print $NF}')
+  echo "current scale: ${sf:-1.0}   (font DPI ${dpi:-96}, user $SESS_USER)"
+}
+
+FACTOR="${1:-}"
+if [ -z "$FACTOR" ] || [ "$FACTOR" = "show" ]; then
+  show_current
+  [ "$FACTOR" = "show" ] && exit 0
+fi
+if [ -z "$FACTOR" ] || [ "$FACTOR" = "-h" ] || [ "$FACTOR" = "--help" ]; then
+  cat <<'EOF'
+
+h96-scale — set KDE global display scale (X11), applied live
+
+  h96-scale <factor>   set scale: 1.0  1.25  1.5  1.75  2.0  2.25  2.5
+  h96-scale            show current scale
+  h96-scale --help
+
+A LOG OUT AND BACK IN IS REQUIRED for a scale change to reach all apps: on
+X11, scale only applies to newly-started apps. h96-scale restarts the Plasma
+shell so the panel and desktop update right away, but already-open apps and a
+consistent scale still need a log out/in. Autologin is enabled, so logging
+out returns you to the scaled desktop with no password step. Plasma's
+own Global Scale slider needs the same log out/in (it just does not tell you).
+EOF
+  exit 0
+fi
+
+# validate: a number in 0.5 .. 3.0
+awk "BEGIN{exit !($FACTOR+0 >= 0.5 && $FACTOR+0 <= 3.0)}" 2>/dev/null \
+  || die "scale must be a number between 0.5 and 3.0 (got '$FACTOR')"
+
+DPI=$(awk "BEGIN{printf \"%d\", 96*$FACTOR + 0.5}")
+OUT=$(as_user xrandr 2>/dev/null | awk '/ connected primary/{print $1; exit}')
+[ -n "$OUT" ] || OUT=$(as_user xrandr 2>/dev/null | awk '/ connected/{print $1; exit}')
+[ -n "$OUT" ] || die "no connected display found"
+
+h96_banner "D I S P L A Y   S C A L E"
+echo "h96-scale: scale $FACTOR, font DPI $DPI, output $OUT, user $SESS_USER"
+as_user kwriteconfig6 --file kdeglobals --group KScreen --key ScaleFactor "$FACTOR"
+as_user kwriteconfig6 --file kdeglobals --group KScreen --key ScreenScaleFactors "$OUT=$FACTOR;"
+as_user kwriteconfig6 --file kcmfonts --group General --key forceFontDPI "$DPI"
+printf 'Xft.dpi: %s\n' "$DPI" | as_user xrdb -merge
+as_user systemctl --user restart plasma-plasmashell >/dev/null 2>&1 || true
+echo "h96-scale: applied to the shell now (panel + desktop rescaled)."
+echo "h96-scale: LOG OUT AND BACK IN for it to reach all open apps."
+echo "h96-scale: autologin is on, so logout returns you to the scaled desktop, no password."

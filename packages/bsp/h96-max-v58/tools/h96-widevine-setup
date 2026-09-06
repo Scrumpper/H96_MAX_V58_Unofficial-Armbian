@@ -1,0 +1,161 @@
+#!/bin/bash
+# h96-widevine-setup — install the Widevine L3 CDM for browser DRM playback.
+#
+# Google ships no Widevine CDM for generic ARM64 Linux, so Chromium/Firefox on
+# this image cannot play DRM streams (Discovery+, Netflix, Prime, Disney+).
+# The established workaround extracts the ARM64 L3 CDM from a ChromeOS image.
+# This tool drives the AsahiLinux widevine-installer (MIT licensed), which
+# downloads a Chrome (LaCrOS) image from Google, extracts libwidevinecdm.so,
+# applies the ELF fixups the blob needs on glibc, and installs to
+# /var/lib/widevine. The blob is proprietary Google software and is deliberately
+# NOT bundled in this GPL-2.0 image: it is fetched on demand, same policy as
+# h96-npu-setup.
+#
+# Chromium is wired system-wide by symlinking the CDM into the Chromium bundle
+# dir (/usr/lib/chromium/WidevineCdm), so it loads for every user, survives
+# reboots, and is unaffected by profile-sync-daemon (which puts per-user browser
+# profiles on a volatile /run tmpfs). Firefox is wired system-wide by the
+# installer itself. No per-home files are written.
+#
+# HARD LIMIT: this is Widevine L3. DRM streams cap at SD (~480p), identical to
+# the Android firmware on this box (L1 needs a factory-provisioned trust chain
+# this box does not have; no firmware can add it). Non-DRM video is unaffected.
+#
+# Verified on hardware: Chromium registers the bundled CDM (4.10.2662.3) from
+# the system bundle dir. Confirm playback with https://bitmovin.com/demos/drm.
+
+[ -r /usr/local/lib/h96/banner.sh ] && . /usr/local/lib/h96/banner.sh
+command -v h96_banner >/dev/null 2>&1 || h96_banner() { :; }
+
+set -e
+
+h96_banner "W I D E V I N E   S E T U P"
+
+[ "$(id -u)" = 0 ] || { echo "h96-widevine-setup: needs root (sudo)" >&2; exit 1; }
+
+# Pinned commit (repo publishes no release tags): main @ 2024-08-11
+WVI_COMMIT="eab8c668ad3f9db27a444ee1f94b82d8f3ab5336"
+WVI_URL="https://github.com/AsahiLinux/widevine-installer/archive/${WVI_COMMIT}.tar.gz"
+DEST=/var/lib/widevine
+WORK=$(mktemp -d /tmp/h96-widevine.XXXXXX)
+trap 'rm -rf "$WORK"' EXIT
+
+# Chromium bundle directory: the dir holding its main binary. A CDM at
+# <bundle>/WidevineCdm is loaded for EVERY user, lives on the rootfs, and is
+# untouched by profile-sync-daemon (which relocates per-user browser profiles
+# into a volatile /run tmpfs). This is why per-home hint files fail on this
+# image: the desktop user is not the sudo user, and their profile is on tmpfs.
+CHROMIUM_BUNDLE_DIRS="/usr/lib/chromium /usr/lib/chromium-browser /usr/lib64/chromium /opt/chromium"
+
+chromium_bundle_dir() {
+  local d
+  for d in $CHROMIUM_BUNDLE_DIRS; do
+    if [ -e "$d/chromium" ] || [ -e "$d/chrome" ]; then echo "$d"; return 0; fi
+  done
+  return 1
+}
+
+wire_browsers() {
+  # Chromium: system-wide bundle symlink (all users, reboot- and psd-proof).
+  # Firefox is wired by the installer itself (/etc/profile.d/gmpwidevine.sh +
+  # firefox defaults pref), system-wide already.
+  CDM_SRC="$DEST/WidevineCdm"
+  [ -e "$CDM_SRC/manifest.json" ] || return 1
+  local bdir
+  if bdir=$(chromium_bundle_dir); then
+    ln -sfn "$CDM_SRC" "$bdir/WidevineCdm"
+    echo "  Chromium: wired system-wide at $bdir/WidevineCdm (all users)"
+  else
+    echo "  Chromium bundle dir not found; Chromium wiring skipped" >&2
+    echo "  (Firefox wiring still applied by installer)" >&2
+  fi
+}
+
+case "$1" in
+  status)
+    if [ -e "$DEST/WidevineCdm/manifest.json" ]; then
+      echo "Widevine CDM: INSTALLED at $DEST"
+      bdir=$(chromium_bundle_dir) && [ -L "$bdir/WidevineCdm" ] \
+        && echo "  Chromium: wired at $bdir/WidevineCdm" \
+        || echo "  Chromium: NOT wired (run: sudo h96-widevine-setup)"
+    else
+      echo "Widevine CDM: not installed (run: sudo h96-widevine-setup)"
+    fi
+    exit 0 ;;
+  remove)
+    rm -rf "$DEST" /etc/profile.d/gmpwidevine.sh /etc/profile.d/h96-widevine.sh \
+           /usr/lib64/firefox/defaults/pref/gmpwidevine.js
+    # remove ONLY our symlinks, never a package-bundled real CDM directory
+    for d in $CHROMIUM_BUNDLE_DIRS; do
+      [ -L "$d/WidevineCdm" ] && rm -f "$d/WidevineCdm"
+    done
+    # clean any stray per-user hint files written by older versions of this tool
+    for h in /root /home/*; do
+      rm -f "$h/.config/chromium/WidevineCdm/latest-component-updated-widevine-cdm" 2>/dev/null || true
+    done
+    echo "Widevine CDM removed."
+    exit 0 ;;
+esac
+
+if [ -e "$DEST/WidevineCdm/manifest.json" ]; then
+  wire_browsers
+  echo "Widevine CDM already installed at $DEST; browser wiring refreshed."
+  echo "Reinstall: sudo h96-widevine-setup remove, then run again."
+  exit 0
+fi
+
+cat <<'EOF'
+This installs the Widevine L3 content-decryption module so browser DRM
+streams (Discovery+, Netflix, Prime, Disney+) can play.
+
+  * The CDM is PROPRIETARY Google software, extracted from a ChromeOS
+    recovery image downloaded from Google. It is not part of this image
+    and is fetched now, on your request.
+  * Download is a Chrome (LaCrOS) image, roughly 150 MB, for one 8 MB blob.
+  * DRM streams cap at SD (~480p): this box is Widevine L3, on Android
+    firmware too. A hardware limit; no firmware changes it.
+  * Works in Chromium. Firefox wiring is set up but is best-effort.
+  * EXPERIMENTAL: verify with https://bitmovin.com/demos/drm afterwards.
+
+EOF
+if [ -t 0 ]; then
+  printf "Continue? [y/N] "
+  read -r ans
+  case "$ans" in y|Y|yes|YES) ;; *) echo "Aborted."; exit 1 ;; esac
+fi
+
+command -v curl >/dev/null || { echo "curl missing: sudo apt install curl" >&2; exit 1; }
+command -v python3 >/dev/null || { echo "python3 missing" >&2; exit 1; }
+if ! command -v unsquashfs >/dev/null; then
+  echo "[deps] installing squashfs-tools (unsquashfs)..."
+  apt-get install -y squashfs-tools || { echo "squashfs-tools install failed" >&2; exit 1; }
+fi
+
+echo "[1/4] fetching widevine-installer ${WVI_COMMIT:0:12} (MIT, AsahiLinux)..."
+curl -fsSL "$WVI_URL" -o "$WORK/wvi.tar.gz"
+tar -xzf "$WORK/wvi.tar.gz" -C "$WORK"
+WVI_DIR=$(echo "$WORK"/widevine-installer-*)
+[ -x "$WVI_DIR/widevine-installer" ] || chmod +x "$WVI_DIR/widevine-installer"
+
+echo "[2/4] downloading Chrome (LaCrOS) image and extracting the CDM"
+echo "      (large download; takes a while on this box)..."
+# widevine-installer installs under /var/lib/widevine and writes system-wide
+# Firefox GMP wiring; run non-interactively.
+yes | "$WVI_DIR/widevine-installer" || {
+  echo "widevine-installer failed; nothing was changed outside $DEST" >&2
+  exit 1
+}
+[ -e "$DEST/WidevineCdm/manifest.json" ] || { echo "install did not produce $DEST/WidevineCdm" >&2; exit 1; }
+
+echo "[3/4] wiring Chromium system-wide (all users)..."
+wire_browsers || echo "warning: CDM component not found under $DEST; Chromium wiring skipped" >&2
+
+echo "[4/4] Firefox wiring (done by installer: /etc/profile.d/gmpwidevine.sh)..."
+
+echo
+echo "Widevine L3 installed."
+echo "  * Restart the browser fully (all windows), then test:"
+echo "      https://bitmovin.com/demos/drm"
+echo "  * DRM streams play at SD (~480p): L3 hardware limit, see docs."
+echo "  * Remove:  sudo h96-widevine-setup remove"
+echo "  * Status:  sudo h96-widevine-setup status"

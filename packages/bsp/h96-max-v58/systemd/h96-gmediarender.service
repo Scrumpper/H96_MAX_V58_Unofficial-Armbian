@@ -1,0 +1,24 @@
+# h96-gmediarender.service - UPnP/DLNA renderer -> HDMI (open Cast substitute)
+# TEMPLATE. Placeholders __DESKTOP_USER__ __UID__ __HOME__ substituted by
+# h96-cast at 'enable'. No open Google Cast receiver exists; DLNA is the
+# open "push media to box" path.
+[Unit]
+Description=h96 DLNA/UPnP media renderer (gmediarender -> HDMI)
+Documentation=https://github.com/hzeller/gmrender-resurrect
+After=network-online.target sound.target
+Wants=network-online.target
+
+[Service]
+User=__DESKTOP_USER__
+Group=__DESKTOP_USER__
+Environment=XDG_RUNTIME_DIR=/run/user/__UID__
+Environment=PULSE_SERVER=unix:/run/user/__UID__/pulse/native
+Environment=DISPLAY=:0
+Environment=XAUTHORITY=__HOME__/.Xauthority
+ExecStartPre=/bin/sh -c 'for i in $(seq 1 30); do [ -S /run/user/__UID__/pulse/native ] && exit 0; sleep 1; done; exit 0'
+ExecStart=/usr/bin/gmediarender -f "H96 Max V58" -p 49494 --gstout-audiosink=pulsesink --gstout-videosink=autovideosink
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

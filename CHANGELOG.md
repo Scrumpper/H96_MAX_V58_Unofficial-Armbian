@@ -2,6 +2,165 @@
 
 
 
+## v5.0
+
+Kernel rebuild, two new opt-in tools, and a stability pass over
+v4.2.1. Shipped as one full image; the flasher still slims it to a headless, no-GPU, or
+bare-server build on demand.
+
+The released image is **console only**: no desktop and no user account. A desktop is
+installed on demand (`armbian-config`, or `apt install kde-plasma-desktop`), and
+`h96-autologin-setup` then wires lightdm autologin to the `plasmax11` (X11) session.
+Reflashing wipes an existing desktop install.
+
+- `.img`    sha256 `f96940028ad1273134f2a04079676837c057e8ae452a92d32d55589ac7e79e6c`
+- `.img.xz` sha256 `60edb57933cb72bbcb4be213fe58dffd181fc4c5749ef636b2b7f8e1499b9b87`
+
+- **Kernel rebuilt with `CONFIG_PSI=y`** (`PSI_DEFAULT_DISABLED` off), from
+  armbian/linux-rockchip, branch `rk-6.1-rkr5.1`, commit `95e85f6c`. Android 11 and later
+  `init`/`lmkd` hard-require `/proc/pressure`; without it the Waydroid container boots and
+  then dies in about 15 seconds. It is an **Image-only rebuild**: PSI is built in and the
+  kernel release string is unchanged at 6.1.115, so `/lib/modules/6.1.115` stays valid and
+  no module is rebuilt. Verified on hardware: 69 modules load with zero ABI errors.
+  **Existing users cannot `apt upgrade` into this kernel. It needs the new image.**
+
+- **New `h96-waydroid`: Android in a container.** Waydroid 1.6.2 plus a nested Weston
+  window inside the X11 session. Three image profiles:
+  - `init gapps|vanilla`, the DEFAULT: the official Waydroid LineageOS 20 image
+    (`lineage-20.0-20260403-VANILLA-waydroid_arm64`, Android 13, vendor type MAINLINE,
+    about 900 MB), with the Mali-G610 wired by default (`drm_device=/dev/dri/renderD130`,
+    `ro.hardware.gralloc=gbm`, `ro.hardware.egl=mesa`, `renderD130` and `card2` bound into
+    the container). Measured: `dumpsys SurfaceFlinger` reports
+    `GLES: Mesa, Mali-G610 MC4 (Panfrost), OpenGL ES 3.1 Mesa 26.0.1`; GPU load reads
+    `0@300000000Hz` at idle, reaches 50 percent at 1000 MHz under UI activity, and sits at
+    19 to 26 percent at 600 MHz. `boot_completed=1` with the session ready in about 8
+    seconds. Android 13 is cgroup v2, so no cgroup v1 shims are applied.
+  - `init gpu`, LEGACY: a third-party Panthor-in-image Android 11 build (LineageOS 18.1,
+    about 5 GB) that you supply. Measured on this profile, `dumpsys SurfaceFlinger` reports
+    `GLES: Mesa, Mali-G610 (Panfrost), OpenGL ES 3.1 Mesa 24.0.5`; GPU load runs 27 to 41
+    percent at 300 to 700 MHz. Older Android, older Mesa, unsigned, needs cgroup v1 tmpfs
+    shims, pins a 960x512 display that has to be overridden, Vulkan never worked, and it
+    has been abandoned since April 2024 (author WillzenZou, repos frozen). Kept only for
+    anyone holding that image.
+  - `init custom <dir>`: your own arm64 Waydroid-style `system.img` plus `vendor.img`
+    PAIR.
+  - `hw off` forces software rendering, as a diagnostic and fallback; `hw on` re-applies
+    the GPU wiring and verifies it.
+
+  Correction to an earlier claim in this changelog: the official LineageOS 20 image was
+  described as carrying no Panfrost and software rendering through SwiftShader. That was
+  wrong. The tool's own `init` was forcing `ro.hardware.egl=swiftshader` and deleting
+  `drm_device`, so the measurement described our configuration, not the image. Upstream
+  enables the ARM drivers in `waydroid_arm64/BoardConfig.mk`
+  (`BOARD_MESA3D_GALLIUM_DRIVERS += ... panfrost lima`, `BOARD_MESA3D_VULKAN_DRIVERS +=
+  ... panfrost`), not in the root `BoardConfig.mk`, which lists only llvmpipe, virgl and
+  friends. One constraint stands: HALIUM vendor images are stripped of the Mesa GPU
+  drivers, so the MAINLINE vendor image is required, and MAINLINE is what these profiles
+  fetch.
+
+  Images are 2 to 5 GB, are **not** bundled, and are stashed under `/etc/waydroid-extra/`
+  so switching profiles never re-downloads. The window is **fixed size on purpose**: any
+  window-manager geometry change makes Weston reconfigure its X11 output, the Waydroid
+  client cannot follow, and the window goes permanently black; the launcher pins
+  `WM_NORMAL_HINTS` min equal to max. `spoof` reports the box as a common phone for Aurora
+  Store, and does **not** defeat Play Integrity or SafetyNet. `state save|list|load|delete`
+  snapshots the Android `/data`, and refuses cross-profile restores because Android 11 data
+  on Android 13 crashes `system_server`.
+
+  **Honest limit: the container cannot use the RK3588 NPU.** Its `vendor.img` has no RKNN
+  libraries and no neuralnetworks HAL, so passing the node through would hand Android a
+  device file with no driver.
+
+- **New `h96-emulators`: 8 GPU-accelerated systems.** `retroarch`, `dolphin`, `ppsspp`,
+  `flycast`, `melonds`, `rmg` and `azahar` as native ARM64 Flatpaks through PanVK/Panfrost,
+  plus `cemu` as the x86-64 build under `box64`. `install` wires each Flatpak's sandbox to
+  the Mali GPU and then verifies it, warning when an emulator would silently fall back to
+  `llvmpipe` software rendering. mGBA and ScummVM are deliberately excluded: they are 2D,
+  do not meaningfully use the GPU, and are already in the software store as `io.mgba.mGBA`
+  and `org.scummvm.ScummVM` on Flathub, or as apt `mgba-qt` and `scummvm`.
+
+- **`h96-npu` gains `power [performance|balanced|powersave|sync|status]`.** The NPU devfreq
+  had been pinned at 1000 MHz for 100 percent of uptime while nothing used it; `powersave`
+  parks it at 300 MHz. `power sync` matches the NPU to the system CPU and GPU profile, and
+  `sync on` makes it follow `h96-perf` automatically. `h96-perf` is now listed in the `h96`
+  command index.
+
+- **Two units that failed every boot are fixed**, so `systemctl --failed` now reports zero.
+  `h96-rfcomm` shipped a 0 byte `rfcomm.ko` and its self-heal guard tested `-f`, which
+  passes for an empty file; it now tests `-s`. `systemd-modules-load` requested `brcmfmac`
+  alongside `bcmdhd`, which owns the WiFi chip, and `rknpu`, which is built in.
+
+- **`rsyslog` disabled.** It duplicated the whole journal to eMMC: 27.8 MB of
+  `/var/log/syslog` in about 10 hours. `/var/log` measured 33 MB before the change and 3.6 MB immediately after. The journal itself is deliberately persistent and capped at 200 MB on eMMC plus 32 MB in tmpfs, so `/var/log` settles under that cap rather than staying at 3.6 MB. `journalctl`
+  is unaffected.
+
+- **`lxc`, `lxc-net` and `lxc-monitord` disabled.** Zero LXC containers exist and Waydroid
+  uses its own bridge. Verified afterwards that Android still leases an address and pings
+  8.8.8.8 with 0 percent loss.
+
+- **Boot speed audited and deliberately NOT changed.** `graphical.target` is reached 4.860
+  seconds into userspace. The 42 second figure in `systemd-analyze` is time until the last
+  unit settles, which is two Bluetooth units intentionally ordered off the boot path.
+
+- **TESTED AND REJECTED: shadowing the container's `/dev/kmsg`** to cut log noise. It
+  mounts cleanly, but the Waydroid container then never starts. Recorded here so nobody
+  retries it.
+
+- **`h96-emulators` GPU verification, four bugs fixed.**
+  1. `gpu_probe()` only tested that the Panfrost ICD **file** existed inside the sandbox.
+     That file ships with `org.freedesktop.Platform.GL.default`, so it is present for every
+     app using that extension: the check could never return "software" and verified nothing.
+     It reported PPSSPP as hardware while PPSSPP's default OpenGL backend was failing with
+     `EGL_BAD_ALLOC` and never opening a window. The probe reads a renderer string now
+     and falls back to the file test only as a last resort, labelled "renderer NOT verified"
+     rather than claiming hardware.
+  2. The tool's user environment set only `WAYLAND_DISPLAY`, never `DISPLAY` or
+     `XAUTHORITY`, and this box is X11 on purpose, so no GL probe could reach a display.
+     After the fix the automatic probe verifies four of the seven Flatpaks directly as
+     `Renderer: Mali-G610 MC4 (Panfrost)`, the Qt based ones where a renderer tool exists
+     inside the runtime. The other three report "renderer NOT verified" rather than claiming
+     hardware; hand testing from their own logs confirmed `retroarch` and `flycast` on
+     hardware too, and PPSSPP only on its Vulkan backend.
+  3. `gpu` silently skipped `cemu` (`if kind != "flatpak": continue`), hiding the entry most
+     likely to have GPU trouble. It is reported explicitly now.
+  4. `elevate()` re-execs the tool as root with `sudo -E`, which is deliberate so `DISPLAY`
+     and `XAUTHORITY` survive for the probe. But `-E` also carried `HOME=/home/<user>` into
+     the root process, and flatpak initialises a per-user repo at
+     `$HOME/.local/share/flatpak` on almost any invocation. Run as root that repo landed in
+     the desktop user's home owned by root with mode 700, so every later `flatpak run` as
+     that user failed with `Permission denied` and the probe could only report `unknown`,
+     which reads as a missing GPU when the GPU is fine. `elevate()` now pins `HOME=/root`
+     while keeping `-E`, and a repair pass corrects the ownership on boxes already in that
+     state.
+
+- **`h96-waydroid` wires the GPU by default.** `init gapps|vanilla` no longer forces
+  SwiftShader. cgroup v1 tmpfs shims are applied only on the legacy Android 11 path, since
+  Android 13 is cgroup v2. `status` now keys the profile off which image stash is linked
+  rather than off `drm_device`, which is always set now, and image identity properties are
+  cleared on init so a profile switch cannot leak the previous image's model string.
+
+- **zram self-heals.** Swap came up disabled on a fresh flash despite being configured. A
+  self-heal unit re-establishes it at boot.
+
+- **The KDE screen locker is off by default.** `/etc/skel/.config/kscreenlockerrc` ships
+  `Autolock=false`, `LockOnResume=false`, `Timeout=0`, so a TV box does not lock itself.
+
+- **Image builder no longer leaks orphan inodes.** It issued a blind `mkdir` per path
+  component; `debugfs` leaks an inode when the directory already exists, which is where the
+  34 empty numbered directories under `/lost+found` came from. The builder stats before
+  creating now. The 35 inherited from earlier builds are still present, empty and harmless.
+
+- **First boot no longer races Armbian's setup wizard for the dpkg lock.**
+  `h96-online-extras.service` runs right after `multi-user.target`, exactly when the first-run
+  wizard is creating the user account. It took the lock with no wait, so the wizard died with
+  "could not get frontend lock" and finished its work in the background. The script now waits
+  for the lock (`fuser` poll, the pattern `h96-gaming-setup.sh` already used) and passes
+  `DPkg::Lock::Timeout=600` on both apt calls.
+
+- **Flashing no longer needs the pinhole button.** A box that still boots is put into Loader
+  mode with `reboot loader` over SSH, and the flasher converts Loader to Maskrom itself. The
+  pinhole method stays documented as the fallback for a box that will not boot.
+
 ## v4.2.1
 
 Adds the `h96` command index. Type `h96` on the box to list every command grouped by
@@ -255,7 +414,7 @@ BSP suspend does not resume), so a dark unresponsive screen is always this
 output-drop state, not sleep. Fix: `h96-display-wake.service` watches input
 devices; on a key or button press while connector is connected but disabled,
 it re-drives output with an explicit X modeset at forced boot mode plus
-`xset dpms force on`. A udev rule runs same check after a real hotplug
+`xset dpms force on`. A udev rule runs same check after a hotplug
 (`HOTPLUG=1`). Normal blanking is untouched: healthy DPMS keeps
 `enabled=enabled` and daemon acts only in broken state. Manual trigger:
 `sudo h96-display wake`. Measured: broken state forced via `xrandr --off`,
@@ -346,7 +505,7 @@ published publicly under GPL-2.0, so it cannot carry that binary, and build now
 
 New command **`sudo h96-npu-setup`** fetches it from Rockchip instead, showing you their
 licence first. Verified end to end: it installs `librknnrt version: 2.3.2` against driver
-v0.9.8, validates that download really is an aarch64 shared object before installing
+v0.9.8, validates that download is an aarch64 shared object before installing
 anything, and `--uninstall` removes it cleanly.
 
 **Known limitation, stated.** Rockchip publishes `rknn-toolkit-lite2` wheels only
@@ -457,7 +616,7 @@ big cores, 3 alternating reps, 3 s settle, clock verified *mid-run*:
 
 **+8.7% clock produced +0.53% work**, and peak temperature rose 82 °C → 85 °C. 2400 MHz was
 stable at **975 mV** and clock was sustained, confirmed by live sampling and by
-`time_in_state` (13442 ticks at 2400 against 812 at 2208). It simply does not help: a
+`time_in_state` (13442 ticks at 2400 against 812 at 2208). It does not help: a
 compute-bound workload that ought to scale with clock doesn't, because limit on this SoC
 is memory bandwidth (~21 GB/s), not core frequency.
 
@@ -555,7 +714,7 @@ timeouts at 1.013 s each add roughly 55 seconds to boot.
 So v3.4's approach stands: a forced mode, and HDMI audio works. But measuring a **fresh
 flash** of v4.0 corrected *why* it works, and earlier explanation was wrong.
 
-### Appendix: correction, substitute EDID never actually loads
+### Appendix: correction, substitute EDID never loads
 
 On a freshly flashed box kernel reports:
 
@@ -657,7 +816,7 @@ would not boot**: this U-Boot and kernel will not boot a uImage `uInitrd` with a
 early cpio, and connector probe fails before root filesystem is mounted. Leave
 `uInitrd` alone and accept startup cost.
 
-**Why not simply drop argument.** Retry storm is not only a startup cost. DRM
+**Why not drop argument.** Retry storm is not only a startup cost. DRM
 connector hotplug poll keeps retrying for as long as board is powered. Measured: with no
 argument, 108 timeouts by 99 seconds and still climbing at roughly one per second; with this
 EDID, 19 timeouts, and it stays at 19.

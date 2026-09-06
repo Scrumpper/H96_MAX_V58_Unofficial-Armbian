@@ -1,0 +1,271 @@
+#!/bin/bash
+# h96-hdr -- HDR10 video handling for mpv on the H96 Max V58.
+#
+# WHAT THIS IS: a switch for how mpv treats HDR10 (BT.2020 PQ) video, driven by
+# vo=gpu-next / libplacebo. It manages a small drop-in at /etc/mpv/hdr.conf and a
+# single marked include line in /etc/mpv/mpv.conf. The base mpv.conf is otherwise
+# left untouched.
+#
+#   tonemap       HDR10 -> SDR BT.709 (the safe, default mode on this box)
+#   passthrough   send BT.2020 PQ + HDR metadata to the display (EXPERIMENTAL)
+#   off           remove the include line; mpv falls back to its base config
+#
+# WHY tonemap IS THE DEFAULT: this image runs KDE Plasma on X11 (Wayland breaks
+# the GPU/mpv stack on this RK3588 BSP). mpv's HDR passthrough switch,
+# target-colorspace-hint, is honoured ONLY on Wayland, DRM-KMS and D3D11 output
+# contexts -- NOT on X11. So inside the desktop session the only correct thing to
+# do with HDR is tone-map it to SDR. Passthrough is reachable only by driving KMS
+# directly from a text console, and only if the ophub 6.1 vop2/HDMI-QP driver
+# exposes the HDR_OUTPUT_METADATA connector property (mainline gained RK3588 HDMI
+# output around 6.11; the 6.1 BSP is unconfirmed -- this is a box-test).
+#
+# vo=gpu-next itself must be confirmed working on this Panfrost/PanVK stack:
+#     h96-hdr test
+#
+# Deployed to /usr/local/bin/h96-hdr.
+
+set -uo pipefail
+
+[ -r /usr/local/lib/h96/banner.sh ] && . /usr/local/lib/h96/banner.sh
+command -v h96_banner >/dev/null 2>&1 || h96_banner() { :; }
+
+CONF=/etc/mpv/mpv.conf
+DROPIN=/etc/mpv/hdr.conf
+BEGIN='# >>> h96-hdr >>>'
+END='# <<< h96-hdr <<<'
+
+die() { echo "h96-hdr: $*" >&2; exit 1; }
+need_root() { [ "$(id -u)" -eq 0 ] || die "that needs root (try: sudo h96-hdr $*)"; }
+
+is_on()  { [ -f "$CONF" ] && grep -qF "$BEGIN" "$CONF"; }
+
+# which mode the drop-in currently holds (tonemap / passthrough / unknown)
+current_mode() {
+    [ -f "$DROPIN" ] || { echo "absent"; return; }
+    if grep -q '^# MODE: tonemap' "$DROPIN"; then echo "tonemap"
+    elif grep -q '^# MODE: passthrough' "$DROPIN"; then echo "passthrough"
+    else echo "custom"; fi
+}
+
+have_libplacebo() {
+    { command -v ldconfig >/dev/null 2>&1 && ldconfig -p 2>/dev/null | grep -qi 'libplacebo'; } && return 0
+    ls /usr/lib/*/libplacebo.so* >/dev/null 2>&1 && return 0
+    return 1
+}
+
+have_gpu_next() {
+    command -v mpv >/dev/null 2>&1 || return 2
+    mpv --vo=help 2>/dev/null | grep -qw 'gpu-next'
+}
+
+# Detect the active graphical session type (x11 / wayland / unknown). Runs as root,
+# so it inspects the first non-root login session, then falls back to the running
+# compositor. This box was verified running KDE Plasma on WAYLAND (lightdm), where
+# vo=gpu-next renders fine, so passthrough messaging must not hardcode X11.
+detect_session_type() {
+    local sid ty
+    sid="$(loginctl list-sessions --no-legend 2>/dev/null | awk '$3!="root"{print $1; exit}')"
+    if [ -n "$sid" ]; then
+        ty="$(loginctl show-session "$sid" -p Type --value 2>/dev/null)"
+        [ -n "$ty" ] && { echo "$ty"; return; }
+    fi
+    pgrep -x kwin_wayland >/dev/null 2>&1 && { echo wayland; return; }
+    pgrep -x Xorg >/dev/null 2>&1 && { echo x11; return; }
+    echo unknown
+}
+
+# ---- drop-in writers -------------------------------------------------------
+
+write_tonemap() {
+    cat > "$DROPIN" <<'EOF'
+# /etc/mpv/hdr.conf -- managed by h96-hdr. Edits here are overwritten on toggle.
+# MODE: tonemap   HDR10 / BT.2020 PQ -> SDR BT.709   (safe default on X11)
+vo=gpu-next
+target-colorspace-hint=no
+target-prim=bt.709
+target-trc=bt.1886
+tone-mapping=bt.2390
+tone-mapping-mode=auto
+gamut-mapping-mode=perceptual
+# GLES 3.1 compute shader; comment out if 4K HDR playback stutters on the G610
+hdr-compute-peak=yes
+EOF
+    chmod 0644 "$DROPIN"
+}
+
+write_passthrough() {
+    cat > "$DROPIN" <<'EOF'
+# /etc/mpv/hdr.conf -- managed by h96-hdr. Edits here are overwritten on toggle.
+# MODE: passthrough   BT.2020 PQ + HDR metadata to the display   (EXPERIMENTAL)
+#
+# target-colorspace-hint is honoured ONLY on Wayland / DRM-KMS / D3D11 output.
+# Under the KDE-on-X11 desktop it has NO effect and colours will look wrong.
+# Real passthrough is reachable only from a text console:
+#     sudo h96-hdr off      (drop the include from the X session first)
+#     then, from a TTY:
+#       mpv --vo=gpu-next --gpu-context=drm --target-colorspace-hint=yes <file>
+# and only if the 6.1 HDMI driver exposes HDR_OUTPUT_METADATA (box-test).
+vo=gpu-next
+target-colorspace-hint=yes
+target-prim=bt.2020
+target-trc=pq
+tone-mapping=clip
+EOF
+    chmod 0644 "$DROPIN"
+}
+
+add_include() {
+    cp -a "$CONF" "$CONF.pre-h96-hdr"
+    {
+        printf '%s\n' "$BEGIN"
+        printf '# added by h96-hdr; remove with: sudo h96-hdr off\n'
+        printf 'include=%s\n' "$DROPIN"
+        printf '%s\n' "$END"
+    } >> "$CONF"
+}
+
+remove_include() {
+    cp -a "$CONF" "$CONF.pre-h96-hdr"
+    local b e
+    b=$(printf '%s' "$BEGIN" | sed 's/[]\/$*.^[]/\\&/g')
+    e=$(printf '%s' "$END"   | sed 's/[]\/$*.^[]/\\&/g')
+    sed -i "/$b/,/$e/d" "$CONF"
+}
+
+# ---- actions ---------------------------------------------------------------
+
+do_tonemap() {
+    need_root tonemap
+    [ -f "$CONF" ] || die "$CONF does not exist (is mpv installed? run h96-video-setup)"
+    have_gpu_next || echo "h96-hdr: WARNING -- mpv does not list a 'gpu-next' vo here; run 'h96-hdr test' before relying on this"
+    write_tonemap
+    is_on || add_include
+    echo "h96-hdr: tonemap enabled (HDR10 -> SDR). include added to $CONF"
+    echo "         backup at $CONF.pre-h96-hdr; restart mpv to apply"
+}
+
+do_passthrough() {
+    need_root passthrough
+    [ -f "$CONF" ] || die "$CONF does not exist (is mpv installed? run h96-video-setup)"
+    write_passthrough
+    is_on || add_include
+    echo "h96-hdr: passthrough enabled (EXPERIMENTAL)."
+    echo
+    local _st; _st="$(detect_session_type)"
+    echo "  Session detected: ${_st:-unknown}."
+    echo "  !!! mpv HDR passthrough (target-colorspace-hint) needs Wayland / DRM-KMS."
+    echo "      On an X11 session it has NO effect and HDR video looks WRONG (clipped,"
+    echo "      oversaturated). On Wayland it can carry BT.2020 PQ to an HDR display,"
+    echo "      but real HDR output still depends on the display + this 6.1 BSP and is"
+    echo "      not fully confirmed. If colours look wrong, use tonemap instead:"
+    echo "        sudo h96-hdr tonemap"
+    echo "      Or test passthrough from a TTY:"
+    echo "        mpv --vo=gpu-next --gpu-context=drm --target-colorspace-hint=yes FILE"
+    echo
+    echo "         backup at $CONF.pre-h96-hdr; restart mpv to apply"
+}
+
+do_off() {
+    need_root off
+    is_on || { echo "h96-hdr: already off (no include in $CONF)"; exit 0; }
+    remove_include
+    echo "h96-hdr: off. include removed from $CONF (backup at $CONF.pre-h96-hdr)"
+    echo "         mpv reverts to its base config; restart mpv to apply"
+}
+
+show_status() {
+    h96_banner "H D R  1 0"
+    local gn; have_gpu_next; case $? in
+        0) gn="available" ;;
+        2) gn="mpv NOT installed" ;;
+        *) gn="NOT listed by this mpv" ;;
+    esac
+    printf '  mpv config       %s\n' "$CONF"
+    printf '  drop-in          %s (%s)\n' "$DROPIN" "$([ -f "$DROPIN" ] && echo present || echo MISSING)"
+    printf '  include active   %s\n' "$(is_on && echo yes || echo no)"
+    printf '  mode             %s\n' "$(is_on && current_mode || echo 'off')"
+    printf '  vo=gpu-next      %s\n' "$gn"
+    printf '  libplacebo       %s\n' "$(have_libplacebo && echo present || echo 'NOT found')"
+    if [ -f "$CONF" ]; then
+        printf '  base vo          %s\n' "$(grep -m1 '^vo=' "$CONF" | cut -d= -f2- || echo '(unset)')"
+        printf '  hwdec            %s\n' "$(grep -m1 '^hwdec=' "$CONF" | cut -d= -f2- || echo '(unset)')"
+    fi
+    cat <<'TXT'
+
+  This box runs KDE on X11, so tonemap (HDR10 -> SDR) is the reliable mode.
+  Passthrough (BT.2020 PQ over HDMI) needs Wayland/DRM-KMS and is a box-test.
+
+  sudo h96-hdr tonemap        HDR10 -> SDR (recommended)
+  sudo h96-hdr passthrough    BT.2020 PQ out (experimental, console-only)
+  sudo h96-hdr off            remove it
+       h96-hdr test [file]    check vo=gpu-next actually starts here
+TXT
+}
+
+run_test() {
+    command -v mpv >/dev/null 2>&1 || die "mpv is not installed (run h96-video-setup first)"
+    echo "  libplacebo:   $(have_libplacebo && echo present || echo 'NOT found -- gpu-next cannot work without it')"
+    if have_gpu_next; then
+        echo "  gpu-next vo:  listed by mpv"
+    else
+        die "mpv does not list a 'gpu-next' video output. This mpv build lacks libplacebo/gpu-next; HDR tone-mapping via gpu-next is not available."
+    fi
+
+    local clip="${1:-}"
+    if [ -z "$clip" ]; then
+        command -v ffmpeg >/dev/null 2>&1 || { echo "  (no test file given and no ffmpeg to synthesise one -- skipping render probe)"; return 0; }
+        clip=$(mktemp -u /tmp/h96-hdr-XXXX.mp4)
+        echo "  making a short BT.2020/PQ-tagged test clip..."
+        ffmpeg -hide_banner -loglevel error -y -f lavfi \
+            -i testsrc2=size=1280x720:rate=30:duration=3 \
+            -color_primaries bt2020 -color_trc smpte2084 -colorspace bt2020nc \
+            -c:v hevc_rkmpp "$clip" 2>/dev/null \
+            || { echo "  could not create a test clip (VPU encode failed) -- skipping render probe"; return 0; }
+    fi
+    [ -r "$clip" ] || die "cannot read test file: $clip"
+
+    local runner=(mpv) ctx=()
+    if [ -z "${WAYLAND_DISPLAY:-}${DISPLAY:-}" ] && command -v cage >/dev/null 2>&1; then
+        echo "  no session detected - probing inside cage"
+        export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+        mkdir -p "$XDG_RUNTIME_DIR" 2>/dev/null; chmod 700 "$XDG_RUNTIME_DIR" 2>/dev/null
+        runner=(cage --); ctx=(--gpu-context=wayland)
+    fi
+    echo "  starting mpv with vo=gpu-next (3 frames, no audio)..."
+    if timeout 60 "${runner[@]}" mpv --no-config --vo=gpu-next --hwdec=rkmpp \
+            --frames=3 --no-audio --really-quiet "${ctx[@]}" "$clip" >/dev/null 2>&1; then
+        echo "  RESULT: vo=gpu-next rendered frames OK on this box."
+    else
+        echo "  RESULT: vo=gpu-next FAILED to render here. Tone-mapping via gpu-next"
+        echo "          is not usable until this is resolved; the base vo=gpu still plays HDR"
+        echo "          with mpv's built-in (weaker) tone-mapping."
+    fi
+    case "$clip" in /tmp/h96-hdr-*) rm -f "$clip";; esac
+}
+
+case "${1:-status}" in
+    status|"")            show_status ;;
+    tonemap|on|enable)    do_tonemap ;;
+    passthrough|pass)     do_passthrough ;;
+    off|disable)          do_off ;;
+    test)                 shift; run_test "${1:-}" ;;
+    -h|--help|help)
+        cat <<'USAGE'
+h96-hdr -- HDR10 video handling for mpv (vo=gpu-next / libplacebo)
+
+  h96-hdr                     show state
+  h96-hdr test [file]         check vo=gpu-next actually starts on this box
+  sudo h96-hdr tonemap        HDR10 -> SDR BT.709  (recommended default)
+  sudo h96-hdr passthrough    BT.2020 PQ + HDR metadata out  (EXPERIMENTAL)
+  sudo h96-hdr off            remove the HDR drop-in include
+
+Manages /etc/mpv/hdr.conf and a single marked include line in /etc/mpv/mpv.conf.
+The base mpv.conf is otherwise left untouched (backup: mpv.conf.pre-h96-hdr).
+
+This box runs KDE on X11. Tone-mapping to SDR is the reliable path; mpv HDR
+passthrough (target-colorspace-hint) works only on Wayland/DRM-KMS/D3D11, so
+passthrough here is console-only and unconfirmed on the 6.1 BSP.
+USAGE
+        ;;
+    *) die "unknown argument '$1' (try --help)" ;;
+esac

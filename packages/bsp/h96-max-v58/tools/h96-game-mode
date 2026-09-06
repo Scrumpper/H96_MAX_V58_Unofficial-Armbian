@@ -1,0 +1,195 @@
+#!/bin/bash
+# =============================================================================
+# h96-game-mode — launch a Windows game on the H96 Max V58 (RK3588 / Mali-G610)
+# under box64 + wine(wow64) + stripped-DXVK, inside a NESTED Wayland compositor
+# (cage by default, gamescope optional) started FROM the X11 Plasma desktop.
+#
+# The desktop keeps running on Panfrost GL; this launcher gives the game its own
+# Wayland socket and points Vulkan at the PanVK ICD. PanVK is per-process, so
+# desktop-GL and game-Vulkan share the same bound panthor kernel driver with no
+# driver switch (the whole point of the all-open stack).
+#
+# Deployed to /opt/h96-gaming/bin/h96-game-mode, symlinked to /usr/local/bin.
+#
+# Usage:
+#   h96-game-mode [options] <path-to-game.exe> [game args...]
+#   h96-game-mode --winetricks           # open winecfg in the default prefix
+#
+# Options:
+#   -p, --prefix DIR     wineprefix (default: ~/.local/share/h96-gaming/prefixes/default)
+#   -d, --dxvk KIND      sarek | stripped | auto (default: auto — see below)
+#   -c, --compositor C   cage | gamescope (default: cage)
+#   -r, --res WxH        output resolution for gamescope (e.g. 1280x720)
+#       --hud            enable DXVK_HUD=fps,frametimes
+#       --no-dxvk        don't (re)install DXVK into the prefix, just run
+#       --winecfg        run winecfg instead of a game
+#   -h, --help
+#
+# DXVK choice (auto): d3d8/d3d9/ddraw legacy titles -> DXVK-Sarek 1.12 (dyasync,
+# VK 1.1/1.2, has d7vk ddraw). d3d10/d3d11 -> khanh-it dxvk-2.7.1-stripped.
+# `auto` defaults to STRIPPED (D3D11 is the common case); pass `-d sarek` for
+# D3D8/9/legacy titles. See README-gaming.md.
+# =============================================================================
+
+# Shared block-letter header (art and colours live in one place).
+# The stub matters: without it, a missing library turns every invocation into
+# "h96_banner: command not found" on stderr.
+[ -r /usr/local/lib/h96/banner.sh ] && . /usr/local/lib/h96/banner.sh
+command -v h96_banner >/dev/null 2>&1 || h96_banner() { :; }
+
+set -euo pipefail
+
+h96_banner "G A M E   M O D E"
+
+
+GAMING_ROOT=/opt/h96-gaming
+WINE_DIR="$GAMING_ROOT/wine"
+ENV_FILE="$GAMING_ROOT/env/gaming.env"
+DEFAULT_PREFIX="${HOME}/.local/share/h96-gaming/prefixes/default"
+
+PREFIX="$DEFAULT_PREFIX"
+DXVK="auto"
+COMPOSITOR="cage"
+RES=""
+HUD=0
+NO_DXVK=0
+WINECFG=0
+
+die() { echo "h96-game-mode: $*" >&2; exit 1; }
+
+# --- arg parse -------------------------------------------------------------
+ARGS=()
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -p|--prefix)     PREFIX="$2"; shift 2;;
+    -d|--dxvk)       DXVK="$2"; shift 2;;
+    -c|--compositor) COMPOSITOR="$2"; shift 2;;
+    -r|--res)        RES="$2"; shift 2;;
+    --hud)           HUD=1; shift;;
+    --no-dxvk)       NO_DXVK=1; shift;;
+    --winecfg)       WINECFG=1; shift;;
+    -h|--help)       sed -n '2,45p' "$0" | sed 's/^# \{0,1\}//'; exit 0;;
+    --)              shift; while [ $# -gt 0 ]; do ARGS+=("$1"); shift; done;;
+    *)               ARGS+=("$1"); shift;;
+  esac
+done
+
+# --- fetch the wine/DXVK stack on first use (NOT baked into the image) -------
+# The box64 + wine(wow64) + DXVK bundle is ~206 MB. It is fetched on demand the
+# first time h96-game-mode runs, not shipped in the image. The URL comes from
+# /etc/h96/gaming-stack.url if present, else the default below. Once extracted
+# into /opt it is reused, so this download happens exactly once.
+STACK_URL="$(cat /etc/h96/gaming-stack.url 2>/dev/null || echo 'https://github.com/Scrumpper/H96_MAX_V58_Unofficial-Armbian/releases/download/gaming-stack/h96-gaming-stack.tar.gz')"
+ensure_stack() {
+  if [ -x "$WINE_DIR/bin/wine" ] || [ -x "$WINE_DIR/bin/wine64" ]; then return 0; fi
+  echo "h96-game-mode: wine/DXVK stack not installed - fetching on first use (~206 MB, one time)..."
+  [ -n "$STACK_URL" ] || die "no gaming-stack URL (set one in /etc/h96/gaming-stack.url)"
+  command -v curl >/dev/null 2>&1 || command -v wget >/dev/null 2>&1 || die "need curl or wget to fetch the stack"
+  local tmp=/opt/h96-gaming/h96-gaming-stack.tar.gz
+  sudo mkdir -p /opt/h96-gaming || die "cannot create /opt/h96-gaming"
+  if command -v curl >/dev/null 2>&1; then
+    sudo curl -fL --progress-bar "$STACK_URL" -o "$tmp" || die "download failed: $STACK_URL"
+  else
+    sudo wget -O "$tmp" "$STACK_URL" || die "download failed: $STACK_URL"
+  fi
+  echo "h96-game-mode: extracting stack into /opt ..."
+  sudo tar xzmf "$tmp" -C / --overwrite || die "extraction of the gaming stack failed"
+  sudo rm -f "$tmp"
+  { [ -x "$WINE_DIR/bin/wine" ] || [ -x "$WINE_DIR/bin/wine64" ]; } || die "stack extracted but wine still missing"
+  echo "h96-game-mode: wine/DXVK stack installed."
+}
+ensure_stack
+
+# --- locate the wine binary (wow64 builds ship bin/wine; older ship wine64) --
+WINE=""
+for w in "$WINE_DIR/bin/wine" "$WINE_DIR/bin/wine64"; do
+  [ -x "$w" ] && { WINE="$w"; break; }
+done
+[ -n "$WINE" ] || die "wine not found under $WINE_DIR/bin after fetch (stack URL/download problem?)"
+WINEBOOT="$WINE_DIR/bin/wineboot"
+
+# --- locate the PanVK ICD (filename varies across Mesa builds) --------------
+ICD=""
+for f in /usr/share/vulkan/icd.d/panfrost_icd.aarch64.json \
+         /usr/share/vulkan/icd.d/panfrost_icd.json; do
+  [ -f "$f" ] && { ICD="$f"; break; }
+done
+[ -n "$ICD" ] || ICD=$(ls /usr/share/vulkan/icd.d/*panfrost*_icd*.json 2>/dev/null | head -1)
+[ -n "$ICD" ] || die "no panfrost/PanVK Vulkan ICD in /usr/share/vulkan/icd.d/ (Mesa/PanVK not installed?)"
+
+# --- source the shared env profile (box64 knobs, PULSE_LATENCY, etc.) -------
+[ -f "$ENV_FILE" ] && . "$ENV_FILE"
+
+# --- Vulkan + audio + SDL env (per-process, does not touch the desktop) -----
+export VK_DRIVER_FILES="$ICD"
+export VK_ICD_FILENAMES="$ICD"          # legacy loader var, for older loaders
+export PULSE_LATENCY_MSEC="${PULSE_LATENCY_MSEC:-60}"
+export SDL_VIDEODRIVER=wayland
+export WINEPREFIX="$PREFIX"
+export WINEDEBUG="${WINEDEBUG:--all}"
+export WINEESYNC="${WINEESYNC:-1}"
+[ "$HUD" -eq 1 ] && export DXVK_HUD="fps,frametimes,version"
+
+# --- decide DXVK fork -------------------------------------------------------
+resolve_dxvk() {
+  case "$DXVK" in
+    sarek)    echo "$GAMING_ROOT/dxvk-sarek";;
+    stripped) echo "$GAMING_ROOT/dxvk-stripped";;
+    auto)     echo "$GAMING_ROOT/dxvk-stripped";;   # D3D11 default; -d sarek for legacy
+    *)        die "unknown --dxvk '$DXVK' (use sarek|stripped|auto)";;
+  esac
+}
+
+# --- create the prefix on first use + install DXVK offline ------------------
+init_prefix() {
+  mkdir -p "$PREFIX"
+  if [ ! -f "$PREFIX/system.reg" ]; then
+    echo "h96-game-mode: initializing wineprefix $PREFIX (first run)..."
+    box64 "$WINEBOOT" -i >/dev/null 2>&1 || box64 "$WINE" wineboot -i >/dev/null 2>&1 || true
+    # gamepad fix from the Armbian thread: winebus DisableHidraw=1, Enable SDL=1
+    box64 "$WINE" reg add 'HKLM\System\CurrentControlSet\Services\winebus' \
+      /v DisableHidraw /t REG_DWORD /d 1 /f >/dev/null 2>&1 || true
+    box64 "$WINE" reg add 'HKLM\System\CurrentControlSet\Services\winebus' \
+      /v "Enable SDL" /t REG_DWORD /d 1 /f >/dev/null 2>&1 || true
+  fi
+  if [ "$NO_DXVK" -eq 0 ]; then
+    local kind="stripped"; [ "$DXVK" = "sarek" ] && kind="sarek"
+    if command -v h96-dxvk-install >/dev/null 2>&1; then
+      h96-dxvk-install "$PREFIX" "$kind" || echo "h96-game-mode: DXVK install reported an error (continuing)"
+    elif [ -x "$GAMING_ROOT/bin/h96-dxvk-install" ]; then
+      "$GAMING_ROOT/bin/h96-dxvk-install" "$PREFIX" "$kind" || true
+    fi
+  fi
+}
+
+init_prefix
+
+# --- build the inner command ------------------------------------------------
+INNER=()
+if [ "$WINECFG" -eq 1 ]; then
+  INNER=(box64 "$WINE" winecfg)
+else
+  [ ${#ARGS[@]} -gt 0 ] || die "no game executable given (see --help)"
+  INNER=(box64 "$WINE" "${ARGS[@]}")
+fi
+
+echo "h96-game-mode: prefix=$PREFIX dxvk=$DXVK icd=$ICD compositor=$COMPOSITOR"
+echo "h96-game-mode: running: ${INNER[*]}"
+
+# --- launch inside the nested Wayland compositor ----------------------------
+run_cage()      { exec cage -- "${INNER[@]}"; }
+run_gamescope() {
+  local g=(gamescope -f)
+  [ -n "$RES" ] && g=(gamescope -W "${RES%x*}" -H "${RES#*x}" -f)
+  exec "${g[@]}" -- "${INNER[@]}"
+}
+
+case "$COMPOSITOR" in
+  cage)
+    command -v cage >/dev/null 2>&1 || die "cage not installed"
+    run_cage;;
+  gamescope)
+    if command -v gamescope >/dev/null 2>&1; then run_gamescope
+    else echo "h96-game-mode: gamescope missing, falling back to cage"; run_cage; fi;;
+  *) die "unknown --compositor '$COMPOSITOR' (use cage|gamescope)";;
+esac

@@ -1,0 +1,28 @@
+[Unit]
+Description=H96 HDMI-CEC to input daemon (TV remote -> uinput)
+Documentation=man:cec-ctl(1) man:cec-client(1)
+# Do not hard-require the device: it can appear a few seconds after boot on
+# HDMI hotplug, and the daemon waits for it and exits cleanly if it never
+# shows up. Gating on ConditionPathExists here would silently skip start.
+After=multi-user.target
+Wants=dev-cec0.device
+
+[Service]
+Type=simple
+ExecStart=/usr/local/lib/h96/h96-cecd
+Restart=on-failure
+RestartSec=5
+# The daemon exits 0 when CEC/uinput/backend is absent, so on-failure will not
+# crash-loop an unsupported box.
+Nice=-2
+# Needs /dev/uinput and /dev/cec0; runs as root for uinput + CEC access.
+# Light hardening that still permits device access:
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+DeviceAllow=/dev/uinput rw
+DeviceAllow=/dev/cec0 rw
+DeviceAllow=char-cec rw
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,8 @@
+# HDMI-CEC character device (RK3588 dw-hdmi-qp-cec). Defaults to root-only,
+# which blocks any non-root use of cec-ctl/cec-client. Give the video group
+# read/write so desktop tooling can talk to the bus.
+SUBSYSTEM=="cec", KERNEL=="cec[0-9]*", GROUP="video", MODE="0660", TAG+="systemd"
+
+# uinput: the CEC daemon injects key events through it. Root already has
+# access; this simply makes it group-usable and ensures the node exists.
+KERNEL=="uinput", SUBSYSTEM=="misc", GROUP="input", MODE="0660", OPTIONS+="static_node=uinput"

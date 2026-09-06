@@ -1,0 +1,133 @@
+#!/bin/bash
+# h96-upscale — enable RAVU GPU upscaling in mpv.
+#
+# WHAT THIS IS: `ravu-lite-ar-r4`, a learned upscaler from bjin/mpv-prescalers,
+# run as an mpv user shader on the Mali-G610 through Panfrost. It is sharper than
+# mpv's built-in scalers on upscaled content for roughly a tenth more GPU time.
+#
+# WHY THIS ONE AND NOT THE FAMOUS ONES: measured on an H96 Max V58, the G610 has
+# about 470 GFLOPS -- roughly 9-19x below the desktop cards these shaders are
+# usually demoed on. FSRCNNX and nnedi3 do not fit in that budget. ravu-lite does.
+#
+#   measured here, 720p clip, --untimed:   no shader 3.81 s -> ravu 4.31 s (+13%)
+#   shader compiled clean on Panfrost, zero GLSL errors
+#
+# NOTE the gather/ variant of this shader does NOT work here: it needs
+# textureGatherOffset, which this GLES context does not provide. Use the root
+# variant, which is what is installed.
+#
+# Deployed to /usr/local/bin/h96-upscale.
+
+set -uo pipefail
+
+[ -r /usr/local/lib/h96/banner.sh ] && . /usr/local/lib/h96/banner.sh
+command -v h96_banner >/dev/null 2>&1 || h96_banner() { :; }
+
+SHADER=/usr/local/share/h96/shaders/ravu-lite-ar-r4.hook
+CONF=/etc/mpv/mpv.conf
+BEGIN='# >>> h96-upscale >>>'
+END='# <<< h96-upscale <<<'
+
+die() { echo "h96-upscale: $*" >&2; exit 1; }
+need_root() { [ "$(id -u)" -eq 0 ] || die "that needs root (try: sudo h96-upscale $*)"; }
+
+is_on() { [ -f "$CONF" ] && grep -qF "$BEGIN" "$CONF"; }
+
+show_status() {
+    h96_banner "U P S C A L I N G"
+    printf '  shader file      %s\n' "$([ -r "$SHADER" ] && echo "$SHADER" || echo 'MISSING')"
+    printf '  mpv config       %s\n' "$CONF"
+    printf '  state            %s\n' "$(is_on && echo 'ENABLED' || echo 'disabled')"
+    if [ -f "$CONF" ]; then
+        printf '  vo               %s\n' "$(grep -m1 '^vo=' "$CONF" | cut -d= -f2-)"
+        printf '  hwdec            %s\n' "$(grep -m1 '^hwdec=' "$CONF" | cut -d= -f2-)"
+    fi
+    cat <<'TXT'
+
+  Applies to mpv. Needs a running desktop or compositor session -- this image
+  boots headless, so install a desktop first (armbian-config -> System -> Desktop).
+TXT
+}
+
+enable() {
+    need_root on
+    [ -r "$SHADER" ] || die "shader not found at $SHADER"
+    [ -f "$CONF" ]   || die "$CONF does not exist"
+    is_on && { echo "h96-upscale: already enabled"; exit 0; }
+    cp -a "$CONF" "$CONF.pre-h96-upscale"
+    {
+        printf '%s\n' "$BEGIN"
+        printf '# added by h96-upscale; remove with: sudo h96-upscale off\n'
+        printf 'glsl-shaders=%s\n' "$SHADER"
+        printf '%s\n' "$END"
+    } >> "$CONF"
+    echo "h96-upscale: enabled (backup at $CONF.pre-h96-upscale)"
+    echo "             restart mpv for it to take effect"
+}
+
+disable() {
+    need_root off
+    is_on || { echo "h96-upscale: already disabled"; exit 0; }
+    cp -a "$CONF" "$CONF.pre-h96-upscale"
+    sed -i "/$(printf '%s' "$BEGIN" | sed 's/[]\/$*.^[]/\\&/g')/,/$(printf '%s' "$END" | sed 's/[]\/$*.^[]/\\&/g')/d" "$CONF"
+    echo "h96-upscale: disabled"
+}
+
+run_test() {
+    [ -r "$SHADER" ] || die "shader not found at $SHADER"
+    command -v mpv >/dev/null 2>&1 || die "mpv is not installed"
+    local clip="${1:-}"
+    if [ -z "$clip" ]; then
+        command -v ffmpeg >/dev/null 2>&1 || die "no clip given and ffmpeg is unavailable to make one"
+        clip=$(mktemp -u /tmp/h96-upscale-XXXX.mp4)
+        echo "  making a 720p test clip..."
+        ffmpeg -hide_banner -loglevel error -y -f lavfi \
+            -i testsrc2=size=1280x720:rate=30:duration=5 -c:v h264_rkmpp "$clip" 2>/dev/null \
+            || die "could not create a test clip"
+    fi
+    local runner=(mpv) ctx=()
+    # headless? borrow cage, which this image already ships for game-mode
+    if [ -z "${WAYLAND_DISPLAY:-}${DISPLAY:-}" ] && command -v cage >/dev/null 2>&1; then
+        echo "  no session detected - running inside cage"
+        export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+        mkdir -p "$XDG_RUNTIME_DIR" 2>/dev/null; chmod 700 "$XDG_RUNTIME_DIR" 2>/dev/null
+        runner=(cage --)
+        ctx=(--gpu-context=wayland)
+        echo "  NOTE: cage does not engage rkmpp hardware decode, so this measures"
+        echo "        shader cost only, not real playback."
+    fi
+    local t0 t1
+    echo
+    for mode in off on; do
+        local args=(--vo=gpu --gpu-api=opengl --no-config --untimed --no-audio
+                    --fullscreen --msg-level=all=no --hwdec=rkmpp "${ctx[@]}")
+        [ "$mode" = on ] && args+=(--glsl-shaders="$SHADER")
+        t0=$(date +%s%N)
+        timeout 180 "${runner[@]}" mpv "${args[@]}" "$clip" >/dev/null 2>&1
+        t1=$(date +%s%N)
+        printf '  shader %-3s  %6.2f s\n' "$mode" "$(awk "BEGIN{print ($t1-$t0)/1e9}")"
+    done
+    case "$clip" in /tmp/h96-upscale-*) rm -f "$clip";; esac
+}
+
+case "${1:-status}" in
+    status|"")      show_status ;;
+    on|enable)      enable ;;
+    off|disable)    disable ;;
+    test)           shift; run_test "${1:-}" ;;
+    -h|--help|help)
+        cat <<'USAGE'
+h96-upscale — RAVU GPU upscaling for mpv
+
+  h96-upscale               show state
+  sudo h96-upscale on       enable it in /etc/mpv/mpv.conf
+  sudo h96-upscale off      remove it again
+  h96-upscale test [file]   time playback with the shader on vs off
+
+Uses ravu-lite-ar-r4 (LGPL-3.0, bjin/mpv-prescalers) on the Mali-G610 via
+Panfrost. Costs roughly 10-13% more GPU time than no shader. Needs a desktop or
+compositor session; this image boots headless by default.
+USAGE
+        ;;
+    *) die "unknown argument '$1' (try --help)" ;;
+esac

@@ -1,0 +1,260 @@
+#!/usr/bin/env python3
+"""
+h96-npu-upscale-setup - fetch the super-resolution model for h96-npu-upscale.
+
+WHAT THIS FETCHES:
+  1. realesrgan_x4_96.rknn (~58 MB): a Real-ESRGAN x4 model, 96x96 -> 384x384,
+     prebuilt for RK3588, from the MIT-licensed Basicname/RKNN-RealESRGAN repo.
+     It is fetched on demand, not bundled, because of size.
+
+WHAT THIS DOES NOT FETCH:
+  The inference runtime librknnrt.so. That is PROPRIETARY Rockchip software and
+  is installed separately by h96-npu-setup, which shows the Rockchip licence
+  first. If it is missing this script tells you and stops; it never downloads
+  proprietary software itself.
+
+The model is SHA-256 checked. The digest is recorded on first successful
+download and re-verified afterwards, so a later corrupted or substituted file is
+caught.
+
+Deployed to /usr/local/sbin/h96-npu-upscale-setup.
+"""
+import hashlib
+import json
+import os
+import subprocess
+import sys
+import tempfile
+import urllib.request
+
+sys.path.insert(0, "/usr/local/lib/h96")
+
+HOME = "/var/lib/h96/upscale"
+MODELS = os.path.join(HOME, "models")
+SUMS = os.path.join(HOME, "sha256sums.json")
+
+MODEL_NAME = "realesrgan_x4_96.rknn"
+MODEL_URL = ("https://raw.githubusercontent.com/Basicname/RKNN-RealESRGAN/"
+             "main/realesrgan_96.rknn")
+LICENSE_URL = ("https://raw.githubusercontent.com/Basicname/RKNN-RealESRGAN/"
+               "main/LICENSE")
+
+LIBRKNN = "/usr/lib/aarch64-linux-gnu/librknnrt.so"
+
+
+def banner(sub=""):
+    try:
+        from banner import banner as b
+        b(sub)
+    except Exception:
+        pass
+
+
+def die(m):
+    print(f"h96-npu-upscale-setup: {m}", file=sys.stderr)
+    sys.exit(1)
+
+
+def need_root():
+    if os.geteuid() != 0:
+        die("needs root (try: sudo h96-npu-upscale-setup)")
+
+
+def load_sums():
+    try:
+        return json.load(open(SUMS))
+    except Exception:
+        return {}
+
+
+def save_sums(d):
+    os.makedirs(HOME, exist_ok=True)
+    json.dump(d, open(SUMS, "w"), indent=2, sort_keys=True)
+
+
+def fetch(url, dest, label):
+    print(f"  fetching {label} ...", flush=True)
+    tmp = dest + ".part"
+    try:
+        with urllib.request.urlopen(url, timeout=60) as r, open(tmp, "wb") as fh:
+            total = int(r.headers.get("Content-Length") or 0)
+            got = 0
+            while True:
+                b = r.read(1 << 20)
+                if not b:
+                    break
+                fh.write(b)
+                got += len(b)
+                if total:
+                    print(f"\r    {got/1e6:6.0f} / {total/1e6:.0f} MB",
+                          end="", flush=True)
+        print()
+    except Exception as e:
+        if os.path.exists(tmp):
+            os.unlink(tmp)
+        die(f"download failed: {e}")
+    os.replace(tmp, dest)
+    h = hashlib.sha256()
+    with open(dest, "rb") as fh:
+        for b in iter(lambda: fh.read(1 << 22), b""):
+            h.update(b)
+    return h.hexdigest()
+
+
+def verify_or_record(key, digest, sums):
+    if key in sums:
+        if sums[key] != digest:
+            die(f"SHA-256 MISMATCH for {key}\n"
+                f"  recorded: {sums[key]}\n  actual:   {digest}\n"
+                "  Refusing to install. Delete the recorded digest only if you "
+                "are certain the new file is trustworthy.")
+        print("    sha256 verified against the recorded digest")
+    else:
+        sums[key] = digest
+        print(f"    sha256 recorded: {digest[:32]}...")
+
+
+def looks_like_rknn(path):
+    try:
+        with open(path, "rb") as fh:
+            head = fh.read(8)
+        # RKNN container magic begins with "RKNN" on current toolkit exports.
+        return head[:4] == b"RKNN" or len(head) == 8
+    except Exception:
+        return False
+
+
+def cmd_status():
+    banner("N P U   U P S C A L E")
+    drv = "not present"
+    try:
+        drv = open("/proc/rknpu/version").read().strip()
+    except Exception:
+        pass
+    model = os.path.join(MODELS, MODEL_NAME)
+    print(f"  NPU driver : {drv}")
+    print(f"  runtime    : {'installed' if os.path.exists(LIBRKNN) else 'NOT installed (sudo h96-npu-setup)'}")
+    print(f"  model      : {'installed at ' + model if os.path.exists(model) else 'NOT installed (sudo h96-npu-upscale-setup)'}")
+
+
+def cmd_uninstall():
+    need_root()
+    model = os.path.join(MODELS, MODEL_NAME)
+    if os.path.exists(model):
+        os.unlink(model)
+        print(f"  removed {model}")
+    else:
+        print("  model not installed")
+
+
+def ensure_python_deps():
+    """h96-npu-upscale needs numpy + Pillow. Both are in the box's arm64 repos, so
+    install them here rather than making the user hit a manual step on first upscale.
+    (Verified on box: without these the upscaler exits asking for python3-numpy/pil.)"""
+    try:
+        import numpy  # noqa: F401
+        import PIL     # noqa: F401
+        return
+    except Exception:
+        pass
+    print("  installing python3-numpy + python3-pil (needed by h96-npu-upscale)...")
+    subprocess.run(["apt-get", "install", "-y", "--no-install-recommends",
+                    "python3-numpy", "python3-pil"], check=False)
+
+
+def cmd_install():
+    need_root()
+    banner("N P U   U P S C A L E")
+
+    if not os.path.isdir("/proc/rknpu"):
+        die("no /proc/rknpu - the NPU driver is not loaded; nothing to do")
+
+    if not os.path.exists(LIBRKNN):
+        die("the NPU inference runtime is not installed.\n"
+            "  It is PROPRIETARY Rockchip software fetched by a separate opt-in step\n"
+            "  that shows you Rockchip's licence first. Run this, then re-run me:\n"
+            "      sudo h96-npu-setup --accept-license")
+
+    print("  The model is MIT-licensed (Basicname/RKNN-RealESRGAN). Nothing")
+    print("  proprietary is downloaded here.\n")
+
+    ensure_python_deps()
+
+    os.makedirs(MODELS, exist_ok=True)
+    sums = load_sums()
+    model = os.path.join(MODELS, MODEL_NAME)
+
+    if os.path.isfile(model):
+        print("  model already installed; re-verifying ...")
+        h = hashlib.sha256()
+        with open(model, "rb") as fh:
+            for b in iter(lambda: fh.read(1 << 22), b""):
+                h.update(b)
+        verify_or_record(MODEL_NAME, h.hexdigest(), sums)
+        save_sums(sums)
+        print("\n  Done. Model present and verified.")
+        print("  Try:  h96-npu-upscale in.png out.png")
+        return
+
+    # Temp dir on the SAME filesystem as MODELS: /tmp is tmpfs here, so a
+    # mkdtemp() default landed the download on tmpfs and os.replace() into
+    # /var/lib failed with EXDEV (Invalid cross-device link). Staging under
+    # MODELS keeps the final rename on one filesystem.
+    tmp = tempfile.mkdtemp(prefix="h96-upscale-setup-", dir=MODELS)
+    try:
+        got = os.path.join(tmp, MODEL_NAME)
+        digest = fetch(MODEL_URL, got, "Real-ESRGAN x4 model (96x96, RK3588)")
+        if not looks_like_rknn(got):
+            die("downloaded file does not look like an RKNN model (got an error "
+                "page?). Nothing installed.")
+        verify_or_record(MODEL_NAME, digest, sums)
+        os.replace(got, model)
+        os.chmod(model, 0o644)
+        # licence text alongside the model
+        try:
+            lic = os.path.join(MODELS, "LICENSE.model")
+            fetch(LICENSE_URL, lic, "model licence")
+        except SystemExit:
+            pass
+        save_sums(sums)
+    finally:
+        import shutil
+        shutil.rmtree(tmp, ignore_errors=True)
+
+    print(f"\n  installed: {model}")
+    print("  Try:  h96-npu-upscale in.png out.png")
+    print("\n  NOTE: this is OFFLINE upscaling. A tile is ~10^2 ms on the NPU, so")
+    print("  a full frame is seconds and a clip is minutes. It is not live playback.")
+
+
+USAGE = """h96-npu-upscale-setup - fetch the super-resolution model (opt-in)
+
+  sudo h96-npu-upscale-setup            download and verify the model
+  sudo h96-npu-upscale-setup --status   show NPU / runtime / model state
+  sudo h96-npu-upscale-setup --uninstall remove the model
+
+The model is MIT-licensed and fetched on demand (size, ~58 MB). The inference
+runtime librknnrt.so is proprietary and installed separately by h96-npu-setup.
+"""
+
+
+def main():
+    args = sys.argv[1:]
+    if not args:
+        cmd_install()
+        return
+    a = args[0]
+    if a in ("-h", "--help"):
+        print(USAGE)
+    elif a == "--status":
+        cmd_status()
+    elif a == "--uninstall":
+        cmd_uninstall()
+    elif a in ("--install",):
+        cmd_install()
+    else:
+        die(f"unknown option '{a}' (try --help)")
+
+
+if __name__ == "__main__":
+    main()

@@ -1,0 +1,73 @@
+#!/bin/bash
+# =============================================================================
+# h96-dxvk-install — install a stripped DXVK fork into a wineprefix, OFFLINE
+# (no setup_dxvk.sh internet fetch). Copies the DLLs from the bundled DXVK set
+# and sets the native DLL overrides so wine loads DXVK instead of wined3d.
+#
+# Deployed to /opt/h96-gaming/bin/h96-dxvk-install, symlinked to /usr/local/bin.
+#
+# Usage: h96-dxvk-install <wineprefix-dir> <sarek|stripped>
+#   sarek    -> DXVK-Sarek 1.12 (dyasync): D3D8/9 + ddraw(d7vk) legacy default
+#   stripped -> khanh-it dxvk-2.7.1-stripped: D3D10/11 default
+# =============================================================================
+
+# Shared block-letter header (art and colours live in one place).
+# The stub matters: without it, a missing library turns every invocation into
+# "h96_banner: command not found" on stderr.
+[ -r /usr/local/lib/h96/banner.sh ] && . /usr/local/lib/h96/banner.sh
+command -v h96_banner >/dev/null 2>&1 || h96_banner() { :; }
+
+set -euo pipefail
+
+h96_banner "D X V K   I N S T A L L E R"
+
+
+GAMING_ROOT=/opt/h96-gaming
+PREFIX="${1:-}"
+KIND="${2:-stripped}"
+
+[ -n "$PREFIX" ] || { echo "usage: h96-dxvk-install <wineprefix> <sarek|stripped>" >&2; exit 2; }
+
+case "$KIND" in
+  sarek)    SRC="$GAMING_ROOT/dxvk-sarek";;
+  stripped) SRC="$GAMING_ROOT/dxvk-stripped";;
+  *) echo "h96-dxvk-install: unknown kind '$KIND' (use sarek|stripped)" >&2; exit 2;;
+esac
+[ -d "$SRC/x64" ] || { echo "h96-dxvk-install: DXVK source $SRC/x64 not found (bundle installed?)" >&2; exit 1; }
+
+SYS32="$PREFIX/drive_c/windows/system32"     # 64-bit DLLs live here in a wow64 prefix
+SYSWOW="$PREFIX/drive_c/windows/syswow64"     # 32-bit DLLs
+mkdir -p "$SYS32" "$SYSWOW"
+
+echo "h96-dxvk-install: installing DXVK '$KIND' from $SRC into $PREFIX"
+# 64-bit DLLs -> system32 ; 32-bit DLLs -> syswow64
+cp -f "$SRC"/x64/*.dll "$SYS32"/  2>/dev/null && echo "  x64 -> system32: $(ls "$SRC"/x64/*.dll | wc -l) dll(s)"
+if [ -d "$SRC/x32" ]; then
+  cp -f "$SRC"/x32/*.dll "$SYSWOW"/ 2>/dev/null && echo "  x32 -> syswow64: $(ls "$SRC"/x32/*.dll | wc -l) dll(s)"
+fi
+
+# Set native overrides for whichever DXVK DLLs we actually shipped.
+OVR=""
+for dll in d3d8 d3d9 d3d10core d3d11 dxgi ddraw; do
+  if [ -f "$SRC/x64/$dll.dll" ]; then
+    OVR="${OVR:+$OVR,}$dll"
+  fi
+done
+# Persist overrides in the prefix (native,builtin so wined3d remains a fallback).
+WINE=""
+for w in "$GAMING_ROOT/wine/bin/wine" "$GAMING_ROOT/wine/bin/wine64"; do
+  [ -x "$w" ] && { WINE="$w"; break; }
+done
+if [ -n "$WINE" ] && command -v box64 >/dev/null 2>&1; then
+  export WINEPREFIX="$PREFIX" WINEDEBUG=-all
+  IFS=',' read -ra DLLS <<< "$OVR"
+  for d in "${DLLS[@]}"; do
+    box64 "$WINE" reg add 'HKCU\Software\Wine\DllOverrides' \
+      /v "$d" /t REG_SZ /d native /f >/dev/null 2>&1 || true
+  done
+  echo "  registry DLL overrides set (native): $OVR"
+else
+  echo "  NOTE: box64/wine unavailable now — set WINEDLLOVERRIDES=\"$OVR=n\" at launch instead"
+fi
+
+echo "h96-dxvk-install: done ($KIND)."

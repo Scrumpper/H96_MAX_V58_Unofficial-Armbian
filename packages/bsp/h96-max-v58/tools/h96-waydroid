@@ -1,0 +1,1614 @@
+#!/usr/bin/env python3
+# =============================================================================
+# h96-waydroid - opt-in Android-in-a-container installer for the H96 Max V58
+#                (RK3588 / Mali-G610, KDE Plasma on X11).
+#
+# Waydroid runs a full Android (LineageOS) system in an LXC container sharing the
+# host kernel. Two things this box needed before Android would even boot are now
+# baked into the v4.3 kernel: CONFIG_ANDROID_BINDER_IPC/BINDERFS (builtin) AND
+# CONFIG_PSI=y (Android 11+ lmkd/init hard-require /proc/pressure - without it the
+# container boots then dies in ~15s). `status` verifies both.
+#
+#   h96-waydroid                     interactive menu / status
+#   h96-waydroid status              binder / PSI / session / image / GPU report
+#   h96-waydroid install             apt repo + waydroid + weston + cgroup/nft fixes
+#   h96-waydroid init gpu [dir]      Panthor HARDWARE image (Mali-G610), fixed-size window
+#   h96-waydroid init gapps|vanilla  latest official LineageOS (downloaded once, then stashed)
+#   h96-waydroid init custom <dir>   use your OWN system.img + vendor.img pair
+#   h96-waydroid size [WxH]          set the launch window / render size (picker if no arg)
+#   h96-waydroid state save|list|load|delete   save/restore Android state across image switches
+#   h96-waydroid spoof [dev|off]     report a common phone (Aurora Store / Play compatibility)
+#   h96-waydroid start               launch the UI in a nested Weston window (X11)
+#   h96-waydroid stop                stop session + container + weston
+#   h96-waydroid hw [on|off]         re-apply / remove the Panfrost GPU wiring + verify
+#   h96-waydroid remove              full uninstall (keeps nothing)
+#
+# IMAGE PROFILES.
+#   * gpu       - a Panthor-in-image Android 11 build (LineageOS 18.1, the Rockchip
+#                 RK3588 board image) with Mesa/Panfrost compiled IN. This is the ONLY
+#                 way to drive the Mali-G610 in hardware here. `init gpu` overrides the
+#                 image's tiny 960x512 to your chosen size so Android FILLS the window.
+#                 Requires the image files - see `init gpu` below; they are not bundled
+#                 (~5 GB, kept in gpu-images).
+#   * gapps /   - the latest official Waydroid LineageOS image (Android 13). RECOMMENDED.
+#     vanilla     It DOES drive the Mali-G610 in hardware: measured on this board,
+#                 `GLES: Mesa, Mali-G610 MC4 (Panfrost), OpenGL ES 3.1 Mesa 26.0.1`, GPU load
+#                 reaching 50 percent at 1000 MHz under UI activity. Newer Mesa than the
+#                 Panthor image, a current Android, and a signed upstream build. About 900 MB.
+#   * custom    - an image you supply yourself. It MUST be an arm64 Waydroid-style
+#                 system.img + vendor.img PAIR (LineageOS-for-Waydroid or similar); a ROM
+#                 zip, OTA payload or plain GSI will not boot. GPU accel only if that image
+#                 has Mesa/Panfrost compiled in - `hw on` verifies and reports honestly.
+#
+# IMAGES ARE NEVER RE-DOWNLOADED. Every image (downloaded or supplied) is stashed under
+# /etc/waydroid-extra/{gpu,los,custom}-images and symlinked into the auto-detect path, so
+# switching profiles is instant and offline. `init vanilla fresh` forces a new download.
+# The stashes are ~2-5 GB each and are NOT part of the released system image.
+#
+# WHY THE WINDOW IS FIXED-SIZE. Any window-manager geometry change - drag-resize, edge
+# snap / quick tile, maximise, fullscreen - makes Weston reconfigure its X11 output. The
+# Waydroid client renders Android at ONE fixed size and cannot follow that reconfigure: it
+# drops off the compositor ("libwayland: error in client communication") and the window
+# goes PERMANENTLY black. KWin ignores a min-size-only hint when quick-tiling, so the
+# launcher pins WM_NORMAL_HINTS min == max and the window simply is not resizable. Pick the
+# size instead with `h96-waydroid size` (it warns if you exceed the display resolution).
+#
+# THE X11 WRINKLE. This box runs KDE Plasma on X11 on purpose (Wayland breaks the
+# GPU/mpv path on this BSP). Waydroid's show-full-ui wants a Wayland compositor,
+# so `start` runs a nested Weston window inside the X session and points Waydroid
+# at it - the standard KDE-on-X11 approach. Nothing about the desktop changes.
+#
+# Auto-elevates via sudo for install/init/hw/stop/remove. `start` runs as the
+# desktop user (it needs your X DISPLAY). Bring your own APKs; no app is bundled.
+# =============================================================================
+import os, sys, shutil, subprocess, pwd, time, glob
+
+BANNER_LIB   = "/usr/local/lib/h96/banner.sh"
+LAUNCHER     = "/usr/local/bin/h96-waydroid-launch"
+LOCKWIN      = "/usr/local/bin/h96-waydroid-lockwin"  # pins the window to a fixed size
+DESKTOP      = "/usr/share/applications/h96-waydroid.desktop"
+WESTON_SOCK  = "h96-waydroid"                         # deterministic Wayland socket
+BASE_PROP    = "/var/lib/waydroid/waydroid_base.prop" # applied on container start
+SNAP_DIR     = "/var/lib/waydroid-snapshots"          # saved Android /data states (can be GB)
+WCFG         = "/var/lib/waydroid/waydroid.cfg"       # waydroid runtime config
+IMAGES_DIR   = "/var/lib/waydroid/images"             # system.img / vendor.img (symlinks for gpu)
+EXTRA_IMAGES = "/etc/waydroid-extra/images"           # preinstalled-images dir waydroid auto-detects
+GPU_STASH    = "/etc/waydroid-extra/gpu-images"       # Panthor hardware images (user-supplied)
+LOS_STASH    = "/etc/waydroid-extra/los-images"       # official LineageOS download, kept for reuse
+CUSTOM_STASH = "/etc/waydroid-extra/custom-images"    # an image the user brought themselves
+# NOTE: none of these stashes ship in the release image - they are ~2-5 GB each. A fresh box
+# downloads the LineageOS image on demand (`init vanilla`) or is pointed at a local image.
+CONFIG_NODES = "/var/lib/waydroid/lxc/waydroid/config_nodes"  # LXC mounts, regenerated by init
+DISPLAY_MARK = "/var/lib/waydroid/h96-display"        # "WxH" - keeps weston + Android in lockstep
+SPOOF_STATE  = "/var/lib/waydroid/h96-spoof"          # JSON: spoofed device + the pre-spoof props
+GPU_DISPLAY  = "1280x720"                             # Panthor render size (fills window, GPU-friendly)
+NFT_OVERRIDE = "/etc/systemd/system/waydroid-container.service.d/10-h96-nonft.conf"
+CG_OVERRIDE  = "/etc/systemd/system/waydroid-container.service.d/20-h96-cgroup.conf"
+REPO_KEY     = "/usr/share/keyrings/waydroid.gpg"
+REPO_LIST    = "/etc/apt/sources.list.d/waydroid.list"
+
+# cgroup v1 tmpfs shims the Android 11 (Panthor) image expects but a cgroup-v2 host
+# does not provide. Without them zygote crash-loops ('/acct' read-only, no /dev/stune).
+CGV1_SHIMS = [
+    "lxc.mount.entry = tmpfs acct tmpfs nosuid,nodev,mode=0755,create=dir 0 0",
+    "lxc.mount.entry = tmpfs dev/stune tmpfs nosuid,nodev,mode=0755,create=dir 0 0",
+    "lxc.mount.entry = tmpfs dev/cpuset tmpfs nosuid,nodev,mode=0755,create=dir 0 0",
+    "lxc.mount.entry = tmpfs dev/memcg tmpfs nosuid,nodev,mode=0755,create=dir 0 0",
+]
+
+# REJECTED, DO NOT RE-ADD: shadowing the container's /dev/kmsg with /dev/null.
+# Android's KernelLogger writes into the container's /dev/kmsg, which on a shared-kernel
+# container is the HOST ring buffer: measured at about 770 journal lines per minute and 84%
+# of the whole journal, overwriting the host's own boot dmesg. Binding /dev/null over
+# dev/kmsg in config_nodes DOES mount cleanly ("Mounted /dev/null on .../dev/kmsg"), but the
+# container then never comes up: lxc State stays STOPPED and Android never reaches
+# "Android with user 0 is ready". Verified by isolation on this box - removing that single
+# line brought the container straight back to RUNNING. Android init requires a writable,
+# real kmsg. Quiet the journal with journald limits instead, not by removing kmsg.
+
+USAGE = """h96-waydroid - Android-in-a-container for the H96 Max V58 (RK3588 / Mali-G610)
+
+  h96-waydroid                     interactive menu / status
+  h96-waydroid status              binder / PSI / session / image / GPU report
+  h96-waydroid install             apt repo + waydroid + weston + cgroup/nft fixes
+  h96-waydroid init gpu [dir]      Panthor HARDWARE image (Mali-G610); fixed-size window
+  h96-waydroid init gapps|vanilla  latest official LineageOS (downloaded once, then stashed)
+  h96-waydroid init vanilla fresh  force a NEW download, replacing the stashed image
+  h96-waydroid init custom <dir>   use your OWN system.img + vendor.img pair
+  h96-waydroid size [WxH]          set the launch window / render size (picker if no arg)
+  h96-waydroid state save [name]   save the current Android state (apps, logins, files)
+  h96-waydroid state list          list saved states
+  h96-waydroid state load <name>   restore a saved state
+  h96-waydroid state delete <name> delete a saved state
+  h96-waydroid spoof               show the reported device identity + the device list
+  h96-waydroid spoof list          list the device profiles
+  h96-waydroid spoof <device>      report that device to Aurora Store / Play
+  h96-waydroid spoof off           restore the image's own identity
+  h96-waydroid start               launch the UI in a nested Weston window (X11)
+  h96-waydroid stop                stop session + container + weston
+  h96-waydroid hw [on|off]         re-apply / remove the Panfrost GPU wiring + verify
+  h96-waydroid remove              full uninstall
+
+Image profiles:
+  gpu      - Panthor-in-image Android 11; hardware Mali-G610; fills the window at your
+             chosen size (window LOCKED to it). Needs the image files (~5 GB, not bundled):
+             place system.img + vendor.img in /etc/waydroid-extra/gpu-images (or pass a
+             dir), then `init gpu`.
+  gapps /  - latest official Waydroid LineageOS (Android 13). RECOMMENDED. Hardware
+  vanilla    Mali-G610 through Panfrost (measured: Mesa 26.0.1), current Android, signed
+             upstream build, about 900 MB. Download-and-go, nothing to supply.
+  custom   - your own image. Must be an arm64 Waydroid-style system.img + vendor.img PAIR
+             (LineageOS-for-Waydroid or similar). A ROM zip, OTA payload or plain GSI will
+             NOT boot. GPU accel only if that image has Mesa/Panfrost compiled in.
+
+Device spoofing (`spoof`):
+  A stock Waydroid image reports brand "waydroid", model "WayDroid arm64 Device". No Play
+  device profile matches that, so Aurora Store and the Play Store hide or refuse apps.
+  `spoof` writes the standard identity props (brand/manufacturer/model/name/device,
+  ro.build.fingerprint, ro.build.description) so Android reports a common phone instead.
+  It changes AVAILABILITY only. It does NOT pass Play Integrity / SafetyNet, which attest a
+  hardware-backed key and the verified-boot state - a container has neither, so banking, DRM
+  and some games still refuse to run. `spoof off` restores the values recorded before the
+  first spoof. Props apply on the next container start.
+
+Downloaded and supplied images are stashed under /etc/waydroid-extra/, so switching between
+images never re-downloads. The stashes are NOT part of the released system image."""
+
+CYAN, MAGENTA, DIM = "96", "95", "2"   # Scrumpper's suite palette
+
+def c(s, code): return f"\033[{code}m{s}\033[0m" if sys.stdout.isatty() else s
+def info(m): print(">> " + m)
+def warn(m): print(c("!! " + m, "93"), file=sys.stderr)
+def die(m): print(c("ERROR: " + m, "91"), file=sys.stderr); sys.exit(1)
+def ok(m):  print(c(m, "92"))
+
+# Shared block-letter wordmark, matching /usr/local/lib/h96/banner.sh and every
+# other h96- tool. Embedded (not only sourced) so it themes on-box or off, TTY-
+# gated + NO_COLOR honoured (prints nothing from a pipe or a systemd unit).
+_ART = r"""
+   ██╗  ██╗ █████╗  ██████╗    ██╗   ██╗███████╗ █████╗
+   ██║  ██║██╔══██╗██╔════╝    ██║   ██║██╔════╝██╔══██╗
+   ███████║╚██████║███████╗    ██║   ██║███████╗╚█████╔╝
+   ██╔══██║ ╚═══██║██╔═══██╗    ╚██╗ ██╔╝╚════██║██╔══██╗
+   ██║  ██║ █████╔╝╚██████╔╝     ╚████╔╝ ███████║╚█████╔╝
+   ╚═╝  ╚═╝ ╚════╝  ╚═════╝       ╚═══╝  ╚══════╝ ╚════╝"""
+
+def banner():
+    if not sys.stdout.isatty() or os.environ.get("NO_COLOR"):
+        return
+    B, P, D, BOLD, X = "\033[96m", "\033[95m", "\033[2m", "\033[1m", "\033[0m"
+    def ctr(s): return s.rjust((64 + len(s)) // 2)
+    print(B + BOLD + _ART + X)
+    print(P + BOLD + ctr("  S C R U M P P E R ' S  ") + X)
+    print(P + BOLD + ctr("  U N O F F I C I A L   A R M B I A N  ") + X)
+    print(P + BOLD + ctr("  W A Y D R O I D   ( A N D R O I D )  ") + X)
+    print(D + ctr("H96 Max V58  ·  Rockchip RK3588  ·  Android in a box") + X)
+    print(D + "  " + "─" * 60 + X)
+
+# ------------------------------------------------------------- helpers --------
+def have(cmd): return shutil.which(cmd) is not None
+
+def _have_xlib():
+    try:
+        import Xlib  # noqa: F401
+        return True
+    except ImportError:
+        return False
+
+def run(cmd, **kw):
+    return subprocess.run(cmd, **kw)
+
+def out(cmd):
+    try:
+        return subprocess.run(cmd, capture_output=True, text=True).stdout.strip()
+    except Exception:
+        return ""
+
+def desktop_user():
+    v = os.environ.get("SUDO_USER")
+    if v and v != "root": return v
+    u = os.environ.get("USER")
+    if u and u != "root": return u
+    for p in pwd.getpwall():
+        if 1000 <= p.pw_uid < 65000 and os.path.isdir(p.pw_dir): return p.pw_name
+    die("cannot determine the desktop user")
+
+def user_home(user):
+    try: return pwd.getpwnam(user).pw_dir
+    except KeyError: return f"/home/{user}"
+
+def data_dir(user):
+    """The REAL Android /data. A user Waydroid session keeps it under the desktop
+    user's home, NOT /var/lib/waydroid/data. Switching image profiles (different
+    Android version) must wipe this or system_server dies reading a stale packages.xml."""
+    u = os.path.join(user_home(user), ".local/share/waydroid/data")
+    return u if os.path.isdir(u) else "/var/lib/waydroid/data"
+
+def elevate():
+    if os.geteuid() == 0: return
+    if not have("sudo"): die("need root (sudo not available); run as root")
+    os.execvp("sudo", ["sudo", "-E", sys.executable, os.path.abspath(__file__)] + sys.argv[1:])
+
+def net_ok():
+    import urllib.request
+    try:
+        urllib.request.urlopen("https://repo.waydro.id", timeout=8); return True
+    except Exception:
+        return False
+
+def waydroid_installed(): return have("waydroid")
+
+def images_path():
+    """Where waydroid currently keeps system.img. `init` repoints this at the preinstalled
+    directory when it finds images there, so IMAGES_DIR alone is NOT a reliable answer."""
+    try:
+        import configparser
+        cp = configparser.ConfigParser(); cp.optionxform = str
+        if os.path.exists(WCFG):
+            cp.read(WCFG)
+            p = cp.get("waydroid", "images_path", fallback="")
+            if p: return p
+    except Exception:
+        pass
+    return IMAGES_DIR
+
+def image_ready(): return os.path.exists(os.path.join(images_path(), "system.img"))
+def _has_imgs(d):
+    return (os.path.exists(os.path.join(d, "system.img")) and
+            os.path.exists(os.path.join(d, "vendor.img")))
+def gpu_image_present():
+    """True if the Panthor hardware images are on the box (in the stash, or still in the
+    auto-detect path from an earlier hand-install)."""
+    return _has_imgs(GPU_STASH) or _has_imgs(EXTRA_IMAGES)
+def container_active():
+    return out(["systemctl", "is-active", "waydroid-container"]) == "active"
+def session_running():
+    return "RUNNING" in out(["waydroid", "status"]) if waydroid_installed() else False
+
+# ------------------------------------------------------------ binder ----------
+def binder_state():
+    """Return (ok, detail). This box's kernel has binderfs builtin."""
+    if os.path.isdir("/dev/binderfs") and os.path.exists("/dev/binderfs/binder-control"):
+        return True, "binderfs mounted at /dev/binderfs"
+    cfg = "/proc/config.gz"
+    if os.path.exists(cfg):
+        z = out(["sh", "-c", "zcat /proc/config.gz 2>/dev/null | grep -E 'BINDERFS|BINDER_IPC'"])
+        if "BINDERFS=y" in z:
+            return True, "CONFIG_ANDROID_BINDERFS=y (systemd mounts it on container start)"
+    if os.path.exists("/dev/binder"):
+        return True, "legacy /dev/binder present"
+    return False, "no binderfs / binder device found (waydroid-container mounts it at start)"
+
+def psi_ok():
+    """Android 11+ lmkd/init REQUIRE kernel PSI (/proc/pressure). Some RK3588 BSP
+    kernels ship CONFIG_PSI unset - Android then boots and dies in ~15s (no logd,
+    binder 'cannot find target node'). The v4.3 kernel rebuilds it with CONFIG_PSI=y."""
+    return os.path.isdir("/proc/pressure")
+
+# ---------------------------------------------------- GPU node detection ------
+def gpu_nodes():
+    """Find the Panthor/Panfrost render node AND its card node. On RK3588 the renderD
+    numbers are not fixed: renderD128 is usually rockchip-drm (DISPLAY, not the GPU),
+    renderD129 the NPU. Only the panthor node can do GLES. Returns (render, card) as
+    /dev/dri/... paths, or (None, None)."""
+    if not os.path.isdir("/dev/dri"):
+        return None, None
+    for d in sorted(os.listdir("/dev/dri")):
+        if not d.startswith("renderD"):
+            continue
+        uev = out(["sh", "-c", f"cat /sys/class/drm/{d}/device/uevent 2>/dev/null"])
+        if "panthor" in uev or "panfrost" in uev:
+            render = f"/dev/dri/{d}"
+            card = None
+            for cd in glob.glob(f"/sys/class/drm/{d}/device/drm/card*"):
+                card = f"/dev/dri/{os.path.basename(cd)}"; break
+            return render, card
+    return None, None
+
+# ------------------------------------------------------- install steps --------
+def add_repo():
+    """Add repo.waydro.id via the vendor installer (handles Debian/Ubuntu/Armbian
+    codename detection), then confirm apt actually sees a waydroid candidate."""
+    if os.path.exists(REPO_LIST) and os.path.exists(REPO_KEY):
+        info("waydroid apt repo already configured.")
+    else:
+        if not net_ok(): die("no internet - cannot reach repo.waydro.id")
+        info("adding the official waydroid apt repo (repo.waydro.id)...")
+        r = run(["sh", "-c", "curl -s https://repo.waydro.id | bash"])
+        if r.returncode != 0:
+            die("repo setup failed. Add it manually per https://docs.waydro.id")
+    run(["apt-get", "update"], check=False)
+    cand = out(["apt-cache", "policy", "waydroid"])
+    if "Candidate: (none)" in cand or "Unable to locate" in cand or not cand:
+        die("apt still has no 'waydroid' candidate - repo/codename mismatch on this Armbian base.\n"
+            "  Check: apt-cache policy waydroid ; and /etc/apt/sources.list.d/waydroid.list")
+
+def install():
+    add_repo()
+    if not waydroid_installed():
+        info("installing waydroid (apt)...")
+        if run(["apt-get", "install", "-y", "waydroid"]).returncode != 0 or not waydroid_installed():
+            die("could not install waydroid. See: apt-cache policy waydroid")
+    else:
+        info("waydroid already installed.")
+    if not have("weston"):
+        info("installing weston (nested Wayland compositor for the X11 window)...")
+        run(["apt-get", "install", "-y", "weston"], check=False)
+        if not have("weston"):
+            warn("weston did not install - `start` needs it; `sudo apt install weston` and retry.")
+    # xdotool + xwininfo title the nested window; python3-xlib pins it to a fixed size
+    if not have("xdotool") or not have("xwininfo") or not _have_xlib():
+        run(["apt-get", "install", "-y", "xdotool", "x11-utils", "python3-xlib"], check=False)
+    write_nft_override()
+    write_container_cgroup_fix()
+    if not psi_ok():
+        warn("kernel has NO PSI (/proc/pressure absent). Android will boot then die in ~15s.")
+        warn("This needs the v4.3 kernel (CONFIG_PSI=y) before Waydroid can run at all.")
+    b_ok, b_detail = binder_state()
+    (ok if b_ok else warn)(f"binder: {b_detail}")
+    ok("waydroid + weston installed.")
+    print("  Next (recommended, hardware Mali-G610):  h96-waydroid init vanilla")
+    print("       latest official LineageOS (Android 13), Panfrost GPU by default")
+    print("  Or   (legacy Android 11, also hardware):  h96-waydroid init gpu")
+    print(f"       (drop system.img + vendor.img into {GPU_STASH} first)")
+
+def write_nft_override():
+    """Known RK3588 trap: nftables-backed iptables can break Android networking.
+    Force the container to use the legacy path via LXC_USE_NFT=false."""
+    os.makedirs(os.path.dirname(NFT_OVERRIDE), exist_ok=True)
+    _write(NFT_OVERRIDE,
+           "# h96-waydroid: nftables breaks Waydroid LXC networking on RK3588.\n"
+           "[Service]\nEnvironment=LXC_USE_NFT=false\n", 0o644)
+    run(["systemctl", "daemon-reload"], check=False)
+
+def write_container_cgroup_fix():
+    """Waydroid on a cgroup v2 systemd host: the container's /sys/fs/cgroup is mounted
+    read-only, so Android init cannot create its per-app cgroups - lmkd and every service
+    then fail and boot dies (~15s, 'critical process lmkd exited'). Fix: delegate a writable
+    cgroup to the container service and enable the controllers at the cgroup root before it
+    starts, and make LXC mount the container cgroup read-write."""
+    os.makedirs(os.path.dirname(CG_OVERRIDE), exist_ok=True)
+    _write(CG_OVERRIDE,
+           "# h96-waydroid: give the Android container a writable, controller-enabled cgroup.\n"
+           "[Service]\n"
+           "Delegate=yes\n"
+           "ExecStartPre=/bin/sh -c 'for c in cpuset cpu io memory pids; do "
+           "echo +$c > /sys/fs/cgroup/cgroup.subtree_control 2>/dev/null; done'\n", 0o644)
+    cb = "/usr/lib/waydroid/data/configs/config_base"   # LXC mounts cgroup ro by default
+    try:
+        s = open(cb).read()
+        if "cgroup:ro" in s:
+            open(cb, "w").write(s.replace("cgroup:ro", "cgroup:rw"))
+    except FileNotFoundError:
+        pass
+    run(["systemctl", "daemon-reload"], check=False)
+
+# ---------------------------------------------------------- config edits ------
+def cfg_set(key, value, section="waydroid"):
+    import configparser
+    cp = configparser.ConfigParser()
+    cp.optionxform = str
+    if os.path.exists(WCFG): cp.read(WCFG)
+    if not cp.has_section(section): cp.add_section(section)
+    cp.set(section, key, value)
+    with open(WCFG, "w") as f: cp.write(f)
+
+def cfg_del(key, section="waydroid"):
+    import configparser
+    cp = configparser.ConfigParser()
+    cp.optionxform = str
+    if not os.path.exists(WCFG): return
+    cp.read(WCFG)
+    if cp.has_section(section) and cp.has_option(section, key):
+        cp.remove_option(section, key)
+        with open(WCFG, "w") as f: cp.write(f)
+
+def patch_config_nodes_gpu(render, card, cgv1_shims=False):
+    """config_nodes is REGENERATED by `waydroid init`, so this runs AFTER init. Point the
+    render/card bind-mounts at the Panthor GPU node (Waydroid's own auto-pick lands on the
+    display controller, not the GPU).
+
+    cgv1_shims is for the ANDROID 11 image ONLY. That image expects cgroup v1 paths that a
+    cgroup v2 host does not provide, and without the tmpfs shims its zygote crash-loops.
+    Android 13 is cgroup v2 and must NOT get them."""
+    if not os.path.exists(CONFIG_NODES):
+        warn(f"{CONFIG_NODES} missing - run init first."); return
+    lines = open(CONFIG_NODES).read().splitlines()
+    keep = []
+    for ln in lines:
+        # drop any prior render/card bind lines and any prior shim lines; we re-add ours
+        if "dev/dri/renderD" in ln or "dev/dri/card" in ln:
+            continue
+        if any(s.split("tmpfs ")[1].split()[0] in ln for s in CGV1_SHIMS if "tmpfs " in s) \
+           and ln.strip().startswith("lxc.mount.entry = tmpfs"):
+            # only drop our own shim targets (acct, dev/stune, dev/cpuset, dev/memcg)
+            tgt = ln.split()[3] if len(ln.split()) > 3 else ""
+            if tgt in ("acct", "dev/stune", "dev/cpuset", "dev/memcg"):
+                continue
+        keep.append(ln)
+    keep.append(f"lxc.mount.entry = {render} dev/dri/{os.path.basename(render)} "
+                f"none bind,create=file,optional 0 0")
+    if card:
+        keep.append(f"lxc.mount.entry = {card} dev/dri/{os.path.basename(card)} "
+                    f"none bind,create=file,optional 0 0")
+    if cgv1_shims:
+        keep.extend(CGV1_SHIMS)
+    with open(CONFIG_NODES, "w") as f: f.write("\n".join(keep) + "\n")
+
+def apply_gpu_config(cgv1_shims=False):
+    """Wire the Mali-G610 through Panfrost: drm_device in cfg, the render and card nodes bound
+    into the container, gbm/mesa props. Returns the render node used, or None if there is no
+    panthor node.
+
+    THIS APPLIES TO EVERY IMAGE, not just the Android 11 one. Measured on this board with the
+    official `lineage-20.0-20260403-VANILLA-waydroid_arm64` image (vendor type MAINLINE):
+    `GLES: Mesa, Mali-G610 MC4 (Panfrost), OpenGL ES 3.1 Mesa 26.0.1`, GPU load reaching 50
+    percent at 1000 MHz under UI activity against 0 at 300 MHz idle. Upstream enables the ARM
+    drivers in waydroid_arm64/BoardConfig.mk (panfrost in both the gallium and vulkan driver
+    lists); the ROOT BoardConfig.mk lists only llvmpipe and friends, which is what previously
+    led this project to believe the official image had no Panfrost. It does.
+
+    cgv1_shims is passed through and is for the Android 11 image only."""
+    render, card = gpu_nodes()
+    if not render:
+        warn("no panthor/panfrost render node found - cannot enable hardware GPU.")
+        return None
+    info(f"GPU render node: {render}" + (f"  card: {card}" if card else ""))
+    cfg_set("drm_device", render)
+    patch_config_nodes_gpu(render, card, cgv1_shims=cgv1_shims)
+    _prop_set({"ro.hardware.gralloc": "gbm", "ro.hardware.egl": "mesa",
+               "gralloc.gbm.device": render, "ro.hardware.camera": "v4l2",
+               "ro.opengles.version": "196610"})
+    return render
+
+def set_display(wh):
+    """Force the Android render size to WxH so it FILLS the Weston window at launch and KEEPS
+    that size when the window is resized. The Panthor image otherwise pins itself to a fixed
+    960x512 (its own waydroid.display_width/height); we override both in base_prop and record
+    WxH in a marker so the launcher opens Weston at exactly that size (no black border at
+    launch). Resizing the window afterwards leaves Android at WxH - the retain-size behaviour."""
+    try:
+        w, h = wh.lower().split("x"); int(w); int(h)
+    except Exception:
+        warn(f"bad display size '{wh}', keeping the image default."); return
+    _prop_set({"waydroid.display_width": w, "waydroid.display_height": h})
+    _write(DISPLAY_MARK, wh.lower() + "\n", 0o644)
+
+# Size menu, grouped. "This display" entries are computed from the live monitor so the
+# window can be dropped onto exactly one half of the desktop, or match the screen.
+# Phone entries are true portrait aspect ratios so Android runs phone-shaped.
+DESKTOP_SIZES = [("1280x720",  "720p    balanced (default)"),
+                 ("1600x900",  "900p    larger desktop window"),
+                 ("960x512",   "native  lightest, best performance")]
+PHONE_SIZES   = [("540x960",   "qHD     9:16 portrait"),
+                 ("720x1280",  "HD      9:16 portrait"),
+                 ("1080x1920", "FHD     9:16 portrait"),
+                 ("720x1600",  "tall    9:20 portrait"),
+                 ("1080x2400", "tall+   9:20 FHD+ portrait")]
+
+def size_menu(user):
+    """Return ([(group, size, label)], screen). Half/full are derived from this display."""
+    scr = screen_size(user)
+    items = [("Desktop", s, d) for s, d in DESKTOP_SIZES]
+    if scr:
+        w, h = scr
+        items.append(("This display", f"{w // 2}x{h}",
+                      f"half    one half of this {w}x{h} screen (side by side)"))
+        items.append(("This display", f"{w}x{h}",
+                      f"full    the whole {w}x{h} screen"))
+    items += [("Phone (portrait)", s, d) for s, d in PHONE_SIZES]
+    return items, scr
+
+def valid_size(wh):
+    try:
+        w, h = wh.lower().split("x"); int(w); int(h); return True
+    except Exception:
+        return False
+
+def choose_size(default=GPU_DISPLAY, user=None):
+    items, scr = size_menu(user)
+    print(c("  Window size", CYAN) +
+          c("  (Android renders at this size; the window is LOCKED to it and cannot", DIM))
+    print(c("              be resized, snapped or maximised - that would black it out)", DIM))
+    if scr:
+        print(c(f"              this display is {scr[0]}x{scr[1]}", DIM))
+    group = None
+    for i, (g, s, d) in enumerate(items, 1):
+        if g != group:
+            group = g
+            print("  " + c(g, CYAN))
+        star = "  <- current" if s == default else ""
+        big = ""
+        if scr:
+            w, h = (int(x) for x in s.split("x"))
+            if w > scr[0] or h > scr[1]:
+                big = "  (bigger than your screen)"
+        print("   " + c(f"{i:>2}) ", MAGENTA) + c(f"{s:10}", "92") +
+              c(f" {d}{star}", DIM) + c(big, "93"))
+    print("    " + c("c) ", MAGENTA) + "custom WxH")
+    try:
+        sel = input(c(f"  Size? [1-{len(items)}/c, Enter = {default}]: ", MAGENTA)).strip().lower()
+    except (EOFError, KeyboardInterrupt):
+        print(); return default
+    if not sel: return default
+    if sel.isdigit() and 1 <= int(sel) <= len(items): return items[int(sel)-1][1]
+    if sel == "c":
+        try: sel = input(c("  Enter WxH (e.g. 1440x810): ", MAGENTA)).strip().lower()
+        except (EOFError, KeyboardInterrupt): print(); return default
+    return sel if valid_size(sel) else default
+
+def do_size(wh=None):
+    """Set the launch window/render size. GPU (Panthor) images pin their own size, so we must
+    override waydroid.display_width/height in base_prop; software images follow the Weston
+    output, so the marker alone is enough. Applies on the next start."""
+    user = desktop_user()
+    if wh is None:
+        wh = choose_size(current_size() or GPU_DISPLAY, user)
+    if not valid_size(wh):
+        die(f"bad size '{wh}' - use WxH, e.g. 1280x720")
+    warn_if_over_screen(wh, user)
+    is_gpu = _read_props().get("ro.hardware.gralloc") == "gbm"
+    if is_gpu:
+        set_display(wh)                              # base_prop override + marker
+    else:
+        _write(DISPLAY_MARK, wh.lower() + "\n", 0o644)  # software Android follows Weston
+    ok(f"window size set to {wh} (applies on the next launch).")
+    if session_running():
+        info("apply now:  h96-waydroid stop   then   h96-waydroid start")
+
+def current_size():
+    if os.path.exists(DISPLAY_MARK):
+        s = open(DISPLAY_MARK).read().strip()
+        if valid_size(s): return s
+    return None
+
+def force_software_config():
+    """Force SwiftShader software rendering. This is the `hw off` fallback and a diagnostic,
+    NOT a profile default. It used to be applied to every LineageOS init, which is why this
+    project wrongly believed the official Android 13 image could not use the GPU: the
+    measurement was of this configuration, not of the image."""
+    _prop_set({"ro.hardware.gralloc": "default", "ro.hardware.egl": "swiftshader"})
+    _prop_del(["gralloc.gbm.device", "waydroid.display_width", "waydroid.display_height"])
+    cfg_del("drm_device")
+    # keep the size marker: the window is locked to it and a software image simply follows
+    # the Weston output, so it fills whatever size is chosen.
+
+def wipe_data(user):
+    d = data_dir(user)
+    if os.path.isdir(d):
+        info(f"wiping stale Android /data ({d}) so the new image boots clean...")
+        for e in os.listdir(d):
+            p = os.path.join(d, e)
+            shutil.rmtree(p, ignore_errors=True) if os.path.isdir(p) else _rm(p)
+
+# ------------------------------------------------------------ snapshots -------
+# Android /data is an ordinary host directory, so it already survives container stops,
+# session stops and reboots. The ONE thing that destroys it is a re-init (switching image
+# profiles calls wipe_data()). Snapshots make that switch non-destructive: save the state,
+# try another image, restore later.
+#
+# Three things this has to get right, and they are the whole reason it is not a bare `cp`:
+#   1. The session must be STOPPED first. Copying a live /data catches SQLite databases
+#      mid-write and produces a snapshot that restores into a subtly corrupt Android.
+#   2. Ownership/permissions must survive. /data is full of Android per-app uid/gid; a copy
+#      that flattens them breaks every installed app. tar runs as root with --numeric-owner.
+#   3. A snapshot is only valid for the Android VERSION that wrote it. Restoring an
+#      Android 11 state onto Android 13 reproduces exactly the system_server
+#      PackageManager NPE that forced wipe_data() to exist. Restore refuses across
+#      profiles unless the user insists with `force`.
+
+def _profile_tag():
+    """Which image profile is installed, readable WITHOUT a running session.
+    Keyed off which stash the auto-detect path points at, NOT off gralloc: every image now
+    gets the GPU wiring, so the old gralloc==gbm test would label everything as gpu."""
+    link = os.path.join(EXTRA_IMAGES, "system.img")
+    try:
+        tgt = os.path.realpath(link)
+    except OSError:
+        tgt = ""
+    if tgt.startswith(GPU_STASH):    return "gpu"
+    if tgt.startswith(CUSTOM_STASH): return "custom"
+    if tgt.startswith(LOS_STASH):    return "sw"
+    return "sw"
+
+def _snap_paths(name):
+    return (os.path.join(SNAP_DIR, name + ".tar.gz"),
+            os.path.join(SNAP_DIR, name + ".json"))
+
+def _snap_meta(name):
+    import json
+    _, m = _snap_paths(name)
+    try:
+        with open(m) as f: return json.load(f)
+    except Exception:
+        return {}
+
+def _live_android():
+    """(release, lineage) of the RUNNING Android, or ('','') - needs a live session."""
+    if not session_running(): return "", ""
+    rel = out(["waydroid", "shell", "getprop", "ro.build.version.release"]).strip()
+    lin = out(["waydroid", "shell", "getprop", "ro.lineage.version"]).strip()
+    return rel, lin
+
+def _human(n):
+    for u in ("B", "KB", "MB", "GB"):
+        if n < 1024 or u == "GB": return f"{n:.0f}{u}" if u == "B" else f"{n/1:.1f}{u}"
+        n /= 1024.0
+    return f"{n:.1f}GB"
+
+def _stop_session_for_snapshot():
+    """Quiesce Android so /data is not written while we read or replace it."""
+    if session_running():
+        info("stopping the Waydroid session so /data is consistent...")
+        run(["waydroid", "session", "stop"], check=False)
+        for _ in range(30):
+            if not session_running(): break
+            time.sleep(1)
+    run(["pkill", "-f", f"weston.*--socket={WESTON_SOCK}"], check=False)
+    time.sleep(1)
+
+def snap_save(user, name=None):
+    import json, datetime
+    d = data_dir(user)
+    if not os.path.isdir(d) or not os.listdir(d):
+        die(f"no Android /data to save at {d} - init and boot an image first.")
+    rel, lin = _live_android()          # read BEFORE stopping; needs the session
+    prof = _profile_tag()
+    if not name:
+        name = f"{prof}-" + datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+    if "/" in name or name.startswith("."):
+        die(f"bad snapshot name '{name}' - no slashes or leading dots.")
+    os.makedirs(SNAP_DIR, exist_ok=True)
+    tar, meta = _snap_paths(name)
+    if os.path.exists(tar):
+        die(f"snapshot '{name}' already exists. Delete it first: h96-waydroid state delete {name}")
+    _stop_session_for_snapshot()
+    info(f"saving Android /data -> {tar} (this can take a while on a full image)...")
+    r = run(["tar", "-C", d, "--numeric-owner", "-czpf", tar, "."])
+    if r.returncode != 0 or not os.path.exists(tar):
+        _rm(tar); die("tar failed - snapshot NOT saved.")
+    size = os.path.getsize(tar)
+    with open(meta, "w") as f:
+        json.dump({"name": name, "created": datetime.datetime.now().isoformat(timespec="seconds"),
+                   "profile": prof, "android": rel, "lineage": lin,
+                   "size": size, "data_dir": d}, f, indent=2)
+    ok(f"saved state '{name}'  ({_human(size)}, profile {prof}"
+       + (f", Android {rel}" if rel else "") + ")")
+    print("  Restart Android when you are ready:  h96-waydroid start")
+
+def snap_list():
+    if not os.path.isdir(SNAP_DIR) or not glob.glob(os.path.join(SNAP_DIR, "*.tar.gz")):
+        info("no saved states yet.  Save one with:  h96-waydroid state save [name]")
+        return
+    print(c("  Saved Android states:", CYAN))
+    cur = _profile_tag()
+    for t in sorted(glob.glob(os.path.join(SNAP_DIR, "*.tar.gz"))):
+        n = os.path.basename(t)[:-7]
+        m = _snap_meta(n)
+        prof = m.get("profile", "?")
+        tag = c(" (matches current image)", "92") if prof == cur else \
+              c(f" (needs the '{prof}' image)", "93")
+        print("   " + c(f"{n:24}", "92") + c(f" {_human(os.path.getsize(t)):>8}"
+              f"  {m.get('created','?')}  profile={prof}"
+              + (f"  Android {m['android']}" if m.get("android") else ""), DIM) + tag)
+    print(c(f"\n  stored in {SNAP_DIR} (not part of the release image)", DIM))
+
+def snap_restore(user, name, force=False):
+    if not name: die("which state?  h96-waydroid state list")
+    tar, _ = _snap_paths(name)
+    if not os.path.exists(tar):
+        die(f"no saved state '{name}'.  h96-waydroid state list")
+    m = _snap_meta(name)
+    snap_prof, cur_prof = m.get("profile", "?"), _profile_tag()
+    if snap_prof != cur_prof and not force:
+        die(f"state '{name}' was saved on the '{snap_prof}' image but the '{cur_prof}' image is\n"
+            "  installed now. Restoring Android state across versions crashes system_server\n"
+            "  (PackageManager NPE reading a foreign packages.xml).\n"
+            f"  Switch image first (h96-waydroid init {'gpu' if snap_prof=='gpu' else 'vanilla'}),\n"
+            f"  or override at your own risk:  h96-waydroid state restore {name} force")
+    d = data_dir(user)
+    _stop_session_for_snapshot()
+    info(f"replacing {d} with state '{name}'...")
+    for e in os.listdir(d):                     # clear, but keep the dir + its ownership
+        p = os.path.join(d, e)
+        shutil.rmtree(p, ignore_errors=True) if os.path.isdir(p) else _rm(p)
+    r = run(["tar", "-C", d, "--numeric-owner", "-xpzf", tar])
+    if r.returncode != 0:
+        warn("tar reported errors - Android /data may be incomplete.")
+        warn(f"Re-init to recover: h96-waydroid init {'gpu' if cur_prof=='gpu' else 'vanilla'}")
+    ok(f"restored state '{name}'.  Start it:  h96-waydroid start")
+
+def snap_delete(name):
+    if not name: die("which state?  h96-waydroid state list")
+    tar, meta = _snap_paths(name)
+    if not os.path.exists(tar): die(f"no saved state '{name}'.  h96-waydroid state list")
+    size = os.path.getsize(tar)
+    _rm(tar); _rm(meta)
+    ok(f"deleted state '{name}' (freed {_human(size)})")
+
+def do_state(args):
+    """save | load/restore | delete | list  - manage saved Android /data states."""
+    user = desktop_user()
+    sub = (args[0].lower() if args else "list")
+    name = args[1] if len(args) > 1 else None
+    force = len(args) > 2 and args[2].lower() in ("force", "-f", "--force")
+    if sub in ("list", "ls"):            snap_list()
+    elif sub == "save":                  snap_save(user, name)
+    elif sub in ("load", "restore"):     snap_restore(user, name, force)
+    elif sub in ("delete", "rm", "del"): snap_delete(name)
+    else: die(f"unknown state action '{sub}' (save | load | delete | list)")
+
+# ---------------------------------------------------------------- init --------
+def do_init(profile, extra_dir=None):
+    if not waydroid_installed(): die("waydroid not installed - run: h96-waydroid install")
+    user = desktop_user()
+    profile = (profile or "").lower()
+
+    if profile == "gpu":
+        return init_gpu(user, extra_dir)
+    if profile in ("custom", "own", "local"):
+        if not extra_dir:
+            die("`init custom` needs a directory holding system.img + vendor.img:\n"
+                "  h96-waydroid init custom /path/to/imagedir")
+        return init_custom(user, extra_dir)
+    # `init vanilla fresh` re-downloads instead of reusing the stashed LineageOS image
+    return init_software(user, profile, fresh=str(extra_dir).lower() in ("fresh", "new", "--fresh"))
+
+def _stash_images(src, stash, move=False):
+    """Put a system.img + vendor.img pair into `stash` so it survives profile switches and is
+    never downloaded twice. Real files are MOVED when `move` (or when they sit in the
+    auto-detect path, which must be freed); a user-supplied directory is symlinked."""
+    os.makedirs(stash, exist_ok=True)
+    in_autodetect = os.path.abspath(src) == os.path.abspath(EXTRA_IMAGES)
+    for img in ("system.img", "vendor.img"):
+        s, d = os.path.join(src, img), os.path.join(stash, img)
+        if os.path.exists(d): continue
+        if not os.path.exists(s):
+            die(f"{s} not found - a Waydroid image is a system.img AND vendor.img pair.")
+        if (move or in_autodetect) and not os.path.islink(s):
+            shutil.move(s, d)                       # same filesystem: instant, frees the source
+        else:
+            _rm(d); os.symlink(os.path.abspath(s), d)
+
+def _link_images(stash):
+    """Symlink a stash into the auto-detect path so `waydroid init` uses it with NO download."""
+    os.makedirs(EXTRA_IMAGES, exist_ok=True)
+    for img in ("system.img", "vendor.img"):
+        dst = os.path.join(EXTRA_IMAGES, img)
+        _rm(dst); os.symlink(os.path.join(stash, img), dst)
+
+def _clear_images_dir():
+    """Drop stale symlinks in waydroid's own images dir so a fresh download can land there."""
+    for img in ("system.img", "vendor.img"):
+        p = os.path.join(IMAGES_DIR, img)
+        if os.path.islink(p): _rm(p)
+
+def _check_image_pair(d):
+    """Sanity-check a user-supplied image pair and report honestly. Waydroid needs an arm64
+    Waydroid/LineageOS-style system.img + vendor.img; a plain ROM zip or GSI will not boot."""
+    for img, floor in (("system.img", 200 * 1024**2), ("vendor.img", 10 * 1024**2)):
+        p = os.path.join(d, img)
+        if not os.path.exists(p):
+            die(f"{p} not found - need BOTH system.img and vendor.img in {d}")
+        if os.path.getsize(p) < floor:
+            warn(f"{img} is only {os.path.getsize(p)//1024**2} MB - that looks too small for a "
+                 "Waydroid image; boot will probably fail.")
+    t = out(["sh", "-c", f"file -b {os.path.join(d, 'system.img')} 2>/dev/null"])
+    if t and not any(k in t.lower() for k in ("ext", "erofs", "squashfs", "filesystem", "data")):
+        warn(f"system.img does not look like a filesystem image ({t[:60]}).")
+
+def _unlink_preinstalled():
+    """Clear the auto-detect path so `waydroid init -s` DOWNLOADS the official image instead
+    of silently reusing the preinstalled Panthor images. Real files hand-placed there are
+    migrated into the stash first, never simply deleted."""
+    reals = [i for i in ("system.img", "vendor.img")
+             if os.path.exists(os.path.join(EXTRA_IMAGES, i))
+             and not os.path.islink(os.path.join(EXTRA_IMAGES, i))]
+    if reals and not _has_imgs(GPU_STASH):
+        _stash_images(EXTRA_IMAGES, GPU_STASH)   # preserve them (moves the files out)
+    for img in ("system.img", "vendor.img"):     # drop symlinks + any already-stashed leftovers
+        p = os.path.join(EXTRA_IMAGES, img)
+        if os.path.islink(p) or os.path.exists(p): _rm(p)
+    # waydroid's initializer enters its preinstalled-images branch whenever the DIRECTORY
+    # exists and then stat()s a missing system.img (crash). Remove the empty dir entirely so
+    # `init -s` takes the download path.
+    if os.path.isdir(EXTRA_IMAGES) and not os.listdir(EXTRA_IMAGES):
+        try: os.rmdir(EXTRA_IMAGES)
+        except OSError: pass
+
+def init_gpu(user, extra_dir):
+    """Panthor HARDWARE image (Mali-G610). Kept in GPU_STASH and symlinked into the auto-detect
+    path so `waydroid init` uses it with no download."""
+    if extra_dir:
+        _check_image_pair(extra_dir)
+        _stash_images(extra_dir, GPU_STASH)
+    elif not _has_imgs(GPU_STASH) and _has_imgs(EXTRA_IMAGES):
+        _stash_images(EXTRA_IMAGES, GPU_STASH)      # migrate an earlier hand-install
+    if not _has_imgs(GPU_STASH):
+        die("no Panthor image found. Place the hardware system.img + vendor.img in\n"
+            f"  {GPU_STASH}\n"
+            "  (Android 11 build with Mesa-Panfrost compiled in, ~5 GB), or pass a directory:\n"
+            "  h96-waydroid init gpu /path/to/imagedir\n"
+            "  then re-run. NOTE: `init vanilla` is now the recommended path - the official\n"
+            "  image drives this GPU in hardware too, on newer Mesa, with nothing to supply.")
+    if not psi_ok():
+        die("kernel has NO PSI (/proc/pressure) - Android cannot boot. Needs the v4.3 kernel.")
+    _clear_images_dir()
+    _link_images(GPU_STASH)
+    info("initialising Waydroid from the Panthor image (no download)...")
+    if run(["waydroid", "init", "-f"]).returncode != 0 or not image_ready():
+        die(f"waydroid init failed. Check that {GPU_STASH} holds both images.")
+    wipe_data(user)
+    _clear_image_identity()
+    render = apply_gpu_config(cgv1_shims=True)   # Android 11 image needs the cgroup v1 shims
+    if not render:
+        warn("GPU node not wired - the image will software-render until `hw on` succeeds.")
+    set_display(current_size() or GPU_DISPLAY)   # fill the window at this size, retain on resize
+    info("enabling the container service so the UI can start without sudo...")
+    run(["systemctl", "enable", "--now", "waydroid-container"], check=False)
+    ok("Waydroid initialised (gpu / Panthor Android 11). Launch it: h96-waydroid start")
+    print(f"  Hardware Mali-G610 (Panfrost). Android fills a {current_size() or GPU_DISPLAY} "
+          "window, locked")
+    print("  to that size (change it: h96-waydroid size). First boot is slow (~1-2 min cold).")
+    print("  Verify the GPU is really in use: h96-waydroid status")
+
+def _clear_image_identity():
+    """Drop identity props left behind by a PREVIOUS image, so a profile switch does not make
+    the new Android report the old image's device.
+
+    waydroid writes ro.product.waydroid.model at init from the image it installed. Because
+    waydroid_base.prop is carried across our profile switches, an Android 13 install was
+    measured still reporting the Android 11 board string "Rockchip RK3588 NVR DEMO LP4 V10".
+    That also poisons `spoof`, whose "stock" baseline is whatever it reads first. With these
+    removed the image supplies its own: Android 13 then correctly reports
+    ro.product.model = "WayDroid arm64 Device", ro.product.device = "waydroid_arm64".
+    Any active spoof belongs to the old image too, so its state is dropped with them."""
+    d = _read_props()
+    for k in [k for k in d if k.startswith(("ro.product.", "ro.build."))]:
+        d.pop(k, None)
+    _save_props(d)
+    _rm(SPOOF_STATE)
+
+def _finish_init(user, user_msg, extra=()):
+    """Shared tail of every init: clean /data, enable the container, set the window size."""
+    wipe_data(user)
+    _clear_image_identity()
+    # Wire the GPU. The official arm64 image DOES carry Panfrost (measured: Mali-G610 MC4,
+    # Mesa 26.0.1). No cgroup v1 shims: Android 13 is cgroup v2. Android 13 also follows the
+    # Weston output size, so the Android-11-only display pinning is removed.
+    render = apply_gpu_config(cgv1_shims=False)
+    _prop_del(["waydroid.display_width", "waydroid.display_height"])
+    if not render:
+        warn("no panthor node found - this image will fall back to software rendering.")
+    if not current_size():          # window is fixed-size, so always have a sane one
+        _write(DISPLAY_MARK, GPU_DISPLAY + "\n", 0o644)
+    info("enabling the container service so the UI can start without sudo...")
+    run(["systemctl", "enable", "--now", "waydroid-container"], check=False)
+    ok(user_msg + " Launch it: h96-waydroid start")
+    for line in extra: print(line)
+
+def init_software(user, flavour, fresh=False):
+    """Latest official Waydroid LineageOS image (Android 13). Hardware GPU on this board.
+
+    The download is STASHED, so switching back and forth between images never re-downloads
+    ~900 MB. `init vanilla fresh` forces a new download and replaces the stash."""
+    sysmap = {"gapps": "GAPPS", "vanilla": "VANILLA", "foss": "FOSS", "": "VANILLA"}
+    system = sysmap.get(flavour)
+    if system is None:
+        die(f"unknown init profile '{flavour}' (use: gpu | gapps | vanilla | foss | custom)")
+    if not psi_ok():
+        die("kernel has NO PSI (/proc/pressure) - Android cannot boot. Needs the v4.3 kernel.")
+
+    if _has_imgs(LOS_STASH) and not fresh:
+        info(f"reusing the stashed LineageOS image from {LOS_STASH} (no download)...")
+        _clear_images_dir()
+        _link_images(LOS_STASH)
+        if run(["waydroid", "init", "-f"]).returncode != 0 or not image_ready():
+            die("waydroid init failed on the stashed image. Re-download: "
+                f"h96-waydroid init {flavour or 'vanilla'} fresh")
+    else:
+        if not net_ok():
+            die("no internet - the LineageOS system image (~1 GB) is downloaded on init")
+        if fresh:
+            shutil.rmtree(LOS_STASH, ignore_errors=True)
+        _unlink_preinstalled()   # stop a stash shadowing the official download
+        _clear_images_dir()
+        force = ["-f"] if image_ready() else []
+        info(f"initialising the latest LineageOS as {system} (downloads system + vendor, slow)...")
+        if run(["waydroid", "init", "-s", system] + force).returncode != 0 or not image_ready():
+            die("waydroid init failed (network? mirror down?). Retry: h96-waydroid init "
+                + (flavour or "vanilla"))
+        # keep what we just downloaded so the next switch is instant and offline
+        if _has_imgs(IMAGES_DIR):
+            info(f"stashing the downloaded image in {LOS_STASH} so it is never re-downloaded...")
+            _stash_images(IMAGES_DIR, LOS_STASH, move=True)
+            _link_images(LOS_STASH)
+            run(["waydroid", "init", "-f"], check=False)
+
+    _finish_init(user, f"Waydroid initialised ({system}, latest LineageOS).",
+                 ["  Hardware Mali-G610 through Panfrost, and a current Android. This is the",
+                  "  recommended image. Verify the live renderer with: h96-waydroid status",
+                  "  Force software rendering instead (diagnostic): h96-waydroid hw off"])
+
+def init_custom(user, src_dir):
+    """Bring-your-own image. Waydroid needs an arm64 Waydroid/LineageOS-style system.img +
+    vendor.img PAIR - a ROM zip, an OTA payload or a plain GSI will not boot. We validate what
+    we can, then verify the LIVE result afterwards rather than claiming success."""
+    if not os.path.isdir(src_dir):
+        die(f"{src_dir} is not a directory. Give the folder holding system.img + vendor.img.")
+    if not psi_ok():
+        die("kernel has NO PSI (/proc/pressure) - Android cannot boot. Needs the v4.3 kernel.")
+    _check_image_pair(src_dir)
+    shutil.rmtree(CUSTOM_STASH, ignore_errors=True)      # a new custom image replaces the old
+    _stash_images(src_dir, CUSTOM_STASH)
+    _clear_images_dir()
+    _link_images(CUSTOM_STASH)
+    info(f"initialising Waydroid from your image in {src_dir} (no download)...")
+    if run(["waydroid", "init", "-f"]).returncode != 0 or not image_ready():
+        die("waydroid init failed on that image. It must be an arm64 Waydroid-style\n"
+            "  system.img + vendor.img pair (LineageOS-for-Waydroid or similar), NOT a ROM zip.")
+    _finish_init(user, "Waydroid initialised (custom image).",
+                 ["  The GPU is wired the same way as for the other images. Whether it is",
+                  "  actually used depends on whether YOUR image has Mesa/Panfrost compiled in.",
+                  "  `h96-waydroid status` reads the LIVE renderer and tells you the truth.",
+                  "  After it boots, check it really came up:  h96-waydroid status"])
+
+# --------------------------------------------------------------- start --------
+def write_lockwin():
+    """Helper that pins WM_NORMAL_HINTS min == max on the nested Weston window, making it a
+    FIXED-SIZE window.
+
+    WHY: any window-manager geometry change (drag-resize, edge snap / quick tile, maximize,
+    fullscreen) makes Weston reconfigure its X11 output. The Waydroid client renders the
+    Android display at one fixed size and cannot follow that reconfigure - it drops off the
+    compositor ("libwayland: error in client communication") and the window goes PERMANENTLY
+    black. KWin ignores a min-size-only hint when quick-tiling, so min AND max are pinned:
+    the window then simply is not resizable and none of those actions can fire.
+    Change the size with `h96-waydroid size` instead."""
+    _write(LOCKWIN, '''#!/usr/bin/env python3
+# h96-waydroid-lockwin <window-id> <W> <H>  - pin the window to a fixed size.
+# Auto-generated by h96-waydroid.
+import sys
+try:
+    from Xlib import display, Xutil
+except ImportError:
+    sys.exit(0)            # not fatal - the window just stays resizable
+wid = int(sys.argv[1], 0); W = int(sys.argv[2]); H = int(sys.argv[3])
+d = display.Display()
+w = d.create_resource_object("window", wid)
+w.set_wm_normal_hints(flags=Xutil.PMinSize | Xutil.PMaxSize,
+                      min_width=W, min_height=H, max_width=W, max_height=H)
+d.sync()
+''', 0o755)
+
+def screen_size(user):
+    """Primary display resolution as (w, h), read from the desktop user's X session."""
+    o = out(["sudo", "-u", user, "env", "DISPLAY=:0",
+             f"XAUTHORITY={user_home(user)}/.Xauthority", "xrandr"])
+    for ln in o.splitlines():
+        if "*" in ln:
+            try:
+                w, h = ln.split()[0].split("x"); return int(w), int(h)
+            except Exception:
+                pass
+    return None
+
+def warn_if_over_screen(wh, user):
+    """The window is fixed-size and undecorated by any resize handle, so a size larger than
+    the display leaves its edges (and the title bar's close button) off-screen."""
+    s = screen_size(user)
+    if not s or not valid_size(wh):
+        return
+    w, h = (int(x) for x in wh.lower().split("x"))
+    if w > s[0] or h > s[1]:
+        warn(f"{wh} is LARGER than this display ({s[0]}x{s[1]}).")
+        warn("The window cannot be resized, so its edges and title bar will sit off-screen")
+        warn("and you may not be able to reach the close button. Prefer a size that fits.")
+
+def write_launcher():
+    """User-session launcher: nested Weston on X11 + waydroid full UI. Runs AS the
+    desktop user (needs DISPLAY), so the container service is pre-enabled at init.
+
+    SIZE: Weston opens at the Android render size (the marker), so Android FILLS the window,
+    and the window is then LOCKED to that size by h96-waydroid-lockwin. Resizing/tiling/
+    maximising would make Weston reconfigure its output and permanently black the Waydroid
+    surface, so it must not be possible. Change the size with `h96-waydroid size`."""
+    script = f"""#!/bin/bash
+# h96-waydroid-launch - Waydroid UI in a nested Weston window on KDE/X11 (RK3588).
+# Auto-generated by h96-waydroid. Runs as the desktop user.
+set -u
+SOCK="{WESTON_SOCK}"
+RUN="${{XDG_RUNTIME_DIR:-/run/user/$(id -u)}}"
+LOG=/tmp/h96-waydroid
+mkdir -p "$LOG"
+command -v weston   >/dev/null || {{ echo "weston missing - sudo apt install weston"; exit 1; }}
+command -v waydroid >/dev/null || {{ echo "waydroid missing - h96-waydroid install"; exit 1; }}
+# `waydroid init` repoints images_path at the preinstalled dir when it uses a stashed image,
+# so {IMAGES_DIR} alone is NOT where the image lives. Ask the config.
+IMG="$(awk -F= '/^images_path/{{gsub(/[ \\t]/,"",$2); print $2}}' {WCFG} 2>/dev/null)"
+[ -n "$IMG" ] || IMG={IMAGES_DIR}
+[ -f "$IMG/system.img" ] || {{ echo "no Android image - h96-waydroid init gpu (or vanilla)"; exit 1; }}
+systemctl is-active --quiet waydroid-container || \\
+    {{ echo "waydroid-container not running - h96-waydroid start (as root once) or reboot"; }}
+
+# Weston opens at the Android render size so the image FILLS the window (no black border) and
+# keeps that size when you resize. The marker is written by `init gpu`; software images have no
+# marker and follow the screen, filling whatever Weston opens at.
+if [ -s {DISPLAY_MARK} ]; then
+  RES="$(tr -d '[:space:]' < {DISPLAY_MARK})"
+else
+  RES="$(xrandr 2>/dev/null | awk '/\\*/{{print $1; exit}}')"; [ -n "$RES" ] || RES="1280x720"
+fi
+W="${{RES%x*}}"; H="${{RES#*x}}"
+
+# weston 14 backend flag is --backend=x11 (no .so); kiosk shell = one fullscreen app
+weston --backend=x11 --socket="$SOCK" --width="$W" --height="$H" --shell=kiosk \\
+    >"$LOG/weston.log" 2>&1 &
+WPID=$!
+for i in $(seq 1 60); do [ -S "$RUN/$SOCK" ] && break; sleep 0.2; done
+[ -S "$RUN/$SOCK" ] || {{ echo "weston did not create its socket - see $LOG/weston.log"; kill $WPID 2>/dev/null; exit 1; }}
+
+# rename the nested window so its title bar reads "Waydroid". Weston sets WM_NAME (which
+# `xdotool search --name` does NOT match) to "Weston Compositor - screen0", so find the
+# window id with xwininfo and rename it with xdotool.
+WID=""
+for i in $(seq 1 40); do
+  WID=$(xwininfo -root -tree 2>/dev/null | grep -m1 "Weston Compositor" | grep -oE '0x[0-9a-f]+' | head -1)
+  [ -n "$WID" ] && {{ xdotool set_window --name "Waydroid" "$WID" 2>/dev/null; break; }}
+  sleep 0.25
+done
+
+# LOCK the window to the Android render size. Resizing/tiling/maximizing makes Weston
+# reconfigure its output, which kills the Waydroid surface and blacks the window for good.
+# A fixed-size window makes every one of those actions impossible. Resize via `h96-waydroid size`.
+[ -n "$WID" ] && [ -x {LOCKWIN} ] && {LOCKWIN} "$WID" "$W" "$H" >/dev/null 2>&1
+
+export WAYLAND_DISPLAY="$SOCK"
+waydroid session start >"$LOG/session.log" 2>&1 &
+# `waydroid shell getprop` needs root and this launcher runs as the desktop user, so we
+# cannot poll sys.boot_completed here. `waydroid session start` prints "... is ready" to
+# its log when Android has finished booting - watch that instead. Running show-full-ui too
+# early leaves a black window, so we wait for the ready line (cold boot ~15-90 s).
+echo "Android booting..."
+for i in $(seq 1 180); do
+  grep -q "is ready" "$LOG/session.log" 2>/dev/null && break
+  sleep 1
+done
+sleep 2
+# show-full-ui only TRIGGERS full-UI mode and returns immediately - it does NOT block. The
+# session then renders into Weston for as long as Weston lives, so we must keep this window
+# open by waiting on Weston (until the user closes it), NOT tear down right after this call.
+waydroid show-full-ui
+
+# block until the user closes the Weston window, THEN tear the session down
+wait $WPID 2>/dev/null
+waydroid session stop >/dev/null 2>&1
+"""
+    write_lockwin()
+    _write(LAUNCHER, script, 0o755)
+    _write(DESKTOP,
+           "[Desktop Entry]\nType=Application\nName=Android (Waydroid)\n"
+           "Comment=Android in a nested Weston window on the H96 desktop\n"
+           f"Exec={LAUNCHER}\nIcon=waydroid\nTerminal=false\nCategories=System;Utility;\n",
+           0o644)
+
+def start():
+    if not waydroid_installed(): die("waydroid not installed - run: h96-waydroid install")
+    if not image_ready(): die("no Android image - run: h96-waydroid init gpu (or init vanilla)")
+    if not have("weston"): die("weston not installed - run: sudo apt install weston")
+    # always refresh the launcher so script updates take effect (needs root to write)
+    if os.geteuid() != 0 and have("sudo"):
+        run(["sudo", sys.executable, os.path.abspath(__file__), "_writelauncher"], check=False)
+    elif os.geteuid() == 0:
+        write_launcher()
+    if not os.path.exists(LAUNCHER):
+        die(f"could not write {LAUNCHER} (the sudo step was declined or failed). "
+            f"Run once as root: sudo h96-waydroid _writelauncher")
+    if os.geteuid() == 0:
+        die("run `start` as your normal desktop user, not root (it needs your X DISPLAY).")
+    if not os.environ.get("DISPLAY"):
+        die("no X DISPLAY - run this from inside your KDE session.")
+    info("launching Android (nested Weston on X11). Window is fixed-size; close it to stop.")
+    info(f"    size {current_size() or GPU_DISPLAY} - change it with: h96-waydroid size")
+    os.execv(LAUNCHER, [LAUNCHER])
+
+def stop():
+    if not waydroid_installed(): die("waydroid not installed.")
+    info("stopping the Waydroid session + container...")
+    run(["waydroid", "session", "stop"], check=False)
+    run(["systemctl", "stop", "waydroid-container"], check=False)
+    run(["pkill", "-f", f"weston.*--socket={WESTON_SOCK}"], check=False)
+    ok("stopped.")
+
+# ------------------------------------------------------------------ hw --------
+def hw(mode):
+    """Re-apply or remove the Panfrost GPU wiring, then VERIFY the live renderer.
+    Honest by design: if the running image has no Android-built Panfrost it reports
+    that it is still software-rendering rather than pretending it worked."""
+    if not image_ready(): die("no Android image - run: h96-waydroid init gpu first")
+    if mode == "off":
+        force_software_config()
+        info("restarting the container to apply software-render props...")
+        run(["waydroid", "session", "stop"], check=False)
+        run(["systemctl", "restart", "waydroid-container"], check=False)
+        ok("GPU wiring removed - Waydroid will software-render on next start.")
+        return
+    render = apply_gpu_config()
+    if not render:
+        die("no panthor/panfrost render node - open-GPU accel needs the panthor driver.")
+    warn("This only accelerates if the RUNNING image has Panfrost built into its Mesa")
+    warn("(the Panthor image does; the stock LineageOS download does NOT).")
+    info("restarting the container to apply GPU props...")
+    run(["waydroid", "session", "stop"], check=False)
+    run(["systemctl", "restart", "waydroid-container"], check=False)
+    time.sleep(3)
+    verify_gpu()
+
+def verify_gpu():
+    """Ask the LIVE Android for its GLES renderer and report the truth."""
+    if not session_running():
+        warn("no running session to probe - start Waydroid, then: h96-waydroid status")
+        return
+    r = out(["waydroid", "shell", "dumpsys", "SurfaceFlinger"])
+    line = next((l for l in r.splitlines() if "GLES:" in l or "renderer" in l.lower()), "")
+    low = line.lower()
+    if any(k in low for k in ("mali", "panfrost", "panvk")):
+        ok(f"GPU ACCELERATED: {line.strip()}")
+    elif any(k in low for k in ("swiftshader", "llvmpipe", "softpipe", "android emulator")):
+        warn(f"STILL SOFTWARE: {line.strip() or 'SwiftShader'}")
+        warn("Check, in this order: (1) `hw off` was run at some point, so re-run `hw on`;")
+        warn("(2) the vendor image is HALIUM rather than MAINLINE (HALIUM vendor images are")
+        warn("stripped of the Mesa GPU drivers); (3) the container has no render node, check")
+        warn("`waydroid shell ls /dev/dri` for renderD130; (4) the image genuinely has no")
+        warn("Panfrost, which is true of some third-party images but NOT of the official one.")
+    else:
+        warn(f"could not classify renderer: {line.strip() or '(no GLES line in dumpsys)'}")
+
+# --------------------------------------------------------------- spoof --------
+# WHY. Aurora Store and the Play Store resolve their catalogue against the DEVICE IDENTITY
+# props below. A stock Waydroid image answers brand "waydroid", model "WayDroid arm64
+# Device" - a device no Play profile knows - so apps come back "not compatible with your
+# device", show no download for this ABI/screen, or are hidden from search entirely.
+# Reporting a real, common phone makes the catalogue resolve normally.
+#
+# WHAT THIS DOES NOT DO. Play Integrity and SafetyNet attest a hardware-backed key and the
+# verified-boot state, not these strings. An LXC container has neither. Banking apps, DRM
+# playback (Widevine L1) and some games will still refuse after a spoof. This buys
+# AVAILABILITY, not attestation - it is not a bypass and is not sold as one.
+#
+# HOW IT LANDS. waydroid_base.prop is merged into /vendor/waydroid.prop, which the image's
+# /system/build.prop imports on its LAST line. Android 10+ init collects every build.prop
+# into one map (last write wins) and only THEN derives ro.product.<x> from the partition
+# sources, so a plain ro.product.model written here outranks the image's own. Two mirrors
+# are written as well: ro.product.system.* (read directly by some apps) and
+# ro.product.waydroid.* (newer Waydroid images carry "waydroid" in
+# ro.product.property_source_order, where waydroid init's own values would otherwise win).
+# Verified on this box - see `spoof` output against a live `waydroid shell getprop`.
+SPOOF_FIELDS = ("brand", "manufacturer", "model", "name", "device")
+SPOOF_HEAD   = ("ro.product.brand", "ro.product.manufacturer", "ro.product.model",
+                "ro.product.name", "ro.product.device", "ro.build.product",
+                "ro.build.fingerprint", "ro.build.description")
+
+# Real, shipped builds. brand / device / model / build id inside each fingerprint match the
+# fields beside it - Play rejects a fingerprint that does not parse or does not agree with
+# the props, so these are copied whole rather than assembled. `release` is the Android
+# version the fingerprint claims; it need not match the running image, and `spoof` says so.
+DEVICES = [
+    {"id": "pixel5", "label": "Google Pixel 5", "release": "11",
+     "brand": "google", "manufacturer": "Google", "model": "Pixel 5",
+     "name": "redfin", "device": "redfin",
+     "fingerprint": "google/redfin/redfin:11/RQ3A.211001.001/7641976:user/release-keys",
+     "description": "redfin-user 11 RQ3A.211001.001 7641976 release-keys"},
+    {"id": "pixel7", "label": "Google Pixel 7", "release": "13",
+     "brand": "google", "manufacturer": "Google", "model": "Pixel 7",
+     "name": "panther", "device": "panther",
+     "fingerprint": "google/panther/panther:13/TQ3A.230805.001/10316531:user/release-keys",
+     "description": "panther-user 13 TQ3A.230805.001 10316531 release-keys"},
+    {"id": "galaxys9", "label": "Samsung Galaxy S9", "release": "10",
+     "brand": "samsung", "manufacturer": "samsung", "model": "SM-G960F",
+     "name": "starltexx", "device": "starlte",
+     "fingerprint": "samsung/starltexx/starlte:10/QP1A.190711.020/"
+                    "G960FXXUAFUE1:user/release-keys",
+     "description": "starltexx-user 10 QP1A.190711.020 G960FXXUAFUE1 release-keys"},
+    {"id": "galaxys20", "label": "Samsung Galaxy S20", "release": "13",
+     "brand": "samsung", "manufacturer": "samsung", "model": "SM-G980F",
+     "name": "x1sxxx", "device": "x1s",
+     "fingerprint": "samsung/x1sxxx/x1s:13/TP1A.220624.014/"
+                    "G980FXXSGHWC1:user/release-keys",
+     "description": "x1sxxx-user 13 TP1A.220624.014 G980FXXSGHWC1 release-keys"},
+    {"id": "oneplus8t", "label": "OnePlus 8T", "release": "11",
+     "brand": "OnePlus", "manufacturer": "OnePlus", "model": "KB2003",
+     "name": "OnePlus8T", "device": "OnePlus8T",
+     "fingerprint": "OnePlus/OnePlus8T/OnePlus8T:11/RP1A.201005.001/"
+                    "2110091916:user/release-keys",
+     "description": "OnePlus8T-user 11 RP1A.201005.001 2110091916 release-keys"},
+]
+
+def _spoof_props(d):
+    """Every prop key this feature owns, filled in for one device entry. The generic
+    ro.product.* set is what Build.MODEL and friends actually read; the two mirrors cover
+    images that resolve the partition prop instead (see the note above)."""
+    p = {"ro.product.brand": d["brand"], "ro.product.manufacturer": d["manufacturer"],
+         "ro.product.model": d["model"], "ro.product.name": d["name"],
+         "ro.product.device": d["device"], "ro.build.product": d["device"],
+         "ro.build.fingerprint": d["fingerprint"], "ro.build.description": d["description"]}
+    for scope in ("system", "waydroid"):
+        for f in SPOOF_FIELDS:
+            p[f"ro.product.{scope}.{f}"] = d[f]
+    return p
+
+def _spoof_keys(): return list(_spoof_props(DEVICES[0]))
+
+def _find_device(key):
+    key = (key or "").strip().lower()
+    if not key: return None
+    if key.isdigit() and 1 <= int(key) <= len(DEVICES): return DEVICES[int(key) - 1]
+    return next((d for d in DEVICES if d["id"] == key), None)
+
+def _spoof_read():
+    import json
+    try:
+        with open(SPOOF_STATE) as f: return json.load(f)
+    except Exception:
+        return {}
+
+def _spoof_write(st):
+    import json
+    with open(SPOOF_STATE, "w") as f: json.dump(st, f, indent=2)
+    os.chmod(SPOOF_STATE, 0o644)
+
+def _live_identity():
+    """What the RUNNING Android actually reports. Empty with no session - base_prop is then
+    the only evidence available and the output says which of the two it is showing."""
+    if not session_running(): return {}
+    v = {}
+    for k in SPOOF_HEAD:
+        s = out(["waydroid", "shell", "getprop", k]).strip()
+        if s: v[k] = s
+    return v
+
+def spoof_list(current=None):
+    print("  " + c("Device profiles", CYAN))
+    for i, d in enumerate(DEVICES, 1):
+        star = "  <- current" if current == d["id"] else ""
+        print("   " + c(f"{i:>2}) ", MAGENTA) + c(f"{d['id']:11}", "92") +
+              c(f" {d['label']:20} {d['model']:12} Android {d['release']} "
+                f"fingerprint{star}", DIM))
+    print("    " + c("off) ", MAGENTA) + c("restore the image's own identity", DIM))
+
+def spoof_show():
+    """Report the identity from BOTH sources: what base_prop will apply at the next container
+    start, and what the running Android is reporting right now. They differ whenever a spoof
+    has been set but not yet restarted into, and saying so is the point."""
+    st, props = _spoof_read(), _read_props()
+    dev = _find_device(st.get("device", ""))
+    live = _live_identity()
+    print(c("  Device identity", CYAN) +
+          c("   what Android reports to Aurora Store / the Play Store", DIM))
+    _hr()
+    if dev:
+        print("  " + c("SPOOFED", "92") + f"  {dev['label']}  ({dev['id']})")
+    else:
+        print("  " + c("stock  ", "90") + "  " +
+              (live.get("ro.product.model") or props.get("ro.product.model")
+               or "the image default"))
+    print(c("   measured from the running Android" if live else
+            "   no running session - shown from waydroid_base.prop, not measured", DIM))
+    for k in SPOOF_HEAD:
+        f, l = props.get(k), live.get(k)
+        if not f and not l: continue
+        # `f` is what the next container start will apply, `l` what Android reports now. A
+        # difference means the spoof is written but not yet restarted into - flag it, never
+        # print one and imply the other.
+        tail = c(f"   (pending restart: {f})", "93") if (l and f and l != f) else ""
+        print("   " + c(f"{k:26}", DIM) + (l or f or c("(image default)", DIM)) + tail)
+    if live and any(props.get(k) and live.get(k) != props.get(k) for k in SPOOF_HEAD):
+        warn("written but NOT yet live - restart the container (command below).")
+    _hr()
+    spoof_list(st.get("device"))
+
+def spoof_apply(dev_id):
+    d = _find_device(dev_id)
+    if not d:
+        die(f"unknown device '{dev_id}'. List them: h96-waydroid spoof list")
+    props = _spoof_props(d)
+    st = _spoof_read()
+    if "orig" not in st:
+        # Record the file EXACTLY as it stands for every key we are about to own, ONCE, so a
+        # second spoof never records the first spoof as the stock identity. null = the key was
+        # absent, so `spoof off` deletes it and the image's own value comes back. `stock` is
+        # the live getprop reading at that moment - evidence, not the restore source.
+        cur = _read_props()
+        st["orig"] = {k: cur.get(k) for k in props}
+        st["stock"] = _live_identity()
+    _prop_set(props)
+    st["device"] = d["id"]
+    _spoof_write(st)
+    ok(f"identity set to {d['label']}  ({d['model']}, {d['id']}).")
+    print("   " + c(f"{'ro.build.fingerprint':26}", DIM) + d["fingerprint"])
+    rel = out(["waydroid", "shell", "getprop", "ro.build.version.release"]).strip() \
+        if session_running() else ""
+    if rel and rel != d["release"]:
+        warn(f"this fingerprint claims Android {d['release']}; the running image is "
+             f"Android {rel}.")
+        warn("Aurora Store reads the identity, not the pair - but the mismatch is visible.")
+    info("props are read when the CONTAINER starts, so this applies on the next start.")
+    print("  Apply now:   " + c("sudo waydroid session stop && "
+                                "sudo systemctl restart waydroid-container", "92"))
+    print("               then relaunch the UI:  h96-waydroid start")
+    warn("this changes what Android REPORTS. It does not pass Play Integrity / SafetyNet:")
+    warn("those attest a hardware key and verified boot, which a container cannot have.")
+    warn("Banking, DRM and some games will still refuse. Availability only.")
+
+def spoof_off():
+    """Put back exactly what was recorded before the FIRST spoof: keys that existed get their
+    old value, keys that did not exist are deleted so the image supplies its own again."""
+    st = _spoof_read()
+    if not st.get("device"):
+        info("no spoof applied - Android already reports the image's own identity.")
+        return
+    orig = st.get("orig") or {}
+    keep = {k: v for k, v in orig.items() if v is not None}
+    _prop_del([k for k in _spoof_keys() if not keep.get(k)] +
+              [k for k in orig if not keep.get(k)])
+    if keep: _prop_set(keep)
+    _rm(SPOOF_STATE)
+    ok(f"identity restored (was spoofed as {st['device']}).")
+    stock = st.get("stock") or {}
+    if stock.get("ro.product.model"):
+        print("   " + c(f"{'ro.product.model':26}", DIM) + "back to " +
+              stock["ro.product.model"])
+    info("applies on the next container start.")
+    print("  Apply now:   " + c("sudo waydroid session stop && "
+                                "sudo systemctl restart waydroid-container", "92"))
+    print("               then relaunch the UI:  h96-waydroid start")
+
+def do_spoof(arg=None):
+    """show | list | <device> | off  - the device identity Android reports to app stores."""
+    if not os.path.exists(BASE_PROP):
+        die("no Android image initialised - run: h96-waydroid init gpu (or init vanilla)")
+    a = (arg or "").strip().lower()
+    if a in ("", "show", "status"):        spoof_show()
+    elif a in ("list", "ls"):              spoof_list(_spoof_read().get("device"))
+    elif a in ("off", "none", "stock"):    spoof_off()
+    else:                                  spoof_apply(a)
+
+def spoof_row():
+    """One status line: the model Android is really reporting, and whether it is ours."""
+    st = _spoof_read()
+    d = _find_device(st.get("device", ""))
+    model = (out(["waydroid", "shell", "getprop", "ro.product.model"]).strip()
+             if session_running() else "") or _read_props().get("ro.product.model", "")
+    if d:
+        return c(f"{model or d['model']}  spoofed as {d['id']}", "92")
+    return c(f"{model or 'image default'}  stock", "90")
+
+# -------------------------------------------------------------- status --------
+def status(user):
+    print(c("Waydroid status  -  H96 Max V58 (RK3588 / Mali-G610):", CYAN))
+    def row(k, v): print(f"  {k:16} {v}")
+    b_ok, b_detail = binder_state()
+    row("binder", (c("ok ", "92") if b_ok else c("MISSING ", "91")) + b_detail)
+    row("kernel PSI", c("ok", "92") if psi_ok() else
+        c("MISSING - kernel needs CONFIG_PSI=y, else Android will not boot", "91"))
+    row("waydroid", c("installed", "92") if waydroid_installed() else c("not installed", "90"))
+    row("weston", c("installed", "92") if have("weston") else c("not installed", "90"))
+    render, card = gpu_nodes()
+    row("panthor node", c(f"{render} / {os.path.basename(card)}" if render and card
+                          else (render or "not found"), "92" if render else "90"))
+    row("android image", c("ready", "92") if image_ready() else c("not initialised", "90"))
+    row("window size", (current_size() or "screen size (follows Weston)"))
+    if session_running():
+        rel = out(["waydroid", "shell", "getprop", "ro.build.version.release"])
+        prof = {"gpu": "gpu / Panthor Android 11 (legacy)",
+                "custom": "custom image",
+                "sw": "official LineageOS"}.get(_profile_tag(), "unknown")
+        row("image profile", f"Android {rel or '?'}  ({prof})")
+    row("spoof", spoof_row())
+    row("container svc", c("active", "92") if container_active() else c("stopped", "90"))
+    row("session", c("RUNNING", "92") if session_running() else c("stopped", "90"))
+    if session_running():
+        verify_gpu()
+    print(c("\nInstall:", MAGENTA), "h96-waydroid install   ",
+          c("Init:", MAGENTA), "h96-waydroid init vanilla   ",
+          c("Run:", MAGENTA), "h96-waydroid start")
+
+# --------------------------------------------------------------- remove -------
+def remove():
+    info("stopping and purging Waydroid...")
+    run(["waydroid", "session", "stop"], check=False)
+    run(["systemctl", "disable", "--now", "waydroid-container"], check=False)
+    if waydroid_installed():
+        run(["apt-get", "purge", "-y", "waydroid"], check=False)
+    for p in (LAUNCHER, DESKTOP, NFT_OVERRIDE, CG_OVERRIDE, REPO_LIST, REPO_KEY):
+        _rm(p)
+    shutil.rmtree("/var/lib/waydroid", ignore_errors=True)
+    shutil.rmtree("/etc/systemd/system/waydroid-container.service.d", ignore_errors=True)
+    run(["systemctl", "daemon-reload"], check=False)
+    ok("Waydroid removed. (weston + the /etc/waydroid-extra images are left in place.)")
+
+# ------------------------------------------------------------ prop I/O --------
+def _read_props():
+    d = {}
+    if os.path.exists(BASE_PROP):
+        for ln in open(BASE_PROP):
+            ln = ln.strip()
+            if ln and not ln.startswith("#") and "=" in ln:
+                k, v = ln.split("=", 1); d[k.strip()] = v.strip()
+    return d
+
+def _save_props(d):
+    os.makedirs(os.path.dirname(BASE_PROP), exist_ok=True)
+    with open(BASE_PROP, "w") as f:
+        for k, v in d.items(): f.write(f"{k}={v}\n")
+
+def _prop_set(kv):
+    d = _read_props(); d.update(kv); _save_props(d)
+def _prop_del(keys):
+    d = _read_props()
+    for k in keys: d.pop(k, None)
+    _save_props(d)
+
+def _write(path, content, mode):
+    with open(path, "w") as f: f.write(content)
+    os.chmod(path, mode)
+def _rm(path):
+    try: os.unlink(path)
+    except FileNotFoundError: pass
+
+# ------------------------------------------------------- guided setup ---------
+def _hr(): print(c("  " + "─" * 60, DIM))
+
+def ask_yn(q, default=True):
+    d = "Y/n" if default else "y/N"
+    try:
+        a = input(c(f"  {q} [{d}]: ", MAGENTA)).strip().lower()
+    except (EOFError, KeyboardInterrupt):
+        print(); return False
+    return default if not a else a in ("y", "yes")
+
+def _dispatch(*a):
+    """Re-invoke this tool as a subprocess so each step self-elevates + self-banners."""
+    return run(["sudo", sys.executable, os.path.abspath(__file__), *a]).returncode
+
+def setup(user):
+    """Themed walk-through: readiness -> install -> pick an image -> launch."""
+    print(c("  Guided setup", CYAN) + c("   Android in a window on your H96 desktop", DIM))
+    _hr()
+
+    if not psi_ok():
+        warn("kernel PSI is missing (/proc/pressure absent).")
+        warn("Android cannot boot on this kernel. Flash the v4.3 kernel (CONFIG_PSI=y) first,")
+        warn("then run h96-waydroid again. Stopping here.")
+        return
+    b_ok, _ = binder_state()
+    if not b_ok:
+        warn("binder not available yet (waydroid-container mounts it on start) - continuing.")
+
+    # ---- Step 1: install ----
+    if not waydroid_installed() or not have("weston"):
+        print(c("  Step 1 . Install", CYAN),
+              c("Waydroid + Weston + the RK3588 cgroup/nft boot fixes", DIM))
+        if not ask_yn("Install now? (apt, needs sudo)"):
+            info("nothing installed - re-run h96-waydroid when ready."); return
+        _dispatch("install")
+        if not waydroid_installed():
+            die("install did not complete - see the messages above.")
+    else:
+        ok("  Step 1 . Waydroid + Weston already installed.")
+    _hr()
+
+    # ---- Step 2: choose an image ----
+    print(c("  Step 2 . Choose an Android image", CYAN))
+    have_img = gpu_image_present()
+    cur = "Android " + out(["waydroid", "shell", "getprop", "ro.build.version.release"]) \
+          if session_running() else ("already initialised" if image_ready() else "")
+    print()
+    print("   " + c("1) ", MAGENTA) + c("Hardware GPU", "92") +
+          "  Panthor image, Android 11, real Mali-G610 (smoothest).")
+    print("      " + c((f"image files FOUND in {GPU_STASH}"
+                        if have_img else
+                        "image files NOT found - you will be shown where to drop them (~5 GB)"),
+                       "92" if have_img else "93"))
+    print()
+    print("   " + c("2) ", MAGENTA) + "Latest LineageOS + Google apps  Android 13, "
+          "Play-ready, software render (laggier, ~1 GB download).")
+    print()
+    print("   " + c("3) ", MAGENTA) + "Latest LineageOS vanilla  Android 13, no Google, "
+          "software render.")
+    if _has_imgs(LOS_STASH):
+        print("      " + c("a LineageOS image is already stashed - no download needed", "92"))
+    print()
+    print("   " + c("4) ", MAGENTA) + "My own image  point me at a folder holding "
+          "system.img + vendor.img.")
+    print("      " + c("must be an arm64 Waydroid-style PAIR - a ROM zip or GSI will not boot", DIM))
+    if image_ready():
+        print()
+        print("   " + c("s) ", MAGENTA) + "Keep the current image" +
+              (f" ({cur})" if cur else "") + " and skip to launch.")
+    print()
+    try:
+        sel = input(c("  Which image? [1/2/3/4" + ("/s" if image_ready() else "") + "]: ",
+                      MAGENTA)).strip().lower()
+    except (EOFError, KeyboardInterrupt):
+        print(); return
+    cmd = {"1": ("init", "gpu"), "2": ("init", "gapps"), "3": ("init", "vanilla")}.get(sel)
+    if sel == "4":
+        try:
+            d = input(c("  Folder holding system.img + vendor.img: ", MAGENTA)).strip()
+        except (EOFError, KeyboardInterrupt):
+            print(); return
+        if not d:
+            warn("no folder given - stopping."); return
+        cmd = ("init", "custom", d)
+    if sel in ("s", "skip") and image_ready():
+        cmd = None
+    elif not cmd:
+        warn("no valid choice - stopping."); return
+    if cmd:
+        _hr()
+        rc = _dispatch(*cmd)
+        # `init gpu` with no image files exits non-zero after printing guidance - stop cleanly
+        if rc != 0 or not image_ready():
+            warn("image not ready yet - follow the guidance above, then re-run h96-waydroid.")
+            return
+    _hr()
+
+    # ---- Step 3: window size ----
+    print(c("  Step 3 . Window size", CYAN))
+    wh = choose_size(current_size() or GPU_DISPLAY, user)
+    _dispatch("size", wh)
+    _hr()
+
+    # ---- Step 4: launch ----
+    print(c("  Step 4 . Launch", CYAN))
+    if ask_yn("Start Android now?"):
+        os.execvp(sys.executable, [sys.executable, os.path.abspath(__file__), "start"])
+    ok("  Ready. Launch any time:  h96-waydroid start   "
+       "(or the 'Android (Waydroid)' menu icon)")
+
+# ---------------------------------------------------------------- main --------
+def main():
+    args = sys.argv[1:]
+    ROOT_CMDS = ("install", "init", "hw", "size", "state", "spoof", "stop", "remove",
+                 "_writelauncher")
+    if args and args[0] in ROOT_CMDS:
+        elevate()
+    user = desktop_user()
+    if not (args and args[0] in ("-h", "--help", "help", "_writelauncher")):
+        banner()
+
+    if not args:
+        setup(user); return
+    cmd = args[0]
+    if cmd == "status":
+        status(user)
+    elif cmd == "install":
+        install()
+    elif cmd == "init":
+        prof = args[1].lower() if len(args) > 1 else ("gpu" if gpu_image_present() else "vanilla")
+        do_init(prof, args[2] if len(args) > 2 else None)
+    elif cmd == "start":
+        start()
+    elif cmd == "stop":
+        stop()
+    elif cmd == "hw":
+        hw(args[1].lower() if len(args) > 1 else "on")
+    elif cmd == "size":
+        do_size(args[1].lower() if len(args) > 1 else None)
+    elif cmd in ("state", "snapshot"):
+        do_state(args[1:])
+    elif cmd == "spoof":
+        do_spoof(args[1] if len(args) > 1 else None)
+    elif cmd == "remove":
+        remove()
+    elif cmd == "_writelauncher":     # internal: called via sudo on first start
+        write_launcher()
+    elif cmd in ("-h", "--help", "help"):
+        print(USAGE)
+    else:
+        die(f"unknown command '{cmd}' "
+            "(status | install | init | size | state | spoof | start | stop | hw | remove)")
+
+if __name__ == "__main__":
+    main()
