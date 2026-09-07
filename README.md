@@ -33,14 +33,14 @@ GPL-2.0. See [`LICENSE`](LICENSE) and [`CREDITS.md`](CREDITS.md).
 
 ---
 
-## Release images (v5.0)
+## Release images (v5.0.1)
 
-The current release is **v5.0**, shipped as one pre-built full image. It boots to a
+The current release is **v5.0.1**, shipped as one pre-built full image. It boots to a
 text console and does not pre-install a desktop.
 
 | Image | Boots to | GPU | Desktop | Zip size |
 |---|---|---|---|---|
-| **v5.0** (full) | console | Mali-G610 (Panthor) + Mesa | installed on demand via `armbian-config` | 1.22 GB |
+| **v5.0.1** (full) | console | Mali-G610 (Panthor) + Mesa | installed on demand via `armbian-config` | 1.22 GB |
 
 - **Kernel rebuilt with `CONFIG_PSI=y`** (`PSI_DEFAULT_DISABLED` off), from
   armbian/linux-rockchip, branch `rk-6.1-rkr5.1`, commit `95e85f6c`. Android 11 and later
@@ -113,7 +113,7 @@ repo.
 | NPU (3-core, ~6 TOPS) | ✅ | Driver `v0.9.8`, IOMMU mode, per-core load via `h96-npu`. `h96-npu bench` runs an INT8 matmul (~625 GOPS one core; `bench all` ~1.29 TOPS across 3 cores). v5.0 adds `h96-npu power [performance\|balanced\|powersave\|sync\|status]`: the devfreq had been pinned at 1000 MHz for 100 percent of uptime while unused, `powersave` parks it at 300 MHz, `power sync` matches the CPU and GPU profile. Inference runtime is proprietary and fetched on demand with `h96-npu-setup`, never bundled |
 | System monitor | ✅ | `scrumptop`: per-core CPU (A76/A55 topology) with per-cluster temperature gauges, GPU/NPU load, network rates, Bluetooth, IR activity, eMMC I/O, peripheral batteries. `b` = NPU bench, `+`/`-` = polling rate |
 | Desktop lock screen | ✅ | v4.0 corrects `/etc/shadow` group ownership from base rootfs. Lock screens rejected correct passwords in every earlier release. Fix for earlier releases is in CHANGELOG |
-| Android apps (Waydroid) | ✅ | v5.0 `h96-waydroid`. Needs the v5.0 `CONFIG_PSI=y` kernel. `init gapps\|vanilla` (default) runs the official LineageOS 20 (Android 13, MAINLINE vendor) on the Mali-G610 in hardware: `GLES: Mesa, Mali-G610 MC4 (Panfrost), OpenGL ES 3.1 Mesa 26.0.1`, 50 percent GPU at 1000 MHz under UI activity. `init gpu` is the legacy third-party Android 11 Panthor image (Mesa 24.0.5, unsigned, abandoned April 2024). Window is fixed size on purpose. Container **cannot** use the NPU |
+| Android apps (Waydroid) | ✅ | v5.0 `h96-waydroid`. Needs the v5.0 `CONFIG_PSI=y` kernel. `init gapps\|vanilla` (default) runs the official LineageOS 20 (Android 13, MAINLINE vendor) on the Mali-G610 in hardware: `GLES: Mesa, Mali-G610 MC4 (Panfrost), OpenGL ES 3.1 Mesa 26.0.1`, 50 percent GPU at 1000 MHz under UI activity. `init gpu` is the legacy third-party Android 11 Panthor image (Mesa 24.0.5, unsigned, abandoned April 2024). Window is fixed size on purpose; v5.0.1 adds `size fullscreen` (borderless, fills the screen). v5.0.1 also adds a clean teardown (closing the window stops the container and releases the GPU, with a Stop Android menu entry) and `q` to quit from a terminal. Container **cannot** use the NPU |
 | GPU emulators | ✅ | v5.0 `h96-emulators`: `retroarch`, `dolphin`, `ppsspp`, `flycast`, `melonds`, `rmg`, `azahar` as native ARM64 Flatpaks on PanVK/Panfrost, `cemu` as the x86-64 build under `box64`. `install` verifies each one is not falling back to `llvmpipe` |
 
 > **Note on Ethernet.** Onboard RTL8211F PHY may spend an extended time attempting

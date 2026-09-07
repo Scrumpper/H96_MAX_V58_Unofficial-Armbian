@@ -2,6 +2,26 @@
 
 
 
+## v5.0.1
+
+v5.0.1 over v5.0. Ships as a new image and as a fix-script for a running box (no reflash).
+Kernel Image and device tree unchanged since v4.3.
+
+- mpv cursor over fullscreen video fixed. `/etc/mpv/mpv.conf` sets `cursor-autohide=no` and
+  `x11-bypass-compositor=never`. The RK3588 VOP2 hardware cursor plane is not restored after
+  mpv hides it during playback (a kernel driver un-hide fault), so once hidden the cursor
+  stayed invisible until a reboot. `cursor-autohide=no` stops mpv from hiding the hardware
+  cursor. The driver fix that lets the cursor fade during playback and return on movement is
+  deferred to v5.1.
+- `h96-waydroid` clean teardown. Closing the Android window stops the session and the
+  container, releasing the GPU the container held. A sudoers drop-in lets the desktop user run
+  `h96-waydroid stop` without a password. A Stop Android menu entry was added.
+- `h96-waydroid` borderless fullscreen. `h96-waydroid size fullscreen` opens the window
+  borderless at 0,0 filling the screen. It opens at screen size, so there is no output
+  reconfigure and no black surface.
+- `h96-waydroid` q to quit. Started from a terminal, the launcher quits and tears down on `q`
+  then Enter, in addition to closing the window.
+
 ## v5.0
 
 Kernel rebuild, two new opt-in tools, and a stability pass over
@@ -13,8 +33,8 @@ installed on demand (`armbian-config`, or `apt install kde-plasma-desktop`), and
 `h96-autologin-setup` then wires lightdm autologin to the `plasmax11` (X11) session.
 Reflashing wipes an existing desktop install.
 
-- `.img`    sha256 `f96940028ad1273134f2a04079676837c057e8ae452a92d32d55589ac7e79e6c`
-- `.img.xz` sha256 `60edb57933cb72bbcb4be213fe58dffd181fc4c5749ef636b2b7f8e1499b9b87`
+- `.img`    sha256 `6a193bdf330b6de0156a7a26ca24e2fbe0343b57783295581f9aada7606a990c`
+- `.img.xz` sha256 `f9f824d52bc381cac37f591452fe4aa8111543b2af3678146dc506ad8ad3ae95`
 
 - **Kernel rebuilt with `CONFIG_PSI=y`** (`PSI_DEFAULT_DISABLED` off), from
   armbian/linux-rockchip, branch `rk-6.1-rkr5.1`, commit `95e85f6c`. Android 11 and later
