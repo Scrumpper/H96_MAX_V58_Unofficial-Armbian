@@ -1,8 +1,9 @@
 # Bluetooth audio and headset microphone (v4.1)
 
-Files: `config/kernel-h96-max-v58.config` (RFCOMM), plus under
+Files: `config/linux-rk35xx-vendor.config` (full kernel config, RFCOMM as a module;
+`config/kernel-h96-max-v58.config` is the summary), plus under
 `packages/bsp/h96-max-v58/`: `wireplumber/30-h96-bluetooth.conf`,
-`modules-load.d/rfcomm.conf`, `systemd/bt-sco-hci.service`.
+`modules-load.d/rfcomm.conf`, `systemd/h96-rfcomm.service`, `systemd/bt-sco-hci.service`.
 
 ## Microphone: why it needs a kernel change
 
@@ -17,7 +18,9 @@ and the audio stack pins the device to A2DP-only roles.
 
 Fix: `CONFIG_BT_RFCOMM=m` + `CONFIG_BT_RFCOMM_TTY=y` in the kernel config. Armbian
 then compiles `rfcomm.ko` into the kernel package with correct module dependencies;
-`modules-load.d/rfcomm.conf` autoloads it at boot before BlueZ. HFP/HSP roles in
+`modules-load.d/rfcomm.conf` autoloads it at boot before BlueZ, and
+`systemd/h96-rfcomm.service` runs `depmod` for the running kernel release (`uname -r`)
+and loads `rfcomm` and `xpad` before `bluetooth.service`. HFP/HSP roles in
 `wireplumber/30-h96-bluetooth.conf` then expose the mic as a `bluez_input` source
 under a "Headset Head Unit" profile.
 
@@ -53,8 +56,9 @@ All are open reimplementations, no vendor blob.
 
     sudo install -m0644 wireplumber/30-h96-bluetooth.conf /etc/wireplumber/wireplumber.conf.d/
     sudo install -m0644 modules-load.d/rfcomm.conf /etc/modules-load.d/
+    sudo install -m0644 systemd/h96-rfcomm.service /etc/systemd/system/
     sudo install -m0644 systemd/bt-sco-hci.service /etc/systemd/system/
-    sudo systemctl enable bt-sco-hci.service
+    sudo systemctl enable h96-rfcomm.service bt-sco-hci.service
     sudo apt install libspa-0.2-modules-extra
     sudo modprobe rfcomm            # or reboot; needs CONFIG_BT_RFCOMM=m kernel
     systemctl --user restart wireplumber pipewire

@@ -1,4 +1,4 @@
-# Media feature suite + USB controllers (v4.1, plus v5.0 additions)
+# Media feature suite + USB controllers (v4.1, plus v5.0, v5.0.1 and v6.0 additions)
 
 All OPT-IN. The image ships the tools + configs only; each tool installs its
 packages on demand and activates services on first `enable`. Nothing auto-starts.
@@ -37,12 +37,33 @@ wireplumber/, pipewire/, etc-h96/, modules-load.d/).
   weight. Ships DISABLED: `sudo h96-transcode-server enable`. Settings in
   /etc/h96/transcode.conf (codec hevc/h264/mjpeg, bitrate, container, optional scale).
 
+## Hardware cursor during GPU compositing (v6.0)
+
+The hardware cursor under continuous GPU compositing is handled at the kernel driver level in
+v6.0. The VOP2 cursor driver fix re-asserts the cursor on the video-port latch each frame, so
+the hardware cursor stays visible during continuous GPU compositing (fullscreen video, animated
+browser pages, the desktop splash); it still auto-hides over video and returns on movement, and
+it stays correct after leaving mpv for the desktop. `/etc/mpv/mpv.conf` uses
+`cursor-autohide=1000` with `x11-bypass-compositor=never`: autohide is active during playback
+and KWin compositing stays on in fullscreen. Earlier releases kept the cursor visible during
+playback (`cursor-autohide=no`) because the VOP2 cursor plane was not restored after it was
+hidden, leaving the pointer invisible until reboot.
+
 ## USB game-controller dongles (xpad)
 
 Base kernel had no xpad, so X-input controllers and 2.4GHz pad dongles did
 nothing over USB. Enabled via CONFIG_JOYSTICK_XPAD=m (kernel config) + autoload
-(modules-load.d/xpad.conf) + a udev catch-all (udev/99-h96-xpad.rules) that
+(modules-load.d/xpad.conf and systemd/h96-rfcomm.service, which runs depmod for the
+running kernel and loads rfcomm and xpad) + a udev catch-all (udev/99-h96-xpad.rules) that
 force-binds any X-input-interface device to xpad. D-input/HID pads already worked.
+
+Since v6.0 the module is built with CONFIG_JOYSTICK_XPAD_LEDS=y and CONFIG_JOYSTICK_XPAD_FF=y.
+2.4 GHz X-input dongles that wait for the Xbox 360 player-LED command before they start
+reporting need the LED support: without it the dongle enumerates, the driver binds and
+/dev/input/js0 exists, but no input arrives (the same pad works over Bluetooth). Verified
+with the 8BitDo Ultimate 2C Wireless Controller and its dongle. Force feedback (rumble) is
+available on xpad-driven controllers. The kernel Image is unchanged by this; only the
+module set changed.
 
 ## NPU upscaling: how it works and how to use it
 
@@ -81,9 +102,11 @@ Why it needs the v5.0 kernel:
   the kernel with `CONFIG_PSI=y` (`PSI_DEFAULT_DISABLED` off) from armbian/linux-rockchip
   `rk-6.1-rkr5.1`, commit `95e85f6c`. Binder (`CONFIG_ANDROID_BINDER_IPC`/`BINDERFS`) is
   built in as well. `h96-waydroid status` verifies both.
-- The kernel release string is unchanged at 6.1.115, so `/lib/modules/6.1.115` stays valid
-  and no module was rebuilt: 69 modules load with zero ABI errors. It is an Image-only
-  rebuild, so an existing install cannot `apt upgrade` into it; it needs the v5.0 image.
+- The v5.0 build was Image-only, with the kernel release string unchanged at 6.1.115 and
+  the vendor modules kept. As of v6.0 the release string is `6.1.115-h96` and the full
+  module set is rebuilt from the same source and configuration as the Image with
+  `CONFIG_MODVERSIONS=y`; modules live in `/lib/modules/6.1.115-h96`. An existing install
+  cannot `apt upgrade` into either kernel; it needs the new image.
 
 Image profiles:
 - `init gapps|vanilla` - the official Waydroid LineageOS 20 image
@@ -151,6 +174,17 @@ Android a device file with no driver behind it. NPU work stays on the host side
 TESTED AND REJECTED: shadowing the container's `/dev/kmsg` to cut kernel log noise. The
 shadow mount applies cleanly, but the Waydroid container then never starts. Do not retry
 it.
+
+### v5.0.1 additions
+
+- Borderless fullscreen: `h96-waydroid size fullscreen` opens the window borderless at 0,0
+  filling the screen. It opens at screen size, so there is no output reconfigure and the
+  surface does not black out.
+- Clean teardown: closing the Android window stops the session AND the container, so the
+  container does not keep holding the GPU. A sudoers drop-in lets the desktop user run
+  `h96-waydroid stop` without a password, and a Stop Android menu entry was added.
+- `q` to quit: started from a terminal (`h96-waydroid start`), the launcher quits and tears
+  down on `q` then Enter, in addition to closing the window.
 
 ## GPU emulator suite: h96-emulators (v5.0)
 

@@ -2,25 +2,28 @@
 #
 # Community "TV box" board file for the Armbian build framework. It reuses the
 # generic rockchip-rk3588 family and points the boot FDT at the board device
-# tree shipped in this repo (patch/kernel/rk3588-h96-max-v58.dts).
+# tree shipped in this repo (patch/kernel/rk3588-h96-max-v58-panthor.dts).
 #
 # Install: copy this file into  <armbian-build>/config/boards/
-#          and the .dts into the kernel's rockchip dts dir (see README).
+#          and the .dts into userpatches/kernel/<KERNELPATCHDIR>/dt/ (see README).
 BOARD_NAME="H96 Max V58"
 BOARDFAMILY="rockchip-rk3588"
 BOARD_MAINTAINER=""
-# vendor = the rk-6.1-rkr5.1 BSP kernel with real RK3588 drivers. NOT edge: on this family
-# edge is rolling mainline (7.2+) with no vendor drivers - console boots, nothing works (issue #5).
+# vendor = the rk-6.1 BSP kernel with the RK3588 vendor drivers. NOT edge: on this family
+# edge is rolling mainline (7.2+) with no vendor drivers; the console boots, nothing else
+# works (issue #5).
 KERNEL_TARGET="vendor"
 KERNEL_TEST_TARGET="vendor"
 FULL_DESKTOP="yes"
 BOOT_LOGO="desktop"
-BOOT_FDT_FILE="rockchip/rk3588-h96-max-v58.dtb"
+# The DTB name the released image boots (fdtfile= in /boot/armbianEnv.txt). The BSP tools
+# that edit the device tree (h96-undervolt, h96-undervolt-trial.service) use this path.
+BOOT_FDT_FILE="rockchip/rk3588-h96-max-v58-panthor.dtb"
 # A u-boot defconfig IS REQUIRED. The rockchip-rk3588 family derives BOOT_SOC from
 # BOOTCONFIG and prepare_boot_configuration() needs it; with neither set the build
 # produced an empty config and "*** .config not found" (issue #5). H96 is a generic
 # rk3588 board, so it reuses rock-5b's SPL-blobs u-boot config (NOT the vendor EVB
-# rk3588_defconfig, which pulls OP-TEE); only the DTB below makes it an H96.
+# rk3588_defconfig, which pulls OP-TEE); only the DTB above makes it an H96.
 BOOT_SOC="rk3588"
 BOOTCONFIG="rock-5b-rk3588_defconfig"
 BOOT_SCENARIO="spl-blobs"
@@ -30,3 +33,40 @@ BOOT_SCENARIO="spl-blobs"
 DEFAULT_CONSOLE="serial"
 SERIALCON="ttyS2"
 # eMMC is the internal storage; there is no SD slot exposed as bootable on most units.
+
+# Pin the kernel source to the commit the v6.0 kernel was built from. The family file
+# tracks a newer rk-6.1 branch (rk-6.1-rkr7.2 at the time of writing); the shipped
+# kernel is rk-6.1-rkr5.1 at this commit, and patch/kernel/*.patch were made against it.
+# KERNELPATCHDIR is left at the family value (rk35xx-vendor-6.1 at the time of writing):
+# the framework's dt/ auto-patcher reads its configuration from
+# patch/kernel/<KERNELPATCHDIR>/0000.patching_config.yaml, and userpatches/kernel/
+# <KERNELPATCHDIR>/ must use the same name.
+function post_family_config__h96_pin_kernel_source() {
+	declare -g KERNELSOURCE='https://github.com/armbian/linux-rockchip.git'
+	declare -g KERNELBRANCH='commit:95e85f6cb496c75807c5b16f158853578e7e7d1b'
+}
+
+# The framework's own armbian_kernel_config__* hooks rewrite parts of any user-supplied
+# .config (lib/functions/compilation/armbian-kernel.sh): they set CONFIG_LOCALVERSION to ""
+# and CONFIG_RT_GROUP_SCHED=y, and turn BTF debug info on (the shipped kernel has it on as
+# well; do not pass KERNEL_BTF=no). This hook runs after them and restores the shipped v6.0
+# values. Note that the framework
+# also passes LOCALVERSION=-vendor-rk35xx on the make command line, so a framework-built
+# kernel reports 6.1.115-h96-vendor-rk35xx; the released image was built outside the
+# framework and reports 6.1.115-h96. Name only: the Image and modules are configured alike.
+function custom_kernel_config__h96_restore_shipped_options() {
+	kernel_config_set_string LOCALVERSION "-h96"
+	kernel_config_set_n RT_GROUP_SCHED
+	kernel_config_set_y MODVERSIONS
+	kernel_config_set_y PSI
+	kernel_config_set_n PSI_DEFAULT_DISABLED
+	kernel_config_set_y SCHED_CLUSTER
+	kernel_config_set_n NVMEM_ROCKCHIP_SEC_OTP
+	kernel_config_set_m DRM_PANTHOR
+	kernel_config_set_y JOYSTICK_XPAD_LEDS
+	kernel_config_set_y JOYSTICK_XPAD_FF
+	kernel_config_set_n DEBUG_INFO_NONE
+	kernel_config_set_y DEBUG_INFO_DWARF_TOOLCHAIN_DEFAULT
+	kernel_config_set_y DEBUG_INFO_BTF
+	kernel_config_set_y DEBUG_INFO_BTF_MODULES
+}

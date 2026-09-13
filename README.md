@@ -33,21 +33,82 @@ GPL-2.0. See [`LICENSE`](LICENSE) and [`CREDITS.md`](CREDITS.md).
 
 ---
 
-## Release images (v5.0.1)
+## Release images (v6.0)
 
-The current release is **v5.0.1**, shipped as one pre-built full image. It boots to a
-text console and does not pre-install a desktop.
+The current release is **v6.0**, shipped as one pre-built full image. It boots to a
+text console and does not pre-install a desktop. v6.0 absorbs the planned v5.2: the kernel
+changes across several rebuilds, cluster-aware scheduling together with the VOP2 cursor driver
+fixes, are substantial enough to warrant a major version rather than a point release. Both are
+correctness changes, not performance changes.
 
 | Image | Boots to | GPU | Desktop | Zip size |
 |---|---|---|---|---|
-| **v5.0.1** (full) | console | Mali-G610 (Panthor) + Mesa | installed on demand via `armbian-config` | 1.22 GB |
+| **v6.0** (full) | console | Mali-G610 (Panthor) + Mesa | installed on demand via `armbian-config` | 1.22 GB |
+
+- **New in v6.0, hardware cursor during GPU compositing fixed in the kernel driver.** The VOP2
+  cursor driver fix keeps the hardware cursor visible during continuous GPU compositing
+  (fullscreen video, animated browser pages, the desktop splash); it still auto-hides over
+  video and returns on movement, and stays correct after leaving mpv for the desktop.
+  `/etc/mpv/mpv.conf` uses `cursor-autohide=1000` and `x11-bypass-compositor=never`. The kernel
+  Image changes, so moving to v6.0 is a reflash.
+- **New in v6.0, `h96-backup` and `h96-restore`.** `h96-backup` captures a configured box into
+  one archive (a manifest of installed on-demand features plus the passive data that cannot be
+  re-downloaded, such as saves, configs and WiFi credentials); `h96-restore` replays it after a
+  reflash, reinstalling the recorded features and restoring the data. `--open` prints the
+  installer commands instead of running them; `--dry-run` prints the plan and changes nothing;
+  `--force` overwrites configs that are newer on disk (stop the desktop session first on a
+  fresh image, whose session has already written default configs). Both tools take `--only`
+  and `--skip` category lists and `--emulators`; `h96-backup-gui` presents the same choices
+  as checkboxes. Boxes on v5.0.1 or earlier have no backup tool; the migration kit (`h96-migrate-kit.zip` in the release) installs the same three tools there (`sudo bash install.sh`, `--gui` for the window) so the box can be captured to a USB stick before the flash.
+- **v6.0, clearer `h96-undervolt` trial flow.** `set <mV>`, then reboot, and the setting is
+  active on that boot so you can test it under load; `confirm` keeps it, and a reboot without
+  confirming reverts to stock on its own.
+- **v6.0 kernel: `CONFIG_SCHED_CLUSTER`.** The kernel represents the RK3588 as its three CPU
+  clusters (4x Cortex-A55 on cpu0 and cpu5 to cpu7, 2x Cortex-A76 on cpu1 and cpu2, 2x
+  Cortex-A76 on cpu3 and cpu4; the A76 pairs are separate DVFS clusters) rather than one flat
+  group, so the scheduler's topology view matches the hardware. This is a topology-correctness
+  change: benchmarking found no measurable change in throughput, and none is claimed. The kernel
+  carries BPF Type Format (BTF) data (`CONFIG_DEBUG_INFO_BTF`, with
+  `CONFIG_DEBUG_INFO_BTF_MODULES` for the module set): `/sys/kernel/btf/vmlinux` describes the
+  kernel's types (7 MB) and every module exports its own, so `bpftool`, `bcc` and CO-RE BPF
+  programs read kernel and module types on the box without kernel headers. `bpftrace` kprobes
+  walk kernel structs the same way; pass `--traceable-functions` with a symbol list from
+  `/proc/kallsyms`, since this kernel has no ftrace function list. BTF is data that BPF tools
+  read; the machine code is the same with or without it, and the kernel Image grows by 7 MB.
+  Armbian's own rk35xx kernel configuration ships with BTF on. The VOP2 cursor fix is published
+  as `patch/kernel/h96-vop2-cursor.patch`; see [Building an
+  image](#building-an-image-with-armbian-framework).
+- **v6.0 kernel: release `6.1.115-h96`, modules rebuilt with symbol versioning.** The
+  release string is `6.1.115-h96` (`CONFIG_LOCALVERSION="-h96"`) and modules live in
+  `/lib/modules/6.1.115-h96`. The full module set (3110 modules) is built from the same
+  source and configuration as the kernel Image, with `CONFIG_MODVERSIONS=y`: every module
+  carries symbol versions, and the loader rejects a module built against a different kernel
+  layout instead of loading it unchecked. Earlier releases shipped a module set built against
+  a pre-PSI configuration; those modules loaded on 6.1.115 kernels because the vermagic
+  string matched, and only the modules in use had been checked by inspection. The bcmdhd
+  WiFi module and every other module now carry matching symbol versions, and the kernel's
+  `O` (out-of-tree) taint flag is gone. The `h96-rfcomm` service no longer hardcodes a
+  kernel release; it reads `uname -r`.
+- **v6.0 kernel: `CONFIG_RT_GROUP_SCHED` off.** It was on, inherited from the vendor Android
+  configuration. Realtime scheduling is now available to processes outside the root cgroup:
+  PipeWire's data-loop threads run at `SCHED_RR` priority 20 through rtkit, so audio threads
+  keep their priority under CPU load, and `cyclictest` runs. Previously the journal logged
+  `Failed to make ourselves RT: Operation not permitted` on every boot and the audio threads
+  ran as normal tasks.
+- **v6.0 kernel: `xpad` with player-LED and force-feedback support.** The `xpad` USB
+  game-controller module is built with `CONFIG_JOYSTICK_XPAD_LEDS=y` and
+  `CONFIG_JOYSTICK_XPAD_FF=y`. 2.4 GHz X-input dongles that wait for the Xbox 360 player-LED
+  command before they start reporting now work (verified with the 8BitDo Ultimate 2C Wireless
+  Controller and its dongle; previously the dongle enumerated and bound but sent no input,
+  while the same pad worked over Bluetooth), and rumble is available on xpad-driven
+  controllers. The kernel Image is unchanged by this; only the module set changed.
 
 - **Kernel rebuilt with `CONFIG_PSI=y`** (`PSI_DEFAULT_DISABLED` off), from
   armbian/linux-rockchip, branch `rk-6.1-rkr5.1`, commit `95e85f6c`. Android 11 and later
   `init`/`lmkd` hard-require `/proc/pressure`; without it the Waydroid container boots and
-  then dies in about 15 seconds. This is an **Image-only rebuild**: PSI is built in and the
-  kernel release string is unchanged at 6.1.115, so `/lib/modules/6.1.115` stays valid and
-  no module is rebuilt. Verified on hardware: 69 modules load with zero ABI errors.
+  then dies in about 15 seconds. The v5.0 build was Image-only, with the kernel release
+  string unchanged at 6.1.115 and the vendor modules kept; as of v6.0 the release string is
+  `6.1.115-h96` and the modules are rebuilt with the Image (see above).
   **Existing users cannot `apt upgrade` into this kernel. It needs the new image.**
 - **New `h96-waydroid`**: Android in a container (Waydroid 1.6.2 plus a nested Weston
   window on X11). `init gapps|vanilla`, the default, fetches the official Waydroid
@@ -127,6 +188,13 @@ repo.
 > suspecting box. Try a different cable or switch port first; `ethtool -s eth0 speed 100 duplex
 > full autoneg off` skips Gigabit negotiation at cost of capping port.
 
+> **Note on kernel log.** At boot the kernel prints two `WARNING` traces from
+> `pinctrl-rockchip.c` (`rockchip_pmx_gpio_set_direction`, `pin 143 already requested by
+> fde80000.hdmi` and `pin 144 already requested by fde80000.hdmi`). The `h96-ddc-i2c-gpio`
+> overlay reassigns the HDMI DDC pins to an i2c-gpio bus for DDC/CI brightness control, and
+> the pinctrl driver logs the reassignment. They are harmless; the kernel sets its `W` taint
+> flag and the bus works.
+
 ---
 
 ## Thermals
@@ -156,10 +224,21 @@ load. That is expected for this SoC in this chassis and is not a fault.
 
 ```
 config/
-  boards/h96-max-v58.tvb          Armbian board file (TV-box class)
-  kernel-h96-max-v58.config       kernel .config fragment (Panthor, VPU, IR, PCIe)
+  boards/h96-max-v58.tvb          Armbian board file (TV-box class): BOOT_FDT_FILE, u-boot
+                                  config, kernel source pin, kernel config hook
+  linux-rk35xx-vendor.config      FULL kernel .config the v6.0 kernel (6.1.115-h96) was
+                                  built with; the file the framework consumes
+  kernel-h96-max-v58.config       diff summary of that config against the vendor default
+                                  (Panthor, PSI, SCHED_CLUSTER, LOCALVERSION -h96,
+                                  MODVERSIONS, RT_GROUP_SCHED off, VPU, PCIe, RFCOMM,
+                                  xpad with player LEDs and force feedback)
 patch/
-  kernel/rk3588-h96-max-v58.dts   board device tree (core hardware source)
+  kernel/rk3588-h96-max-v58-panthor.dts  board device tree, decompiled from the DTB
+                                  the image boots (core hardware source)
+  kernel/h96-vop2-cursor.patch    v6.0 VOP2 hardware-cursor fix
+  kernel/h96-board-support.patch  board support carried by every release: BCM43752
+                                  WiFi (bcmdhd, brcmfmac ids), SDIO rescan hook,
+                                  HDMI PHY clock name, xpad 8BitDo
   overlays/h96-max-v58-gpio-ir.dts  IR receiver overlay (gpio-ir-receiver)
 packages/
   bsp/h96-max-v58/
@@ -180,8 +259,13 @@ packages/
     modules-load.d/rfcomm.conf    autoloads rfcomm (needs CONFIG_BT_RFCOMM=m in
                                   the kernel config) so the Hands-Free headset mic
                                   works; install to /etc/modules-load.d/
+    modules-load.d/xpad.conf      autoloads xpad (CONFIG_JOYSTICK_XPAD=m, with
+                                  JOYSTICK_XPAD_LEDS and JOYSTICK_XPAD_FF since v6.0)
+    systemd/h96-rfcomm.service    depmod for the running kernel (uname -r), then
+                                  loads rfcomm and xpad before BlueZ; enable it
     systemd/bt-sco-hci.service    routes SCO audio over HCI (Broadcom VSC 0xFC1C)
                                   so the headset mic carries data; enable it
+    systemd/h96-undervolt-trial.service  boot-time guard for the h96-undervolt trial
     tools/                        userspace tools installed to /usr/local/bin|sbin:
                                   h96-npu, h96-encode, h96-upscale, h96-npu-setup,
                                   h96-subtitles, h96-subtitles-setup, scrumptop,
@@ -205,60 +289,122 @@ CHANGELOG.md  CREDITS.md  LICENSE
 
 ## Building an image with Armbian framework
 
-These sources plug into standard [Armbian build system](https://github.com/armbian/build).
-Device tree carries hardware enablement; rest is board config + BSP.
+These sources plug into the standard [Armbian build system](https://github.com/armbian/build).
+The device tree carries the hardware enablement; the rest is board config + BSP.
 
 > **Released images are NOT built by these steps.** Shipped `.img` files are a rootless
 > delta on a known-good ophub RK3588 6.1.x BSP base image (Rock 5B lineage, adapted to the
-> H96 NVR-DEMO DTB). Steps below build a bare Armbian board from the framework: a booting
-> console with working peripherals, but WITHOUT the `h96-*` userspace layer (GPU staging,
-> VPU/NPU setup, Bluetooth stack, media tools, display/EDID handling). No `compile.sh`
-> invocation reproduces a release. Build from source to change the kernel or DTB; flash a
-> release to run the box.
+> H96 NVR-DEMO DTB), and the v6.0 kernel was built outside the framework from the source,
+> config and patches published here. The steps below build a bare Armbian board from the
+> framework: a booting console with working peripherals, but WITHOUT the `h96-*` userspace
+> layer (GPU staging, VPU/NPU setup, Bluetooth stack, media tools, display/EDID handling).
+> No `compile.sh` invocation reproduces a release image. Build from source to change the
+> kernel or DTB; flash a release to run the box. These steps were written against the
+> framework source at the time of writing and have not been run end to end by us.
 
-These sources plug into the standard [Armbian build system](https://github.com/armbian/build).
-Device tree carries hardware enablement; rest is board config + BSP.
+**What the v6.0 kernel is.** Source `armbian/linux-rockchip`, branch `rk-6.1-rkr5.1`, commit
+`95e85f6cb496c75807c5b16f158853578e7e7d1b`, plus `patch/kernel/h96-board-support.patch` and
+`patch/kernel/h96-vop2-cursor.patch` (plain `-p1` diffs against that commit; apply order does
+not matter, they touch disjoint files), built with `config/linux-rk35xx-vendor.config`.
+`config/kernel-h96-max-v58.config` is the human-readable summary of that config, not a build
+input. The release string is `6.1.115-h96`.
 
 **Build `BRANCH=vendor`, not `edge`.** On the rockchip-rk3588 family `edge` resolves to
-rolling mainline (7.2+), which ships NO RK3588 vendor drivers: board reaches a console with
-no GPU, no hardware video, no HDMI on this BSP, dead onboard WiFi/BT (issue #5). `vendor`
-builds the `rk-6.1-rkr5.1` BSP kernel (LINUXFAMILY `rk35xx`) that knows this SoC. Build on
-Ubuntu Jammy or Noble (or the Armbian Docker path); newer hosts break the Radxa u-boot build.
+rolling mainline (7.2+), which ships NO RK3588 vendor drivers: the board reaches a console
+with no GPU, no hardware video, no HDMI on this BSP, dead onboard WiFi/BT (issue #5).
+`vendor` selects the rk-6.1 BSP kernel (LINUXFAMILY `rk35xx`) that knows this SoC. The
+family file tracks a newer rk-6.1 branch (`rk-6.1-rkr7.2` at the time of writing); the board
+file's `post_family_config` hook pins `KERNELBRANCH` to the commit above so the patches and
+config match. Build on Ubuntu Jammy or Noble (or the Armbian Docker path); newer hosts break
+the Radxa u-boot build.
+
+**Names the framework derives.** For `BRANCH=vendor` on this family the kernel config is
+`linux-rk35xx-vendor.config` (`LINUXCONFIG`) and the kernel patch directory is
+`KERNELPATCHDIR`, `rk35xx-vendor-6.1` at the time of writing (earlier framework versions used
+`rk35xx-vendor`). Read both from `config/sources/families/rockchip-rk3588.conf` in the
+framework checkout before step 3 and use the value it gives.
 
 ```bash
-# 1. Get Armbian build framework
+# 1. Get the Armbian build framework
 git clone --depth=1 https://github.com/armbian/build armbian-build
 cd armbian-build
+grep -n 'KERNELPATCHDIR\|LINUXFAMILY' config/sources/families/rockchip-rk3588.conf
+KPD=rk35xx-vendor-6.1          # set to the KERNELPATCHDIR value printed for the vendor branch
 
 # 2. Add this board. Its .tvb sets BOOT_SOC=rk3588 + BOOTCONFIG=rock-5b-rk3588_defconfig
-#    (SPL-blobs u-boot, no OP-TEE) and BOOT_FDT_FILE. Do NOT set BOOTCONFIG=rk3588_defconfig,
-#    the vendor EVB config that pulls OP-TEE and halts u-boot (issue #5).
+#    (SPL-blobs u-boot, no OP-TEE), BOOT_FDT_FILE=rockchip/rk3588-h96-max-v58-panthor.dtb,
+#    the kernel source pin, and a custom_kernel_config hook (see below). Do NOT set
+#    BOOTCONFIG=rk3588_defconfig, the vendor EVB config that pulls OP-TEE and halts u-boot
+#    (issue #5).
 cp  /path/to/this-repo/config/boards/h96-max-v58.tvb   config/boards/
 
-# 3. Add device tree via a userpatch that drops the .dts in
-mkdir -p userpatches
-cp  /path/to/this-repo/patch/kernel/rk3588-h96-max-v58.dts   userpatches/
+# 3. Kernel patches. Armbian applies userpatches/kernel/<KERNELPATCHDIR>/*.patch with
+#    patch -p1 after its own patch/kernel/<KERNELPATCHDIR>/*.patch.
+mkdir -p userpatches/kernel/$KPD/dt
+cp  /path/to/this-repo/patch/kernel/h96-board-support.patch userpatches/kernel/$KPD/
+cp  /path/to/this-repo/patch/kernel/h96-vop2-cursor.patch   userpatches/kernel/$KPD/
 
-# 4. (optional) merge kernel config fragment for Panthor/VPU/IR/PCIe
-cat /path/to/this-repo/config/kernel-h96-max-v58.config >> userpatches/linux-rockchip64-vendor.config
+# 4. Device tree. A .dts in the dt/ subdirectory of the kernel patch directory is copied
+#    to arch/arm64/boot/dts/rockchip/ and added to that Makefile by the framework
+#    (dts-directories and auto-patch-dt-makefile in
+#    patch/kernel/<KERNELPATCHDIR>/0000.patching_config.yaml); no Makefile patch is needed.
+#    The file name sets the DTB name, which must equal BOOT_FDT_FILE in the board file.
+cp  /path/to/this-repo/patch/kernel/rk3588-h96-max-v58-panthor.dts  userpatches/kernel/$KPD/dt/
 
-# 5. Build (6.1 BSP kernel, desktop image)
-./compile.sh  BOARD=h96-max-v58  BRANCH=vendor  RELEASE=noble \
+# 5. Full kernel config. With KERNEL_CONFIGURE=no the framework copies this file to .config
+#    and runs olddefconfig; it is the exact .config the v6.0 kernel was built with.
+mkdir -p userpatches/config/kernel
+cp  /path/to/this-repo/config/linux-rk35xx-vendor.config  userpatches/config/kernel/
+
+# 6. Build (6.1 BSP kernel, desktop image)
+./compile.sh  BOARD=h96-max-v58  BRANCH=vendor  RELEASE=resolute \
               BUILD_DESKTOP=yes  BUILD_MINIMAL=no  KERNEL_CONFIGURE=no
 ```
 
-Output image lands in `output/images/`. It boots a bare 6.1 board; the `h96-*` tooling is
-the separate userspace delta the releases carry, not part of this build. Flash it (see
-**Flashing** below). If HDMI stays dark on first boot, force a mode: add
-`video=HDMI-A-1:1280x720@60e` to the `extraargs=` line in `/boot/armbianEnv.txt` (trailing
-`e` forces the mode past this BSP's EDID-read bug).
+The output image lands in `output/images/`. It boots a bare 6.1 board; the `h96-*` tooling is
+the separate userspace delta the releases carry, not part of this build.
 
-> **Note on device tree.** `patch/kernel/rk3588-h96-max-v58.dts` is a decompile of the stock
-> Android vendor DTB, edited for an open-GPU Armbian (hence
-> `rockchip,rk3588-nvr-demo-v10-android` compatible and numeric phandles). It is included
-> exactly as used, and is the DTB source the released images ship. `docs/DEVICE-TREE-CHANGES.md`
+**What the framework changes on top of the config.** The framework's own
+`armbian_kernel_config__*` hooks (`lib/functions/compilation/armbian-kernel.sh`) rewrite
+parts of any user-supplied `.config` before the build: they set `CONFIG_LOCALVERSION` to an
+empty string, force `CONFIG_RT_GROUP_SCHED=y` for Docker, and turn BTF debug information on (`CONFIG_DEBUG_INFO`, `CONFIG_DEBUG_INFO_BTF`), which the shipped configuration also carries, along with
+zram, nftables, filesystem and container options that the vendor config already carries. The
+board file's `custom_kernel_config` hook runs after them and restores the v6.0 values
+(`CONFIG_LOCALVERSION="-h96"`, `CONFIG_RT_GROUP_SCHED=n`, `CONFIG_MODVERSIONS=y`,
+`CONFIG_PSI=y`, `CONFIG_SCHED_CLUSTER=y`, `CONFIG_NVMEM_ROCKCHIP_SEC_OTP=n`, `CONFIG_DRM_PANTHOR=m`, `CONFIG_DEBUG_INFO_BTF=y`, `CONFIG_DEBUG_INFO_BTF_MODULES=y`, `CONFIG_JOYSTICK_XPAD_LEDS=y`, `CONFIG_JOYSTICK_XPAD_FF=y`); do not pass `KERNEL_BTF=no`, which would turn BTF off. The framework also
+adds `LOCALVERSION=-vendor-rk35xx` on the make command line, so a framework-built kernel
+reports `6.1.115-h96-vendor-rk35xx` and installs its modules under that name; the released
+image reports `6.1.115-h96`. That is a naming difference, not a configuration difference. The
+framework's own patches in `patch/kernel/<KERNELPATCHDIR>/` (two small files at the time of
+writing: an HID Sony patch and a Bluetooth HCI quirk) are applied as well and are not in the
+released kernel; delete them from the checkout before step 6 for a closer match.
+
+**Modules travel with the Image.** The config sets `CONFIG_LOCALVERSION="-h96"` and
+`CONFIG_MODVERSIONS=y`, so the built kernel's modules carry symbol versions. Install the
+modules with the kernel they were built with (`make modules_install` from the same tree into
+`/lib/modules/$(make kernelrelease)`); the loader rejects a module built against a different
+kernel layout, so a module set from another build does not load on it. The Armbian framework
+build above packages kernel and modules together on its own; a manual kernel build must do it
+explicitly.
+
+**Kernel patches.** `patch/kernel/h96-vop2-cursor.patch` is the v6.0 change to
+`drivers/gpu/drm/rockchip/rockchip_drm_vop2.c`: it re-asserts the hardware cursor window on
+each video-port latch so the cursor stays visible under continuous GPU compositing.
+`patch/kernel/h96-board-support.patch` carries the board support every release has had:
+BCM43752 ids for `brcmfmac`, two `bcmdhd` log-prefix lines, an SDIO rescan hook in `dw_mmc`
+and `rfkill-wlan`, the HDMI PHY clock name, and the 8BitDo entries in `xpad`. Both are
+verified against the pinned commit with `patch -p1 --dry-run`. If HDMI stays dark on first
+boot, force a mode: add `video=HDMI-A-1:1280x720@60e` to the `extraargs=` line in
+`/boot/armbianEnv.txt` (the trailing `e` forces the mode past this BSP's EDID-read bug).
+
+> **Note on device tree.** `patch/kernel/rk3588-h96-max-v58-panthor.dts` is a decompile of
+> the stock Android vendor DTB, edited for an open-GPU Armbian (hence the
+> `rockchip,rk3588-nvr-demo-v10-android` compatible and numeric phandles). The file is a
+> decompile of `rk3588-h96-max-v58-panthor.dtb`, the DTB the v6.0 image boots (`fdtfile=` in
+> `/boot/armbianEnv.txt`), and recompiles to the same tree. `docs/DEVICE-TREE-CHANGES.md`
 > documents every change so it can be re-applied onto a mainline `rk3588.dtsi` for a
-> from-scratch DTS.
+> from-scratch DTS. The BSP tools that edit the device tree (`h96-undervolt`,
+> `h96-undervolt-trial.service`) use the `-panthor` path, so keep that DTB name.
 
 ---
 
@@ -275,8 +421,8 @@ Full detail in [`docs/DEVICE-TREE-CHANGES.md`](docs/DEVICE-TREE-CHANGES.md). In 
 Build DTBs standalone if you want only those:
 
 ```bash
-dtc -@ -I dts -O dtb -o rk3588-h96-max-v58.dtb   patch/kernel/rk3588-h96-max-v58.dts
-dtc -@ -I dts -O dtb -o h96-max-v58-gpio-ir.dtbo patch/overlays/h96-max-v58-gpio-ir.dts
+dtc -@ -I dts -O dtb -o rk3588-h96-max-v58-panthor.dtb patch/kernel/rk3588-h96-max-v58-panthor.dts
+dtc -@ -I dts -O dtb -o h96-max-v58-gpio-ir.dtbo       patch/overlays/h96-max-v58-gpio-ir.dts
 ```
 
 ---

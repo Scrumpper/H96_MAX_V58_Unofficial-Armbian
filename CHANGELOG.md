@@ -2,6 +2,112 @@
 
 
 
+## v6.0 (2026-09-07)
+
+v6.0 over v5.0.1. Ships as a new image only. The kernel Image changes, so moving to it is a
+reflash, not an `apt upgrade`. The device tree is unchanged since v4.3. Every v5.0 feature and
+command is retained.
+
+v6.0 absorbs the planned v5.2. The kernel changes across several rebuilds, cluster-aware
+scheduling together with the VOP2 cursor driver fixes, are substantial enough to warrant a
+major version rather than a point release. This is a versioning and scope statement, not a
+performance claim: `CONFIG_SCHED_CLUSTER` is topology-correctness only and the cursor work is a
+correctness fix; benchmarking found no measurable change in throughput, and none is claimed.
+
+- **Hardware cursor during GPU compositing, fixed in the kernel driver.** v5.0.1 kept the mpv
+  cursor visible during playback (`cursor-autohide=no`) as a workaround for the RK3588 VOP2
+  hardware-cursor latch bug: under continuous GPU compositing the hardware cursor plane was not
+  restored once it had been hidden, so after mpv hid the cursor during fullscreen playback the
+  pointer stayed invisible until reboot. v6.0 fixes it in the kernel driver by re-asserting the
+  cursor on the video-port latch each frame, so the hardware cursor stays visible during
+  continuous GPU compositing (fullscreen video, animated browser pages, the desktop splash); it
+  still auto-hides over video and returns on movement, and it survives leaving mpv back to the
+  desktop. `/etc/mpv/mpv.conf` restores `cursor-autohide=1000` with `x11-bypass-compositor=never`,
+  so autohide is active during playback and KWin compositing stays on in fullscreen.
+- **`h96-backup` and `h96-restore`.** A flash writes the whole eMMC and removes every on-demand
+  feature installed on top of the console base. `h96-backup` captures one archive: a manifest of
+  which features are present (desktop, emulators, Waydroid, Widevine, gaming, NPU runtime) plus
+  the passive data that cannot be re-downloaded (a config subset, emulator saves, the wine
+  prefix, WiFi credentials, the Waydroid `/data`). The multi-GB Waydroid image stashes are left
+  out by default (`--with-images` includes them); restore re-downloads them instead.
+  `h96-restore` reads the manifest, reinstalls the recorded features, then restores the passive
+  data to the correct paths and owners. A config file already present and newer than the
+  archived copy is kept, not overwritten; `--force` overwrites it (stop the desktop session
+  first on a fresh image, whose session has already written default configs). `--open`
+  prints the installer commands for you to run yourself instead of running them; `--dry-run`
+  prints the plan and changes nothing. Both tools take `--only` and `--skip` category lists
+  and `--emulators`; `h96-backup-gui` presents the same choices as checkboxes and runs the
+  tools in a terminal window. Boxes on v5.0.1 or earlier have no backup tool; the migration kit (`h96-migrate-kit.zip` in the release) installs the same three tools there (`sudo bash install.sh`, `--gui` for the window) so the box can be captured to a USB stick before the flash.
+- **`h96-undervolt` trial flow corrected.** The trial flow now works as documented: `set <mV>`,
+  then reboot, and the setting is active on that boot so you can test it under load; `test` runs
+  a SIMD load; `confirm` keeps it. Reboot without confirming and the boot-time guard reverts to
+  the stock device tree on its own. Previously the guard could revert the setting before there
+  had been a boot on which to confirm it.
+- **Kernel: `CONFIG_SCHED_CLUSTER`.** The kernel now enables `CONFIG_SCHED_CLUSTER`, which
+  represents the RK3588 as its three CPU clusters instead of one flat group, so the scheduler's
+  topology view matches the hardware. On this board the clusters are 4x Cortex-A55 (cpu0, cpu5,
+  cpu6, cpu7), 2x Cortex-A76 (cpu1, cpu2) and 2x Cortex-A76 (cpu3, cpu4); the two A76 pairs are
+  separate DVFS clusters. This is a topology-correctness change: benchmarking found no
+  measurable change in throughput, and none is claimed.
+- **Kernel BTF type data.** The kernel carries BPF Type Format (BTF) data
+  (`CONFIG_DEBUG_INFO_BTF`, with `CONFIG_DEBUG_INFO_BTF_MODULES` for the module set):
+  `/sys/kernel/btf/vmlinux` describes the kernel's types (7 MB) and every module exports its
+  own, so `bpftool`, `bcc` and CO-RE BPF programs read kernel and module types on the box
+  without kernel headers. `bpftrace` kprobes walk kernel structs the same way; pass
+  `--traceable-functions` with a symbol list from `/proc/kallsyms`, since this kernel has no
+  ftrace function list. BTF is data that BPF tools read; the machine code is the same with or
+  without it, and the kernel Image grows by 7 MB. Armbian's own rk35xx kernel configuration
+  ships with BTF on. The VOP2 cursor fix ships in this repo as
+  `patch/kernel/h96-vop2-cursor.patch`, built with `config/linux-rk35xx-vendor.config`.
+- **Known kernel-log item.** At boot the kernel prints two `WARNING` traces from
+  `pinctrl-rockchip.c` (`rockchip_pmx_gpio_set_direction`, `pin 143 already requested by
+  fde80000.hdmi` and `pin 144 already requested by fde80000.hdmi`). They come from the
+  `h96-ddc-i2c-gpio` overlay reassigning the HDMI DDC pins to an i2c-gpio bus for DDC/CI
+  brightness control. They are harmless; the kernel sets its `W` taint flag and nothing else
+  changes.
+- **Kernel log cleanup.** The `H96DBG` diagnostic lines that v5.0.1 printed during HDMI setup
+  are gone; the HDMI PHY driver reports clock setup errors instead of hiding them, and the
+  unused secure-OTP driver is left out of the build (`CONFIG_NVMEM_ROCKCHIP_SEC_OTP=n`). The
+  board-support patch set is published as `patch/kernel/h96-board-support.patch`.
+- **Kernel release `6.1.115-h96`, modules rebuilt with symbol versioning.** The release
+  string is `6.1.115-h96` (`CONFIG_LOCALVERSION="-h96"`) and modules live in
+  `/lib/modules/6.1.115-h96`. The full module set (3110 modules) is built from the same
+  source and configuration as the kernel Image, with `CONFIG_MODVERSIONS=y`: every module
+  carries symbol versions, and the loader rejects a module built against a different kernel
+  layout instead of loading it unchecked. Earlier releases shipped a module set built against
+  a pre-PSI configuration; those modules loaded on 6.1.115 kernels because the vermagic
+  string matched, and only the modules in use had been checked by inspection. The bcmdhd
+  WiFi module and every other module now carry matching symbol versions, and the kernel's
+  `O` (out-of-tree) taint flag is gone; the only taint left is the `W` from the DDC pinctrl
+  warning above. Moving to v6.0 remains a reflash. The `h96-rfcomm` service no longer
+  hardcodes a kernel release; it reads `uname -r`. `config/linux-rk35xx-vendor.config` is the
+  full kernel configuration the Image and modules were built with;
+  `config/kernel-h96-max-v58.config` summarises the options that differ from the vendor
+  default, and the README build steps install the modules with the kernel.
+- **Repository.** The full kernel configuration is published as
+  `config/linux-rk35xx-vendor.config` (the Armbian framework consumes a full config, not a
+  fragment). The device tree source is `patch/kernel/rk3588-h96-max-v58-panthor.dts`, a
+  decompile of the DTB the image boots; the earlier copy predated the PCIe WiFi enablement,
+  and the board file's `BOOT_FDT_FILE` now names the booted DTB. The board file pins the
+  kernel source to the commit the kernel was built from and restores the options the
+  framework rewrites. `packages/bsp/h96-max-v58/systemd/h96-rfcomm.service` is added.
+- **`CONFIG_RT_GROUP_SCHED` off.** It was on, inherited from the vendor Android
+  configuration. Realtime scheduling is now available to processes outside the root cgroup:
+  PipeWire's data-loop threads run at `SCHED_RR` priority 20 through rtkit, so audio threads
+  keep their priority under CPU load, and `cyclictest` runs. Previously the journal logged
+  `Failed to make ourselves RT: Operation not permitted` on every boot and the audio threads
+  ran as normal tasks.
+- **`xpad` built with player-LED and force-feedback support.** The `xpad` USB
+  game-controller module is built with `CONFIG_JOYSTICK_XPAD_LEDS=y` and
+  `CONFIG_JOYSTICK_XPAD_FF=y`. 2.4 GHz X-input dongles that wait for the Xbox 360 player-LED
+  command before they start reporting now work; verified with the 8BitDo Ultimate 2C Wireless
+  Controller and its dongle. Previously the dongle enumerated, the driver bound and
+  `/dev/input/js0` existed, but no input arrived, while the same pad worked over Bluetooth.
+  Force feedback (rumble) is available on xpad-driven controllers. The kernel Image is
+  unchanged by this; only the module set changed. Both options are in
+  `config/linux-rk35xx-vendor.config`, `config/kernel-h96-max-v58.config` and the board
+  file's `custom_kernel_config` hook.
+
 ## v5.0.1
 
 v5.0.1 over v5.0. Ships as a new image and as a fix-script for a running box (no reflash).
@@ -12,7 +118,7 @@ Kernel Image and device tree unchanged since v4.3.
   mpv hides it during playback (a kernel driver un-hide fault), so once hidden the cursor
   stayed invisible until a reboot. `cursor-autohide=no` stops mpv from hiding the hardware
   cursor. The driver fix that lets the cursor fade during playback and return on movement is
-  deferred to v5.1.
+  deferred to v6.0.
 - `h96-waydroid` clean teardown. Closing the Android window stops the session and the
   container, releasing the GPU the container held. A sudoers drop-in lets the desktop user run
   `h96-waydroid stop` without a password. A Stop Android menu entry was added.
@@ -41,7 +147,7 @@ Reflashing wipes an existing desktop install.
   `init`/`lmkd` hard-require `/proc/pressure`; without it the Waydroid container boots and
   then dies in about 15 seconds. It is an **Image-only rebuild**: PSI is built in and the
   kernel release string is unchanged at 6.1.115, so `/lib/modules/6.1.115` stays valid and
-  no module is rebuilt. Verified on hardware: 69 modules load with zero ABI errors.
+  no module is rebuilt. Verified on hardware: 69 modules load with matching vermagic.
   **Existing users cannot `apt upgrade` into this kernel. It needs the new image.**
 
 - **New `h96-waydroid`: Android in a container.** Waydroid 1.6.2 plus a nested Weston
@@ -454,7 +560,11 @@ automatically at first boot. Display must accept DDC/CI writes (most
 PC monitors; enable "DDC/CI" in monitor menu). Most TVs gate DDC/CI behind an HDMI/CEC
 handshake this box cannot perform and are not controllable. With KDE plus ddcutil, PowerDevil
 shows a brightness slider. Overlay source: `packages/bsp/h96-max-v58/overlays/`; CLI:
-`packages/bsp/h96-max-v58/tools/h96-brightness`.
+`packages/bsp/h96-max-v58/tools/h96-brightness`. Because the overlay reassigns pins the HDMI
+controller already holds, the kernel prints two `WARNING` traces from `pinctrl-rockchip.c`
+(`rockchip_pmx_gpio_set_direction`, `pin 143 already requested by fde80000.hdmi` and `pin 144
+already requested by fde80000.hdmi`) at boot. They are harmless; the kernel sets its `W` taint
+flag and the bus works.
 
 ### 4. `scrumptop` system monitor
 

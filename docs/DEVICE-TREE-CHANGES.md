@@ -1,10 +1,12 @@
 # Device-tree changes for H96 Max V58 (RK3588)
 
-`patch/kernel/rk3588-h96-max-v58.dts` is board device tree. It began as a
-**decompile of stock Android vendor DTB** (`dtc -I dtb -O dts`), which is why it carries
-`rockchip,rk3588-nvr-demo-v10-android` compatible and numeric phandles. It
-was then edited for an open-GPU Armbian build. It is included as-is because it is
-exact, working source; changes below are what differ from stock DTB.
+`patch/kernel/rk3588-h96-max-v58-panthor.dts` is the board device tree. It began as a
+**decompile of the stock Android vendor DTB** (`dtc -I dtb -O dts`), which is why it carries
+the `rockchip,rk3588-nvr-demo-v10-android` compatible and numeric phandles. It
+was then edited for an open-GPU Armbian build. The file in this repo is a decompile of
+`rk3588-h96-max-v58-panthor.dtb`, the DTB the v6.0 image boots (`fdtfile=` in
+`/boot/armbianEnv.txt`); it recompiles to the same tree. The changes below are what
+differ from the stock DTB.
 
 If you prefer a mainline-style DTS, same nodes can be applied on top of a
 mainline `rk3588.dtsi`; values here are reference.
@@ -81,10 +83,21 @@ Setting a different resolution still works: `video=HDMI-A-1:...` overrides force
 Verified by booting `video=HDMI-A-1:1280x720@60` alongside it, which set display
 controller clock to 74440000 (720p) and advertised `1280x720`.
 
+## 7. DDC pins reassigned by overlay: two pinctrl warnings at boot
+
+`packages/bsp/h96-max-v58/overlays/h96-ddc-i2c-gpio.dts` exposes the two HDMI DDC pins as
+a kernel `i2c-gpio` bus (`i2c-ddc`, 100 kHz) so `h96-brightness` can drive DDC/CI. The HDMI
+node already holds those pins, so an overlay pinctrl group is refused at boot; the overlay
+carries no pinctrl group and the i2c-gpio driver's gpiod request re-muxes the pins itself.
+The pinctrl driver logs that re-mux as two `WARNING` traces from `pinctrl-rockchip.c`
+(`rockchip_pmx_gpio_set_direction`, `pin 143 already requested by fde80000.hdmi` and
+`pin 144 already requested by fde80000.hdmi`). They are harmless; the kernel sets its `W`
+taint flag and the bus works.
+
 ## Building DTB
 ```
 # base board DTB (from .dts in patch/kernel/)
-dtc -@ -I dts -O dtb -o rk3588-h96-max-v58.dtb rk3588-h96-max-v58.dts
+dtc -@ -I dts -O dtb -o rk3588-h96-max-v58-panthor.dtb rk3588-h96-max-v58-panthor.dts
 
 # IR overlay (from patch/overlays/)
 dtc -@ -I dts -O dtb -o h96-max-v58-gpio-ir.dtbo h96-max-v58-gpio-ir.dts
