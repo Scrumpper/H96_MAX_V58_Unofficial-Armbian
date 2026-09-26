@@ -34,7 +34,7 @@ DEFAULT_CONSOLE="serial"
 SERIALCON="ttyS2"
 # eMMC is the internal storage; there is no SD slot exposed as bootable on most units.
 
-# Pin the kernel source to the commit the v6.0 kernel was built from. The family file
+# Pin the kernel source to the commit the v6.0 and v6.1 kernels were built from. The family file
 # tracks a newer rk-6.1 branch (rk-6.1-rkr7.2 at the time of writing); the shipped
 # kernel is rk-6.1-rkr5.1 at this commit, and patch/kernel/*.patch were made against it.
 # KERNELPATCHDIR is left at the family value (rk35xx-vendor-6.1 at the time of writing):
@@ -49,13 +49,21 @@ function post_family_config__h96_pin_kernel_source() {
 # The framework's own armbian_kernel_config__* hooks rewrite parts of any user-supplied
 # .config (lib/functions/compilation/armbian-kernel.sh): they set CONFIG_LOCALVERSION to ""
 # and CONFIG_RT_GROUP_SCHED=y, and turn BTF debug info on (the shipped kernel has it on as
-# well; do not pass KERNEL_BTF=no). This hook runs after them and restores the shipped v6.0
+# well; do not pass KERNEL_BTF=no). This hook runs after them and restores the shipped v6.1
 # values. Note that the framework
 # also passes LOCALVERSION=-vendor-rk35xx on the make command line, so a framework-built
-# kernel reports 6.1.115-h96-vendor-rk35xx; the released image was built outside the
-# framework and reports 6.1.115-h96. Name only: the Image and modules are configured alike.
+# kernel reports 6.1.115-h96v58v1-vendor-rk35xx; the released image was built outside the
+# framework and reports 6.1.115-h96v58v1. Name only: the Image and modules are configured alike.
 function custom_kernel_config__h96_restore_shipped_options() {
-	kernel_config_set_string LOCALVERSION "-h96"
+	kernel_config_set_string LOCALVERSION "-h96v58v1"
+	# off since v6.1 (they were on in v6.0); the full config carries them, this keeps a
+	# merged configuration honest
+	kernel_config_set_n SLUB_DEBUG
+	kernel_config_set_n SCHEDSTATS
+	# v6.1 hang recovery: a CPU that stops scheduling panics (the image reboots on panic)
+	kernel_config_set_y LOCKUP_DETECTOR
+	kernel_config_set_y SOFTLOCKUP_DETECTOR
+	kernel_config_set_y BOOTPARAM_SOFTLOCKUP_PANIC
 	kernel_config_set_n RT_GROUP_SCHED
 	kernel_config_set_y MODVERSIONS
 	kernel_config_set_y PSI
