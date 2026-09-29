@@ -1,22 +1,8 @@
 #!/bin/bash
-# h96-upscale — enable RAVU GPU upscaling in mpv.
+# h96-upscale: enable ravu-lite-ar-r4 GPU upscaling (mpv user shader) on the Mali-G610 via Panfrost; picked over FSRCNNX/nnedi3 because the G610 lacks the GFLOPS budget for them.
 #
-# WHAT THIS IS: `ravu-lite-ar-r4`, a learned upscaler from bjin/mpv-prescalers,
-# run as an mpv user shader on the Mali-G610 through Panfrost. It is sharper than
-# mpv's built-in scalers on upscaled content for roughly a tenth more GPU time.
-#
-# WHY THIS ONE AND NOT THE FAMOUS ONES: measured on an H96 Max V58, the G610 has
-# about 470 GFLOPS -- roughly 9-19x below the desktop cards these shaders are
-# usually demoed on. FSRCNNX and nnedi3 do not fit in that budget. ravu-lite does.
-#
-#   measured here, 720p clip, --untimed:   no shader 3.81 s -> ravu 4.31 s (+13%)
-#   shader compiled clean on Panfrost, zero GLSL errors
-#
-# NOTE the gather/ variant of this shader does NOT work here: it needs
-# textureGatherOffset, which this GLES context does not provide. Use the root
-# variant, which is what is installed.
-#
-# Deployed to /usr/local/bin/h96-upscale.
+# Measured: 720p clip, no shader 3.81 s vs ravu 4.31 s (+13%); compiles clean on Panfrost.
+# Use the root shader variant, not gather/: this GLES context has no textureGatherOffset.
 
 set -uo pipefail
 
@@ -86,7 +72,7 @@ run_test() {
             || die "could not create a test clip"
     fi
     local runner=(mpv) ctx=()
-    # headless? borrow cage, which this image already ships for game-mode
+    # Headless: borrow cage, already shipped for game-mode.
     if [ -z "${WAYLAND_DISPLAY:-}${DISPLAY:-}" ] && command -v cage >/dev/null 2>&1; then
         echo "  no session detected - running inside cage"
         export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"

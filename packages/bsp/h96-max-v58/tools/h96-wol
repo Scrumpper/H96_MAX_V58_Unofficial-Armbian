@@ -1,0 +1,114 @@
+#!/bin/bash
+# Wake-on-LAN toggle: NetworkManager profile (persists) + ethtool for immediate effect.
+# Ships installed but off: nothing here runs at first boot or in the hotfix; the owner
+# runs `h96-wol on` to opt in.
+#
+# Persistence note: this image's netplan renders through NetworkManager (see
+# /etc/netplan/00-default-use-network-manager.yaml); NM mirrors each connection's
+# state into /etc/netplan/90-NM-<uuid>.yaml, and `netplan generate` turns that into a
+# systemd.link file (WakeOnLan=) applied by udev at every boot, before NM starts.
+# `nmcli ... wake-on-lan ignore` and `... default` both leave a stale `wakeonlan: true`
+# in that mirror file (NM/netplan bug: the boolean is set once and never cleared for
+# those two values), so a prior `on` would survive a reboot even after an `ignore`/
+# `default` "off". `none` is the one value that clears it cleanly; verified on box
+# 2026-09-27: default/ignore leave `wakeonlan: true` + WakeOnLan=magic in the
+# generated .link, none leaves neither. off() therefore uses none, not ignore.
+set -uo pipefail
+
+err(){ printf '%s\n' "$*" >&2; }
+need_root(){
+  [ "$(id -u)" -eq 0 ] && return 0
+  err "This action changes NM/ethtool state; re-run as root (sudo $0 $1)."
+  exit 1
+}
+
+usage(){
+cat <<'HLP'
+h96-wol status|on|off|--help
+
+status  ethtool Wake-on state, nmcli wake-on-lan setting, and the persisted
+        netplan/systemd-link state (what actually applies at next boot)
+on      nmcli wake-on-lan=magic on the active 802-3-ethernet connection,
+        ethtool -s eth0 wol g now
+off     nmcli wake-on-lan=none, ethtool -s eth0 wol d now
+
+No-op on the nmcli side when no wired connection is active (no error).
+Wake from a powered-off box is untested here; see the v6.2 WoL spec.
+HLP
+}
+
+active_wired(){
+  local c
+  c=$(nmcli -t -f NAME,DEVICE,TYPE con show --active 2>/dev/null \
+    | awk -F: '$3=="802-3-ethernet"{print $1; exit}')
+  # fall back to any stored 802-3-ethernet profile if none is active yet
+  [ -z "$c" ] && c=$(nmcli -t -f NAME,TYPE con show 2>/dev/null \
+    | awk -F: '$2=="802-3-ethernet"{print $1; exit}')
+  printf '%s' "$c"
+}
+
+# netplan file NM mirrors this connection's state into, empty if none (non-desktop image)
+netplan_mirror_file(){
+  local uuid; uuid=$(nmcli -g connection.uuid con show "$1" 2>/dev/null)
+  [ -n "$uuid" ] || return 0
+  grep -lF "uuid: \"$uuid\"" /etc/netplan/*.yaml 2>/dev/null | head -n1
+}
+
+# what `netplan generate` would apply at next boot for this device, via systemd.link
+persisted_wol(){
+  local before after f
+  before=$(ls /run/systemd/network/*.link 2>/dev/null)
+  netplan generate >/dev/null 2>&1
+  for f in /run/systemd/network/*.link; do
+    [ -e "$f" ] || continue
+    grep -q "^WakeOnLan=" "$f" 2>/dev/null && { grep '^WakeOnLan=' "$f"; return 0; }
+  done
+  echo "WakeOnLan=(not set)"
+}
+
+status(){
+  ethtool eth0 2>/dev/null | grep -i wake || echo "eth0: ethtool wake status unavailable"
+  local c; c=$(active_wired)
+  if [ -n "$c" ]; then
+    nmcli -t -f 802-3-ethernet.wake-on-lan con show "$c"
+    local mf; mf=$(netplan_mirror_file "$c")
+    if [ -n "$mf" ]; then
+      echo "netplan mirror: $mf"
+      grep -q '^ *wakeonlan: true$' "$mf" 2>/dev/null \
+        && echo "  wakeonlan: true (persists)" || echo "  wakeonlan: not set"
+    fi
+    echo "next boot (netplan generate): $(persisted_wol)"
+  else
+    echo "no wired (802-3-ethernet) connection profile found"
+  fi
+}
+
+on(){
+  need_root on
+  local c; c=$(active_wired)
+  if [ -n "$c" ]; then
+    nmcli con modify "$c" 802-3-ethernet.wake-on-lan magic
+  else
+    echo "no active wired connection; nmcli profile not changed" >&2
+  fi
+  ethtool -s eth0 wol g 2>/dev/null || true
+  status
+}
+
+off(){
+  need_root off
+  local c; c=$(active_wired)
+  if [ -n "$c" ]; then
+    nmcli con modify "$c" 802-3-ethernet.wake-on-lan none
+  fi
+  ethtool -s eth0 wol d 2>/dev/null || true
+  status
+}
+
+case "${1:---help}" in
+  status) status ;;
+  on) on ;;
+  off) off ;;
+  --help|-h) usage ;;
+  *) usage >&2; exit 1 ;;
+esac

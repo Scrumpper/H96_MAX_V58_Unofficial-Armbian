@@ -1,13 +1,6 @@
-// h96-vfd: H96 Max V58 front-panel VFD daemon (Armbian).
-// Reverse-engineered from the stock Android kernel "fddis" driver:
-//   TM1650 protocol, MSB-first, 5us/half-clock, bit-banged on GPIO3 registers.
-//   CLK=GPIO3_C7 (line23/bit23)  DAT=GPIO3_D0 (line24/bit24)  base 0xfec40000.
-// Shows HH:MM + blinking colon, and lights icons from live system state.
-//
-// Grid addresses: display-ctrl 0x48; digits 0x6E 0x6C 0x6A 0x68 (left->right);
-//   5th "icon" grid 0x66. Icon-grid bit map (decoded from the driver's byte remap):
-//     0x01 alarm   0x02 USB    0x04 pause   0x08 play
-//     0x10 colon   0x20 ethernet   0x40 WIFI   0x80 unused
+// h96-vfd: front-panel VFD daemon; shows HH:MM with blinking colon, lights icons from live system state.
+// TM1650 protocol, bit-banged on GPIO3 (CLK=GPIO3_C7, DAT=GPIO3_D0, base 0xfec40000).
+// grid: ctrl 0x48, digits 0x6E/0x6C/0x6A/0x68, icon grid 0x66 (0x01 alarm 0x02 USB 0x04 pause 0x08 play 0x10 colon 0x20 eth 0x40 wifi)
 #include <linux/gpio.h>
 #include <sys/ioctl.h>
 #include <sys/mman.h>
@@ -48,7 +41,14 @@ static int link_up(const char*i){char p[128],b[16];snprintf(p,sizeof(p),"/sys/cl
 static int usb_present(void){DIR*d=opendir("/sys/block");if(!d)return 0;struct dirent*e;int f=0;while((e=readdir(d))){if(e->d_name[0]=='s'&&e->d_name[1]=='d'){f=1;break;}}closedir(d);return f;}
 static int audio_playing(void){DIR*d=opendir("/proc/asound");if(!d)return 0;struct dirent*e;int r=0;char pa[256],b[64];while((e=readdir(d))&&!r){if(strncmp(e->d_name,"card",4))continue;for(int p=0;p<4&&!r;p++)for(int s=0;s<2&&!r;s++){snprintf(pa,sizeof(pa),"/proc/asound/%s/pcm%dp/sub%d/status",e->d_name,p,s);if(rdf(pa,b,sizeof(b))>0&&strstr(b,"RUNNING"))r=1;}}closedir(d);return r;}
 static volatile int run=1; static void ot(int s){(void)s;run=0;}
-int main(void){
+int main(int argc,char**argv){
+    if(argc>1&&(!strcmp(argv[1],"-h")||!strcmp(argv[1],"--help"))){
+        puts("usage: h96-vfd   (root, run by h96-vfd.service)\n"
+             "  Front-panel VFD daemon: shows HH:MM with blinking colon and lights\n"
+             "  USB, play, ethernet and WIFI icons from live system state.\n"
+             "  One instance only; manage with systemctl {status|restart} h96-vfd.");
+        return 0;
+    }
     signal(SIGTERM,ot);signal(SIGINT,ot);
     int chip=open("/dev/gpiochip3",O_RDWR);
     if(chip<0){perror("gpiochip3");return 1;}

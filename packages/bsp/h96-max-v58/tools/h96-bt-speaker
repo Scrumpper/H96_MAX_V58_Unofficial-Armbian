@@ -1,39 +1,7 @@
 #!/usr/bin/env bash
-# h96-bt-speaker -- turn the H96 Max V58 into a Bluetooth A2DP speaker.
-#
-# WHAT THIS DOES
-#   `on`  makes the box discoverable + pairable, arms a Just Works pairing
-#         agent (auto-accept, no PIN/screen), and bridges any incoming A2DP
-#         stream to the local sink (HDMI by default). A phone then pairs to
-#         the box and plays music out of the TV / receiver.
-#   `off` reverts: stops the bridge and the agent, drops discoverable +
-#         pairable. Paired devices are kept (Trusted) unless you `forget` them.
-#
-# HOW IT WORKS
-#   - Adapter control (power/alias/discoverable/pairable) via bluetoothctl on
-#     the SYSTEM bus. Class is nudged to "audio, loudspeaker" so phones show
-#     the box as a speaker.
-#   - Pairing: /usr/local/lib/h96/h96-bt-agent (python D-Bus Agent1,
-#     NoInputNoOutput) auto-accepts and Trusts each device. Runs as root.
-#   - Routing: /usr/local/lib/h96/h96-bt-loopback runs in the DESKTOP user's
-#     PipeWire session and pw-loopbacks each "bluez_input.*" source to the
-#     default sink. WirePlumber already advertises the a2dp_sink role
-#     (30-h96-bluetooth.conf), so the box accepts A2DP; this tool just wires
-#     the accepted stream to the speakers.
-#
-#   State: /run/h96-bt-speaker/ (agent.pid, on marker). Config overrides:
-#   /etc/h96/bt-speaker.conf  (ALIAS, DISCOVERABLE_TIMEOUT, SINK, SET_CLASS).
-#
-# SUBCOMMANDS
-#   on [SECONDS]   enter speaker mode. SECONDS = how long to stay discoverable
-#                  (0 = until `off`; default from config, else 0).
-#   off            leave speaker mode, revert adapter, stop agent + bridge.
-#   status         (default) adapter state, agent/bridge, sink, connections.
-#   test           probe dependencies + prerequisites; nonzero if core missing.
-#   devices        list paired/connected Bluetooth audio devices.
-#   forget MAC     unpair + remove a device (AA:BB:CC:DD:EE:FF).
-#
-# Deployed to /usr/local/bin/h96-bt-speaker (0755).
+# h96-bt-speaker: turns the H96 Max V58 into a Bluetooth A2DP speaker (on/off/status/test/devices/forget; see usage() below).
+# Adapter control via bluetoothctl (system bus); pairing via h96-bt-agent (auto-accept, root); routing via h96-bt-loopback in the desktop user's PipeWire session.
+# State: /run/h96-bt-speaker/. Config: /etc/h96/bt-speaker.conf (ALIAS, DISCOVERABLE_TIMEOUT, SINK, SET_CLASS).
 
 set -uo pipefail
 
@@ -74,8 +42,7 @@ need_root() {
 }
 
 # --- desktop-user detection (uid 1000; do NOT hardcode name) ---------------
-# The PipeWire session lives in the autologin desktop user. Find it, prefer the
-# active graphical seat, fall back to uid 1000.
+# find the autologin desktop user: prefer active graphical seat, fall back to uid 1000
 detect_desktop_user() {
   local u=""
   if have loginctl; then
@@ -119,9 +86,17 @@ adapter_present() { [ -e "/sys/class/bluetooth/$HCI" ]; }
 
 btctl() { bluetoothctl "$@" 2>/dev/null; }
 
+# bluetoothctl 5.85 rejects `show hci0`; resolve $HCI to its address over D-Bus, fall back to default controller
+adapter_addr() {
+  have busctl || return 1
+  busctl get-property org.bluez "/org/bluez/$HCI" org.bluez.Adapter1 Address 2>/dev/null \
+    | sed -n 's/^s "\(.*\)"$/\1/p'
+}
+
 adapter_prop() {
   # Print a Controller property value ("yes"/"no"/string) from `show`.
-  btctl show "$HCI" 2>/dev/null | sed -n "s/^[[:space:]]*$1:[[:space:]]*//p" | head -n1
+  local addr; addr="$(adapter_addr)"
+  btctl show ${addr:+"$addr"} 2>/dev/null | sed -n "s/^[[:space:]]*$1:[[:space:]]*//p" | head -n1
 }
 
 # --- lifecycle: agent ------------------------------------------------------
@@ -220,8 +195,7 @@ cmd_on() {
       || err "note: could not set adapter class (hciconfig); phones still pair."
   fi
 
-  # Discoverable window. bluetoothctl's discoverable-timeout takes seconds
-  # (0 = no timeout). Set it BEFORE toggling discoverable on.
+  # discoverable-timeout takes seconds (0 = no timeout); set before toggling discoverable on
   btctl discoverable-timeout "$secs" >/dev/null 2>&1
   btctl pairable on >/dev/null
   btctl discoverable on >/dev/null
@@ -295,7 +269,6 @@ cmd_status() {
   fi
   info "Default sink:   ${SINK:-${sink:-<unknown>}}"
 
-  # Connected devices.
   info "Connected devices:"
   local any=0 mac name
   while read -r _ mac name; do

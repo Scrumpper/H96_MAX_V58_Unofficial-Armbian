@@ -18,11 +18,9 @@ import time
 import tty
 from collections import deque
 
-# =====================================================================
-# MODULE: sensors  (exposes: read_all, BIG_CORES, LITTLE_CORES)
-# =====================================================================
+# --- sensors module: exposes read_all, BIG_CORES, LITTLE_CORES ---
 
-# RK3588 CPU topology is NON-CONTIGUOUS: big A76 = cpu 1,2,3,4; little A55 = cpu 0,5,6,7.
+# RK3588 CPU topology is non-contiguous: big A76 = cpu 1,2,3,4; little A55 = cpu 0,5,6,7.
 BIG_CORES = {1, 2, 3, 4}
 LITTLE_CORES = {0, 5, 6, 7}
 
@@ -241,7 +239,7 @@ def _read_meminfo():
     return (total_kb, avail_kb)
 
 
-# ---- network / bluetooth ----
+# --- network / bluetooth ---
 
 def _read_net_dev_bytes():
     """Read /proc/net/dev -> {iface: (rx_bytes, tx_bytes)}. {} if unreadable."""
@@ -283,7 +281,7 @@ def _read_wifi_signal_dbm():
         if len(fields) < 3:
             return None
         try:
-            # fields: [0]=status [1]=link-quality. [2]=level(dBm). [3]=noise.
+            # fields: [0]=status [1]=link-quality [2]=level(dBm) [3]=noise
             return int(float(fields[2].rstrip(".")))
         except (ValueError, IndexError):
             return None
@@ -378,9 +376,9 @@ def _read_net(prev_net_bytes, dt):
     return net, cur_bytes
 
 
-# ---- IR receiver ----
+# --- IR receiver ---
 
-# Module-level singleton fd so we never open/close the device per tick.
+# Module-level singleton fd; avoids opening/closing the device per tick.
 _ir_fd = None
 _ir_last_retry_ts = None  # time.monotonic() of last failed resolve attempt
 _ir_last_press_ts = None  # time.monotonic() of last observed keypress
@@ -432,8 +430,8 @@ def _read_ir():
             _ir_fd = None
             return {"present": False, "last_age_s": None, "last_code": _ir_last_code}
 
-    # Drain all pending events; aarch64 struct input_event is 24 bytes:
-    # 16B timeval (2x unsigned long) + u16 type + u16 code + s32 value.
+    # Drain pending events; aarch64 struct input_event is 24 bytes: 16B timeval
+    # (2x unsigned long) + u16 type + u16 code + s32 value.
     try:
         while True:
             buf = os.read(_ir_fd, 24)
@@ -446,7 +444,7 @@ def _read_ir():
     except BlockingIOError:
         pass
     except OSError:
-        # fd went bad; close and let the next call retry resolution.
+        # fd went bad; close it, let the next call retry resolution.
         try:
             os.close(_ir_fd)
         except OSError:
@@ -462,7 +460,7 @@ def _read_ir():
     return {"present": True, "last_age_s": last_age_s, "last_code": _ir_last_code}
 
 
-# ---- disk / swap / load / uptime / peripheral battery ----
+# --- disk / swap / load / uptime / peripheral battery ---
 
 def _read_diskstats_sectors():
     """Read /proc/diskstats for mmcblk0 (whole device) else mmcblk0p2.
@@ -565,9 +563,8 @@ def _read_peripheral_batteries():
                 continue
             except ValueError:
                 pass
-        # HID++ peripherals (e.g. the Logitech K400) expose only capacity_level
-        # ("Full"/"Normal"/"Low"/"Critical", or "Unknown" until the device has
-        # reported in). Show the level rather than dropping the battery.
+        # HID++ peripherals expose only capacity_level (Full/Normal/Low/Critical/
+        # Unknown); show the level rather than dropping the battery.
         level = _read_file(f"{base}/capacity_level", "")
         if level:
             batteries.append({"model_name": model, "level": level})
@@ -588,7 +585,7 @@ def _read_sysinfo(prev_disk, dt):
     plus internal "_disk_sectors": (device_key, read_sectors, write_sectors)
     for the caller to thread into next tick's state.
     """
-    # ---- DISK USAGE ----
+    # --- disk usage ---
     try:
         st = os.statvfs("/")
         total_bytes = st.f_blocks * st.f_frsize
@@ -602,7 +599,7 @@ def _read_sysinfo(prev_disk, dt):
         used_pct = 0.0
         total_gb = 0.0
 
-    # ---- DISK I/O RATE ----
+    # --- disk I/O rate ---
     device_key, read_sectors, write_sectors = _read_diskstats_sectors()
     read_bps = 0.0
     write_bps = 0.0
@@ -649,7 +646,7 @@ def read_all(prev_stat=None):
         prev_disk = prev_stat.get("disk_sectors")
         prev_ts = prev_stat.get("ts", ts)
     else:
-        # Old-format prev_stat (plain cpu dict) or None.
+        # old-format prev_stat (plain cpu dict) or None
         prev_cpu_stat = prev_stat
         prev_net_bytes = None
         prev_disk = None
@@ -657,7 +654,7 @@ def read_all(prev_stat=None):
 
     dt = max(0.0, ts - prev_ts)
 
-    # ---- CPU ----
+    # --- CPU ---
     prev_total = prev_cpu_stat.get("total") if prev_cpu_stat else None
     cur_total = cur_cpu_stat.get("total") if cur_cpu_stat else None
     cpu_overall = _cpu_pct_delta(prev_total, cur_total)
@@ -671,30 +668,30 @@ def read_all(prev_stat=None):
         cls = "A76" if core_id in BIG_CORES else "A55"
         cpu_cores.append({"id": core_id, "pct": pct, "mhz": mhz, "cls": cls})
 
-    # ---- MEM ----
+    # --- mem ---
     total_kb, avail_kb = _read_meminfo()
     used_pct = 0.0
     if total_kb > 0:
         used_pct = max(0.0, min(100.0, (1.0 - (avail_kb / total_kb)) * 100.0))
 
-    # ---- GPU ----
+    # --- GPU ---
     gpu_pct, gpu_mhz = _read_gpu_load()
 
-    # ---- NPU ----
+    # --- NPU ---
     npu_cores = _read_npu_load()
     npu_mhz = _read_npu_mhz()
     npu_runtime = _read_npu_runtime()
 
-    # ---- THERMAL ----
+    # --- thermal ---
     zones = _read_thermal_zones()
 
-    # ---- NETWORK / BT ----
+    # --- network / BT ---
     net, cur_net_bytes = _read_net(prev_net_bytes, dt)
 
-    # ---- IR ----
+    # --- IR ---
     ir = _read_ir()
 
-    # ---- DISK / SWAP / LOAD / UPTIME / BATTERY ----
+    # --- disk / swap / load / uptime / battery ---
     sysinfo = _read_sysinfo(prev_disk, dt)
 
     snap = {
@@ -737,18 +734,16 @@ def read_all(prev_stat=None):
     return (snap, cur_stat)
 
 
-# =====================================================================
-# MODULE: render (pure, no I/O)
-# exposes: PURPLE, GREEN, AMBER, RED, FG, DIM, BG, fg, load_rgb, temp_rgb,
-#          hbar, sparkline, panel, banner
-# =====================================================================
+# --- render module (pure, no I/O): PURPLE, GREEN, AMBER, RED, FG, DIM, BG,
+# fg, load_rgb, temp_rgb, hbar, sparkline, panel, banner ---
 
 PURPLE = (180, 92, 255)   # frames, titles, banner, labels
 GREEN = (62, 245, 138)    # low load / cool
+BLOCK = (156, 200, 101)   # banner block text: same colour as h96-backup-gui block text
 AMBER = (255, 207, 58)    # mid
 RED = (255, 77, 94)       # high load / hot
-# One shade darker variants, used ONLY for the bar/gauge level ramp so the
-# meters sit back visually while status dots and accents keep the bright set.
+# One shade darker variants, used only for the bar/gauge level ramp so meters
+# sit back visually while status dots and accents keep the bright set.
 GREEN_D = (48, 190, 108)
 AMBER_D = (200, 162, 44)
 RED_D = (200, 60, 74)
@@ -804,8 +799,7 @@ def _pad_visible(s, target_width):
     if cur < target_width:
         return s + " " * (target_width - cur)
     if cur > target_width:
-        # Truncate on visible chars, stripping ANSI first (safe fallback —
-        # callers avoid over-length strings, this just guards width contracts).
+        # Truncate on visible chars, stripping ANSI first as a fallback guard.
         stripped = _ANSI_RE.sub("", s)
         return stripped[:target_width]
     return s
@@ -823,9 +817,8 @@ def hbar(pct, width, rgb=None, seg=True, fill=None):
     filled = max(0, min(width, filled))
     empty = width - filled
 
-    # "▊" is a 7/8-width block (Block Elements range, universally covered by
-    # monospace fonts): each filled cell leaves a hairline gap on its right, so
-    # the bar reads as discrete segments instead of one solid slab.
+    # "▊" is a 7/8-width block; each filled cell leaves a hairline gap on its
+    # right, so the bar reads as discrete segments instead of one solid slab.
     fill_ch = fill if fill else ("▊" if seg else "█")
     out = ""
     if filled:
@@ -931,10 +924,11 @@ def hpair(left_lines, right_lines, width, gap=2):
     return result
 
 
-# Layered header shades: deep purples for the banner texture.
-P_EDGE = (108, 54, 156)
-P_MID = (74, 38, 110)
-P_DIM = (48, 26, 72)
+# Layered header shades: deep purples for banner texture.
+P_EDGE = (72, 36, 104)
+P_MID = (50, 26, 74)
+P_DIM = (34, 19, 50)
+P_HI = (140, 70, 200)     # sparse bright blockers set into the texture
 
 _BANNER_ART = [
     "███████╗ ██████╗██████╗ ██╗   ██╗███╗   ███╗██████╗ ████████╗ ██████╗ ██████╗ ",
@@ -956,20 +950,23 @@ def _noise(x, seed):
 
 
 def _noise_cell(x, width, seed):
-    """One sporadic texture cell: dense dark speckle at the edges thinning
-    into scattered dim dashes and gaps toward the centre."""
+    """One sporadic texture cell: sparse dark speckle, denser at the edges and
+    thinning into scattered dim dashes and gaps toward the centre, with a few
+    bright solid blockers on an independent hash."""
     half = max(1.0, (width - 1) / 2.0)
     e = min(x, width - 1 - x) / half
     d = 1.0 - e
+    if _noise(x, seed + 977) < 0.03 + d * 0.04:
+        return fg("\u2588", P_HI)
     r = _noise(x, seed)
-    if r < d * 0.55:
-        return fg("▓", P_EDGE)
-    if r < d * 0.55 + 0.22:
-        return fg("▒", P_MID)
-    if r < d * 0.55 + 0.40:
-        return fg("░", P_DIM)
-    if r < 0.72:
-        return fg("╌", P_DIM)
+    if r < d * 0.25:
+        return fg("\u2593", P_EDGE)
+    if r < d * 0.25 + 0.08:
+        return fg("\u2592", P_MID)
+    if r < d * 0.25 + 0.18:
+        return fg("\u2591", P_DIM)
+    if r < d * 0.25 + 0.28:
+        return fg("\u254c", P_DIM)
     return " "
 
 
@@ -991,14 +988,14 @@ def _texture_row(width, seed):
 
 
 def banner(width):
-    """Block-letter SCRUMPTOP in GREEN, set into a dark sporadic purple
+    """Block-letter SCRUMPTOP in BLOCK blue, set into a dark sporadic purple
     texture, with a hardware subtitle rule. Static per width, so it is
     rendered once and cached (it was one of the larger per-frame costs)."""
     cached = _banner_cache.get(width)
     if cached is not None:
         return cached
     if width < 40:
-        rows = [fg("S C R U M P T O P".center(width), GREEN)]
+        rows = [fg("S C R U M P T O P".center(width), BLOCK)]
         _banner_cache[width] = rows
         return rows
     art_w = max(len(r.rstrip()) for r in _BANNER_ART)
@@ -1011,7 +1008,7 @@ def banner(width):
             ax = x - pad
             ch = art[ax] if 0 <= ax < len(art) else " "
             if ch != " ":
-                cells.append(fg(ch, GREEN))
+                cells.append(fg(ch, BLOCK))
             else:
                 cells.append(_noise_cell(x, width, ri + 1))
         rows.append("".join(cells))
@@ -1023,9 +1020,7 @@ def banner(width):
     return rows
 
 
-# =====================================================================
-# MODULE: app (exposes: render_frame, run)
-# =====================================================================
+# --- app module: exposes render_frame, run ---
 
 def _init_state():
     """Initialize app state: history deques + bench status."""
@@ -1096,8 +1091,8 @@ def _run_npu_bench(state):
         gops_str = "N/A"
         tops_str = "N/A"
         found = False
-        # 'bench all' prints an AGGREGATE line last, so the final GOPS/TOPS match
-        # is the whole-NPU total; per-core lines above it are overwritten.
+        # 'bench all' prints an aggregate line last (whole-NPU total); per-core
+        # lines above it are overwritten.
         for line in output.split("\n"):
             m = re.search(r"([\d.]+)\s*GOPS", line, re.IGNORECASE)
             if m:
@@ -1109,7 +1104,7 @@ def _run_npu_bench(state):
                 found = True
 
         if not found and re.search(r"not installed|h96-npu-setup", output, re.IGNORECASE):
-            # runtime is fetch-on-demand and absent; tell the user how to enable it
+            # runtime is fetch-on-demand and absent; tell user how to enable it
             state["bench_result"] = "SETUP"
         else:
             state["bench_result"] = (gops_str, tops_str)
@@ -1269,7 +1264,7 @@ def _render_npu_panel(snap, width, state):
         bar_str = hbar(pct, bar_width, load_rgb(pct))
         body_lines.append(f"  Core{i}: {bar_str} {pct:5.1f}%")
 
-    # bench result rides on the temp line, right of the NPU temp readout
+    # bench result rides on the temp line, right of NPU temp readout
     if state["bench_running"]:
         bench_suffix = f" | {fg('benching 3c (b=stop)', AMBER)}"
     elif state["bench_result"] == "SETUP":
@@ -1299,7 +1294,7 @@ def _render_net_panel(snap, width):
     ir = snap["ir"]
     body_lines = []
 
-    # ---- ETH ----
+    # --- ETH ---
     eth = net["eth0"]
     eth_up = eth["state"] == "up"
     eth_dot = fg("●", GREEN if eth_up else DIM)
@@ -1311,7 +1306,7 @@ def _render_net_panel(snap, width):
         speed_str = fg(f"{eth['state']:>8s}", DIM)
     body_lines.append(f"  {eth_dot} Eth  {speed_str}  RX {eth_rx}  TX {eth_tx}")
 
-    # ---- WIFI ----
+    # --- WiFi ---
     wlan = net["wlan0"]
     wlan_up = wlan["state"] == "up"
     wlan_dot = fg("●", GREEN if wlan_up else DIM)
@@ -1325,7 +1320,7 @@ def _render_net_panel(snap, width):
         sig_str = fg(f"{wlan['state']:>8s}", DIM)
     body_lines.append(f"  {wlan_dot} WiFi {sig_str}  RX {wlan_rx}  TX {wlan_tx}")
 
-    # ---- BLUETOOTH ----
+    # --- Bluetooth ---
     bt = net["bt"]
     if not bt["present"]:
         bt_dot = fg("●", DIM)
@@ -1338,7 +1333,7 @@ def _render_net_panel(snap, width):
         bt_line = f"  {bt_dot} BT   {fg('on', GREEN)}  {bt['connections']} device(s)"
     body_lines.append(bt_line)
 
-    # ---- IR ----
+    # --- IR ---
     if not ir["present"]:
         ir_dot = fg("●", DIM)
         ir_line = f"  {ir_dot} IR   {fg('absent', DIM)}"
@@ -1358,7 +1353,7 @@ def _render_system_panel(snap, width):
     """System panel: disk bar, I/O rates, swap bar, load, uptime, batteries."""
     body_lines = []
 
-    # ---- DISK ----
+    # --- disk ---
     disk_pct = snap["disk"]["used_pct"]
     disk_total_gb = snap["disk"]["total_gb"]
     disk_used_gb = disk_total_gb * (disk_pct / 100.0)
@@ -1368,12 +1363,12 @@ def _render_system_panel(snap, width):
         f"  Disk: {disk_bar} {disk_pct:5.1f}%  {disk_used_gb:6.1f}/{disk_total_gb:6.1f}GB"
     )
 
-    # ---- I/O RATES ----
+    # --- I/O rates ---
     read_str = _fmt_rate(snap["io"]["read_bps"])
     write_str = _fmt_rate(snap["io"]["write_bps"])
     body_lines.append(f"  I/O:  Read {read_str}   Write {write_str}")
 
-    # ---- SWAP ----
+    # --- swap ---
     swap_pct = snap["swap"]["used_pct"]
     swap_total_mb = snap["swap"]["total_mb"]
     if swap_total_mb > 0:
@@ -1383,7 +1378,7 @@ def _render_system_panel(snap, width):
     else:
         body_lines.append(f"  Swap: {fg('none', DIM)}")
 
-    # ---- LOAD / UPTIME ----
+    # --- load / uptime ---
     load = snap["load"]
     uptime_s = snap["uptime_s"]
     d = int(uptime_s // 86400)
@@ -1395,13 +1390,12 @@ def _render_system_panel(snap, width):
         f"   Up: {uptime_str}"
     )
 
-    # center-thermal (package interior) -- the only zone not shown on a
-    # component bar elsewhere
+    # center-thermal (package interior): only zone with no component bar
     center_t = snap.get("temps", {}).get("center", 0.0)
     if center_t:
         body_lines.append(f"  Pkg temp: {_temp_gauge(center_t, 5, 'center')}")
 
-    # ---- PERIPHERAL BATTERIES ----
+    # --- peripheral batteries ---
     _LEVEL_RGB = {"full": GREEN, "high": GREEN, "normal": GREEN,
                   "low": AMBER, "critical": RED}
     for b in snap["batteries"]:
@@ -1496,9 +1490,8 @@ def render_frame(snap, cols, rows, state):
     blocks.append(_render_gpu_panel(snap, interior))
     blocks.append(_render_mem_panel(snap, interior))
     blocks.append(_render_npu_panel(snap, interior, state))
-    # no dedicated TEMPS panel: every zone now rides its component's own bar
-    # (soc on Overall, bigcore0/1 + littlecore per-core, gpu/npu on theirs);
-    # the one zone with no home, center-thermal, lives in the SYSTEM panel.
+    # no dedicated temps panel: every zone rides its component's own bar;
+    # center-thermal has no home and lives in the system panel.
 
     if inner_w >= 96:
         half_interior = max(4, (inner_w - 2) // 2 - 2)
@@ -1513,13 +1506,12 @@ def render_frame(snap, cols, rows, state):
     for block in blocks:
         lines.extend(block)
 
-    # Frame top/bottom eat two rows; everything else fits between the rails.
+    # frame top/bottom eat two rows; everything else fits between rails
     body_rows = rows - 2
     if len(lines) > body_rows:
         lines = lines[:body_rows]
     else:
-        # fill bottom deadspace with the banner's sporadic purple texture
-        # instead of blank rows, so the frame reads as one piece
+        # fill bottom deadspace with banner's purple texture instead of blank rows
         for r in range(body_rows - len(lines)):
             lines.append(_texture_row(inner_w, 101 + r))
 
@@ -1535,7 +1527,7 @@ def render_frame(snap, cols, rows, state):
         hint = f"{poll}" + ("  [PAUSED]" if state.get("paused") else "")
     if state.get("paused") and state.get("show_help", True):
         hint += "  [PAUSED]"
-    # bottom border must fit the hint; fall back to a plain border when narrow
+    # bottom border must fit the hint; fall back to plain border when narrow
     if len(hint) + 6 <= cols:
         out.append(_frame_bottom(cols, hint))
     else:
@@ -1547,7 +1539,7 @@ def render_frame(snap, cols, rows, state):
     return out
 
 
-# ---- terminal handling ----
+# --- terminal handling ---
 
 class RawMode:
     """Context manager for raw terminal mode; restores prior settings on exit."""
@@ -1667,8 +1659,7 @@ def run():
 
     if args.snapshot:
         prev_stat = None
-        # Sample twice (net/disk counters included) so rate fields are
-        # non-zero in a single-shot snapshot instead of always reading 0.
+        # sample twice so rate fields are non-zero in a single-shot snapshot
         _, prev_stat = read_all(prev_stat)
         time.sleep(0.15)
         snap, prev_stat = read_all(prev_stat)
@@ -1687,7 +1678,7 @@ def run():
         sys.stdout.flush()
         return 0
 
-    # Interactive mode.
+    # interactive mode
     state = _init_state()
     state["interval"] = min(10.0, max(0.25, args.interval))
     prev_stat = None
@@ -1704,8 +1695,8 @@ def run():
         _ansi_enter_alt_screen()
         alt_screen_active = True
         _ansi_hide_cursor()
-        # Disable auto-wrap: every frame line is exactly terminal-width, and
-        # without this, painting the bottom-right cell scrolls some terminals.
+        # disable auto-wrap: frame lines are exactly terminal-width; without this,
+        # painting the bottom-right cell scrolls some terminals
         sys.stdout.write("\x1b[?7l")
         _ansi_clear_screen()
 
@@ -1723,12 +1714,9 @@ def run():
             if args.rows:
                 rows = args.rows
             while running:
-                # Event-driven wait: block in select() until a key is ready or
-                # the next refresh is due, instead of a 10 ms busy-poll. Idle
-                # wakeups drop from ~100/s to the refresh rate, and keypresses
-                # are handled the instant they arrive. The 0.1 s cap keeps a
-                # pending SIGWINCH resize flag responsive (the handler only sets
-                # a flag, so select is not interrupted straight back to us).
+                # event-driven wait: block in select() until a key is ready or the
+                # next refresh is due, instead of a busy-poll; 0.1s cap keeps a pending
+                # SIGWINCH resize flag responsive
                 timeout = last_refresh + state["interval"] - time.time()
                 timeout = max(0.0, min(0.1, timeout))
                 try:
@@ -1773,7 +1761,7 @@ def run():
                         cols = args.cols
                     if args.rows:
                         rows = args.rows
-                    _ansi_clear_screen()   # geometry changed: one real clear
+                    _ansi_clear_screen()   # geometry changed: one clear
                     prev_frame = None      # force a full repaint
                     last_refresh = 0.0     # and repaint immediately at the new size
 
@@ -1783,13 +1771,9 @@ def run():
                     _update_history(state, snap)
 
                     frame = render_frame(snap, cols, rows, state)
-                    # Line-diff rendering: only lines that CHANGED since the
-                    # previous frame are rewritten (cursor-addressed), inside
-                    # one DEC-2026 synchronized write. On an idle box most
-                    # lines are identical, so per-tick output drops from the
-                    # full ~20 KB frame to a few hundred bytes, which is less
-                    # work for the terminal, the compositor, and the GPU.
-                    # Geometry change = full repaint (prev no longer aligns).
+                    # line-diff rendering: only changed lines are rewritten
+                    # (cursor-addressed) inside one DEC-2026 synchronized write.
+                    # Geometry change forces a full repaint.
                     if prev_frame is None or len(prev_frame) != len(frame):
                         sys.stdout.write(
                             "\x1b[?2026h\x1b[H" + "\r\n".join(frame) + "\x1b[?2026l"
@@ -1822,7 +1806,7 @@ def run():
         return 0
 
     finally:
-        # Always restore the terminal, even on an unhandled exception.
+        # always restore the terminal, even on an unhandled exception
         sys.stdout.write("\x1b[?7h")   # re-enable auto-wrap
         _ansi_show_cursor()
         if alt_screen_active:

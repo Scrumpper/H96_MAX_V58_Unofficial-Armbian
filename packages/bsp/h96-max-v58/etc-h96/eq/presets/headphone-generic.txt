@@ -1,6 +1,4 @@
-# Mild generic headphone tilt (Harman-ish): gentle bass shelf, slight
-# upper-mid ear-gain, tame lower-treble peak. Replace with a real AutoEQ
-# file for your specific headphones (https://github.com/jaakkopasanen/AutoEq).
+# Mild generic headphone tilt (Harman-ish); replace with an AutoEQ file for your headphones (https://github.com/jaakkopasanen/AutoEq).
 Preamp: -4.5 dB
 Filter 1: ON LSC Fc 105 Hz Gain 4.0 dB Q 0.707
 Filter 2: ON PK Fc 200 Hz Gain -1.0 dB Q 1.00

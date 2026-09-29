@@ -1,15 +1,5 @@
 #!/bin/bash
-# h96-npu-setup — install the Rockchip RKNN inference runtime, on demand.
-#
-# WHY THIS IS A SEPARATE, OPT-IN STEP AND NOT BAKED INTO THE IMAGE:
-# librknnrt.so is NOT open source. It ships under the "RKNN SDK License", a
-# binding agreement with Rockchip whose clause 1.2 permits reproducing copies
-# "on an internal basis only". This image is published publicly under GPL-2.0,
-# so redistributing that binary inside it is not permissible. Instead you fetch
-# it yourself, from Rockchip, having seen their licence. The NPU hardware and
-# kernel driver are fully working without it -- see 'h96-npu'.
-#
-# Deployed to /usr/local/sbin/h96-npu-setup.
+# h96-npu-setup: install the proprietary Rockchip RKNN inference runtime on demand; not bundled because its RKNN SDK License permits internal-use copies only, incompatible with this image's GPL-2.0 distribution. NPU hardware/driver work without it; see h96-npu.
 
 set -uo pipefail
 
@@ -83,7 +73,7 @@ echo "  downloading..."
 curl -fsSL --retry 3 --connect-timeout 15 -o "$tmp/librknnrt.so" "$RUNTIME_URL" \
     || die "download failed — check the network and try again (nothing was changed)"
 
-# validate before installing: it must be an aarch64 shared object, not an HTML error page
+# Validate before installing: must be an aarch64 shared object, not an HTML error page.
 case "$(file -b "$tmp/librknnrt.so" 2>/dev/null)" in
     *"ELF 64-bit"*aarch64*) : ;;
     *) die "downloaded file is not an aarch64 shared object (nothing was changed)" ;;
@@ -96,11 +86,7 @@ echo "  runtime version: $ver"
 install -m 0644 "$tmp/librknnrt.so" "$DEST" || die "install to $DEST failed"
 ldconfig
 
-# Confirm the loader can see it. Capture the match with awk instead of testing
-# `ldconfig -p | grep -q` directly: under `set -o pipefail`, grep -q exits on the
-# first match and SIGPIPEs ldconfig, so the pipeline reports FAILURE exactly when
-# the library IS present -- the same pitfall cmd_bench documents. Fall back to a
-# direct file check so a cache miss never fails a valid install.
+# Confirm the loader sees it; capture with awk instead of grep -q, which would SIGPIPE ldconfig under pipefail. Fall back to a direct file check for a cache miss.
 if [ -n "$(ldconfig -p 2>/dev/null | awk '/librknnrt\.so/{print; exit}')" ] || [ -e "$DEST" ]; then
     echo "  installed: $DEST"
 else

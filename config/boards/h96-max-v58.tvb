@@ -49,13 +49,13 @@ function post_family_config__h96_pin_kernel_source() {
 # The framework's own armbian_kernel_config__* hooks rewrite parts of any user-supplied
 # .config (lib/functions/compilation/armbian-kernel.sh): they set CONFIG_LOCALVERSION to ""
 # and CONFIG_RT_GROUP_SCHED=y, and turn BTF debug info on (the shipped kernel has it on as
-# well; do not pass KERNEL_BTF=no). This hook runs after them and restores the shipped v6.1
+# well; do not pass KERNEL_BTF=no). This hook runs after them and restores the shipped v6.2
 # values. Note that the framework
 # also passes LOCALVERSION=-vendor-rk35xx on the make command line, so a framework-built
-# kernel reports 6.1.115-h96v58v1-vendor-rk35xx; the released image was built outside the
-# framework and reports 6.1.115-h96v58v1. Name only: the Image and modules are configured alike.
+# kernel reports 6.1.115-h96v58v2-vendor-rk35xx; the released image was built outside the
+# framework and reports 6.1.115-h96v58v2. Name only: the Image and modules are configured alike.
 function custom_kernel_config__h96_restore_shipped_options() {
-	kernel_config_set_string LOCALVERSION "-h96v58v1"
+	kernel_config_set_string LOCALVERSION "-h96v58v2"
 	# off since v6.1 (they were on in v6.0); the full config carries them, this keeps a
 	# merged configuration honest
 	kernel_config_set_n SLUB_DEBUG

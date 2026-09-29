@@ -1,0 +1,18 @@
+#!/bin/sh
+# Unbind xpad from third-party pads' duplicate headset interface (ff/5d/3); idempotent.
+case "${1:-}" in
+  -h|--help)
+    echo "usage: h96-xpad-dedup   (root)"
+    echo "  Unbinds xpad from duplicate headset interface (class ff/5d, protocol 3) of"
+    echo "  third-party Xbox 360 style pads, so one pad no longer shows as two joysticks."
+    echo "  Run by udev on plug-in and at boot."
+    exit 0;;
+esac
+for i in /sys/bus/usb/drivers/xpad/*:*; do
+  [ -e "$i" ] || continue
+  [ "$(cat "$i/bInterfaceClass" 2>/dev/null)" = ff ] || continue
+  [ "$(cat "$i/bInterfaceSubClass" 2>/dev/null)" = 5d ] || continue
+  [ "$(cat "$i/bInterfaceProtocol" 2>/dev/null)" = 03 ] || continue
+  n=$(basename "$i"); echo "$n" > /sys/bus/usb/drivers/xpad/unbind && echo "h96-xpad-dedup: unbound duplicate pad interface $n"
+done
+exit 0

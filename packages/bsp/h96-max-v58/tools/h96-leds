@@ -1,0 +1,87 @@
+#!/bin/bash
+# front-panel LED control: net-led, hdd-led, work-led. Modes: steady (default), blink (opt-in), off.
+set -uo pipefail
+NET=/sys/class/leds/net-led
+HDD=/sys/class/leds/hdd-led
+WORK=/sys/class/leds/work-led
+CONF=/etc/h96/leds.conf
+
+usage(){
+cat <<'HLP'
+h96-leds status|on|blink|off|--help
+
+status  mode + current trigger and brightness for net-led, hdd-led, work-led
+on      steady (default): net-led lit while Ethernet link is up, hdd-led and work-led lit
+blink   activity: net-led blinks on Ethernet traffic, hdd-led on eMMC access, work-led heartbeat
+off     all three dark
+
+Choice is saved and applied at every boot. Needs root.
+HLP
+}
+
+cur(){ sed -n 's/.*\[\(.*\)\].*/\1/p' "$1/trigger" 2>/dev/null; }
+mode(){ sed -n 's/^MODE=\(steady\|blink\)$/\1/p' "$CONF" 2>/dev/null | tail -1; }
+
+status(){
+  local m="${M:-$(mode)}"
+  echo "mode: $(systemctl is-enabled --quiet h96-leds.service 2>/dev/null && echo "${m:-steady}" || echo off)"
+  for p in "$NET" "$HDD" "$WORK"; do
+    printf '%-10s trigger=%-10s brightness=%s\n' \
+      "$(basename "$p")" "$(cur "$p")" "$(cat "$p/brightness" 2>/dev/null)"
+  done
+}
+
+# raw sysfs writes only; also called by ExecStart/ExecStop (no systemctl inside, no recursion).
+steady(){
+  echo netdev     > "$NET/trigger"
+  echo eth0       > "$NET/device_name"
+  echo 1          > "$NET/link"
+  echo 0          > "$NET/tx"
+  echo 0          > "$NET/rx"
+  echo default-on > "$HDD/trigger"
+  echo default-on > "$WORK/trigger"
+}
+
+blink(){
+  echo netdev    > "$NET/trigger"
+  echo eth0      > "$NET/device_name"
+  echo 1         > "$NET/link"
+  echo 1         > "$NET/tx"
+  echo 1         > "$NET/rx"
+  echo mmc0      > "$HDD/trigger"
+  echo heartbeat > "$WORK/trigger"
+}
+
+apply(){ if [ "$(mode)" = blink ]; then blink; else steady; fi; }
+
+clear_(){
+  echo none > "$NET/trigger"
+  echo none > "$HDD/trigger"
+  echo none > "$WORK/trigger"
+}
+
+save(){ mkdir -p "${CONF%/*}"; printf 'MODE=%s\n' "$1" > "$CONF"; }
+
+# on/blink/off also flip the persisted systemd state; first boot enables steady.
+set_mode(){
+  save "$1"; M="$1"; apply
+  systemctl enable h96-leds.service 2>/dev/null || true
+  status
+}
+
+off(){
+  clear_
+  systemctl disable h96-leds.service 2>/dev/null || true
+  status
+}
+
+case "${1:---help}" in
+  status) status ;;
+  on) set_mode steady ;;
+  blink) set_mode blink ;;
+  off) off ;;
+  apply) apply ;;
+  clear) clear_ ;;
+  --help|-h) usage ;;
+  *) usage >&2; exit 1 ;;
+esac

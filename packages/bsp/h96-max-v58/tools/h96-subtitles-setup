@@ -112,7 +112,7 @@ def cmd_install(lang):
     sums = load_sums()
     tmp = tempfile.mkdtemp(prefix="h96-subs-setup-")
     try:
-        # ---- engine ----
+        # --- engine ---
         if os.path.isfile(f"{BINDIR}/sherpa-onnx"):
             print("  engine already installed")
         else:
@@ -141,7 +141,7 @@ def cmd_install(lang):
                             shutil.copy2(os.path.join(d, f), os.path.join(LIBDIR, f))
             print(f"    installed {BINDIR}/sherpa-onnx")
 
-        # ---- model ----
+        # --- model ---
         name = MODEL_URLS[lang].rsplit("/", 1)[-1].replace(".tar.bz2", "")
         if os.path.isdir(os.path.join(MODELS, name)):
             print(f"  model {name} already installed")

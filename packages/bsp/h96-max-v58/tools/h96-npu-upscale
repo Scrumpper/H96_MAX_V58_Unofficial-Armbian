@@ -61,9 +61,7 @@ def have(cmd):
     return shutil.which(cmd) is not None
 
 
-# --------------------------------------------------------------------------- #
-# RKNN C API (aarch64) via ctypes                                             #
-# --------------------------------------------------------------------------- #
+# --- RKNN C API (aarch64) via ctypes ---
 RKNN_MAX_DIMS = 16
 RKNN_MAX_NAME_LEN = 256
 
@@ -203,7 +201,7 @@ class RknnEngine:
     @staticmethod
     def _hw_from_attr(a):
         dims = list(a.dims[:a.n_dims])
-        # Pull channel dim (==3) out, the remaining spatial pair is H,W.
+        # pull channel dim (==3) out; the remaining spatial pair is H,W
         spatial = [d for d in dims if d != 1 and d != 3]
         if len(spatial) >= 2:
             return spatial[0], spatial[1]
@@ -266,9 +264,7 @@ class RknnEngine:
             pass
 
 
-# --------------------------------------------------------------------------- #
-# Tiled image upscaling with feather blending                                 #
-# --------------------------------------------------------------------------- #
+# --- tiled image upscaling with feather blending ---
 def upscale_array(eng, img, overlap, progress=True):
     import numpy as np
     tile_h, tile_w = eng.in_h, eng.in_w
@@ -293,7 +289,7 @@ def upscale_array(eng, img, overlap, progress=True):
     acc = np.zeros((out_H, out_W, 3), dtype=np.float32)
     wsum = np.zeros((out_H, out_W, 1), dtype=np.float32)
 
-    # feather weight for one output tile (linear ramp over the overlap band)
+    # feather weight for one output tile: linear ramp over the overlap band
     def ramp(n, band):
         w = np.ones(n, dtype=np.float32)
         if band > 0:
@@ -353,9 +349,7 @@ def cmd_image(args, eng):
     print(f"  saved : {args.output}")
 
 
-# --------------------------------------------------------------------------- #
-# Video: split -> upscale frames -> reassemble (hardware encode)              #
-# --------------------------------------------------------------------------- #
+# --- video: split, upscale frames, reassemble (hardware encode) ---
 def _probe_fps(path):
     if not have("ffprobe"):
         return None
@@ -406,7 +400,7 @@ def cmd_video(args, eng):
         Image.fromarray(out).save(os.path.join(frames_out, name))
         print(f"\r  frame {i}/{n}", end="", flush=True)
     print()
-    # pick an encoder: hardware first, then the box has no libx264
+    # pick an encoder: hardware first, since the box has no libx264
     enc = None
     try:
         encs = subprocess.check_output(["ffmpeg", "-v", "0", "-encoders"], text=True)
@@ -438,7 +432,6 @@ def cmd_video(args, eng):
     print(f"  saved : {args.output}")
 
 
-# --------------------------------------------------------------------------- #
 def main():
     ap = argparse.ArgumentParser(
         prog="h96-npu-upscale",

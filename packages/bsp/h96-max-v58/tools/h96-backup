@@ -1,0 +1,910 @@
+#!/usr/bin/env python3
+# =============================================================================
+# h96-backup - capture an H96 Max V58 (RK3588 Armbian) setup into one archive.
+#
+# Reflashing this box wipes the whole eMMC: the console base is restored, but
+# every on-demand feature installed on top (desktop, emulators, Waydroid,
+# Widevine, gaming stack, NPU runtime) and every user config/save is lost.
+# h96-backup records WHICH features were present (a manifest) and bundles the
+# passive data that cannot be re-downloaded (configs, WiFi creds, Waydroid
+# /data, emulator saves, wine prefix). h96-restore replays it after a reflash.
+#
+#   h96-backup                 write an archive under the desktop user's home
+#   h96-backup <dest>          write to <dest> (a dir, or an explicit path)
+#   h96-backup --with-images   also bundle the Waydroid image stashes (multi-GB;
+#                              default OFF - restore re-downloads them instead)
+#   h96-backup --with-vm-disks also bundle h96-vm disk images (can be multi-GB;
+#                              default OFF - only VM definitions are captured)
+#   h96-backup --with-proton-prefixes  also bundle Steam ARM Proton prefixes
+#                              (can be multi-GB; default OFF)
+#   h96-backup --with-steam-runtime  also bundle the Steam client program itself
+#                              (can be multi-GB; default OFF - it re-downloads)
+#   h96-backup --only a,b      capture only these categories
+#   h96-backup --skip a,b      capture everything except these categories
+#   h96-backup --emulators x,y limit the emulator list (names as in h96-emulators)
+#   h96-backup --probe-json    print what is on this box as JSON and exit (no root)
+#
+# Categories: desktop configs emulators waydroid waydroid-images widevine gaming
+# npu wifi autologin system vm. h96-backup-gui is the graphical front end.
+#
+# The archive is tar + zstd when zstd is present (.tar.zst), else gzip
+# (.tar.gz). Auto-elevates via sudo (reads root-only WiFi confs + system state).
+# No feature is required: anything absent is skipped cleanly. Reads a backup
+# taken on v5.0.1 or later; restore is the tool that adapts it to this image.
+# =============================================================================
+import os, sys, io, json, pwd, re, time, shutil, subprocess, tarfile, datetime, glob
+
+SCHEMA = 2
+TOOL_VERSION = "2.1"   # h96-backup/h96-restore/h96-backup-gui release version
+
+HELP = f"""h96-backup v{TOOL_VERSION} - capture an H96 Max V58 setup into one archive.
+
+  h96-backup                 write an archive under the desktop user's home
+  h96-backup <dir>           write into <dir>
+  h96-backup <path>          write to an explicit path (extension appended)
+  h96-backup --with-images   also bundle the Waydroid image stashes (multi-GB;
+                             default OFF - restore re-downloads them otherwise)
+  h96-backup --with-vm-disks also bundle h96-vm disk images (can be multi-GB;
+                             default OFF - only VM definitions are captured)
+  h96-backup --with-proton-prefixes  also bundle Steam ARM Proton prefixes
+                             (can be multi-GB; default OFF)
+  h96-backup --with-steam-runtime  also bundle the Steam client program itself
+                             (can be multi-GB; default OFF - it re-downloads)
+  h96-backup --only a,b      capture only these categories
+  h96-backup --skip a,b      capture everything except these categories
+  h96-backup --emulators x,y limit the emulator list (names as in h96-emulators)
+  h96-backup --probe-json    print what is on this box as JSON and exit (no root)
+
+Categories: desktop configs emulators waydroid waydroid-images widevine gaming
+npu wifi autologin system vm (waydroid-images is the same as --with-images).
+
+Records a manifest of which features are present (desktop, emulators, Waydroid,
+Widevine, gaming, NPU runtime, opt-in services, VMs) and bundles the passive
+data that cannot be re-downloaded (configs, WiFi confs, Waydroid /data,
+emulator saves, wine prefix, Steam ARM home, VM definitions). tar + zstd when
+available (.tar.zst), else gzip (.tar.gz). Auto-elevates via sudo. Replay with
+h96-restore, which supports a backup made on v5.0.1 or any later release.
+h96-backup-gui is the graphical front end.
+"""
+
+CATEGORIES = ("desktop", "configs", "emulators", "waydroid", "waydroid-images",
+              "widevine", "gaming", "npu", "wifi", "autologin", "system", "vm")
+
+def parse_categories(spec, flag):
+    out = []
+    for c in spec.split(","):
+        c = c.strip()
+        if not c: continue
+        if c not in CATEGORIES:
+            die(f"{flag}: unknown category '{c}' (choose from {', '.join(CATEGORIES)})")
+        out.append(c)
+    return out
+
+# --- feature-detection paths (kept in step with the other h96- tools) --------
+EXTRA_IMAGES = "/etc/waydroid-extra/images"            # waydroid auto-detect dir
+WAYDROID_STASHES = {                                   # stash name -> dir on disk
+    "gpu":    "/etc/waydroid-extra/gpu-images",        # Panthor hardware images (~5 GB)
+    "los":    "/etc/waydroid-extra/los-images",        # official LineageOS download
+    "custom": "/etc/waydroid-extra/custom-images",     # user-supplied image pair
+}
+GPU_STASH, LOS_STASH, CUSTOM_STASH = (WAYDROID_STASHES[k] for k in ("gpu", "los", "custom"))
+WIDEVINE_CHROMIUM = "/usr/lib/chromium/WidevineCdm"    # system-wide CDM wiring
+WIDEVINE_STORE    = "/var/lib/widevine/WidevineCdm/manifest.json"
+NPU_RUNTIME       = "/usr/lib/aarch64-linux-gnu/librknnrt.so"
+GAMING_ROOT       = "/opt/h96-gaming"
+WPA_DIR           = "/etc/wpa_supplicant"
+LIGHTDM_CONF      = "/etc/lightdm/lightdm.conf"
+LIGHTDM_CONF_D    = "/etc/lightdm/lightdm.conf.d"
+
+# -- v6.2 system state (new in schema 2) --------------------------------------
+H96_RELEASE_FILE  = "/etc/h96-release"          # H96_RELEASE=... source-version line
+STEAM_ARM_CONF    = "/etc/h96/steam-arm.conf"   # ARMHOME_DIR, GAMEUSER, COMPONENTS_ON/OFF
+DISPLAY_HDMI20_OFF = "/etc/h96/display-hdmi20.off"  # owner opt-out flag (empty file)
+DISPLAY_NOLOCK    = "/etc/h96/display-nolock"   # SCDC lock-failed record (empty file)
+DISPLAY_COLOR     = "/etc/h96/display-color"    # ycbcr or auto; absent = rgb
+DISPLAY_RANGE     = "/etc/h96/display-range"    # limited or auto; absent = full
+DISPLAY_FRL_OFF   = "/etc/h96/display-frl.off"  # owner opt-out flag (empty file)
+DISPLAY_DIR       = "/etc/h96/display"          # per-sink color/range confs, <key>.conf
+PER_DISPLAY_COLOR_VALUES = ("ycbcr", "auto", "rgb")
+PER_DISPLAY_RANGE_VALUES = ("full", "limited", "auto")
+HOTSPOT_CONF      = "/etc/h96/hotspot.conf"     # SSID/password, 0600; hotspot itself stays off
+EQ_ACTIVE         = "/etc/h96/eq/active.txt"    # active EQ preset name
+VM_CONF           = "/etc/h96/vm.conf"          # h96-vm defaults (MEM/CPUS/DISK overrides)
+LEDS_CONF         = "/etc/h96/leds.conf"        # h96-leds mode (steady|blink)
+CEC_WAKE_OFF      = "/etc/h96/cec-wake.off"     # h96-cec wake off (empty file)
+CEC_STANDBY_BLANK = "/etc/h96/cec-standby-on-blank"  # h96-cec standby-on-blank on (empty file)
+VM_VAR_ROOT       = "/var/lib/h96-vm"           # <name>/ per VM: disk.qcow2, meta, seed, logs
+# hdmi-sink.json is deliberately never captured: it is a detect cache, wrong on
+# a different sink/cable; restore tells the owner to run `h96-display detect`.
+# Opt-in services: default disabled, restore only enables when the backup had
+# them enabled. h96-scdc (default ON) is governed by DISPLAY_HDMI20_OFF instead
+# (its unit has ConditionPathExists=!.../display-hdmi20.off) so it is not here.
+# h96-edid-adapt is retired on v6.2 and is intentionally never in this list.
+# pinhole loader mode does not ship (tested, doesn't work); never captured.
+OPT_IN_SERVICES   = ("h96-leds.service", "h96-cec.service")
+# Native Steam always keeps its data under HOME/.local/share/Steam; paths here
+# are relative to the Steam ARM home (steam_arm_home()), not to steamapps
+# itself. Game library content is re-installable from Steam's cloud; always
+# excluded, no flag to include it (there is nothing worth restoring there).
+STEAM_DATA_DIR = ".local/share/Steam"
+STEAM_LIB_EXCLUDE = tuple(f"{STEAM_DATA_DIR}/steamapps/{d}" for d in
+                          ("common", "downloading", "shadercache", "workshop"))
+# Proton prefixes (saves, per-game settings, but also game-written cache/DLC
+# copies) measured at several GB on one box; excluded by default like the
+# Waydroid image stashes, included with --with-proton-prefixes.
+STEAM_COMPATDATA = f"{STEAM_DATA_DIR}/steamapps/compatdata"
+# Steam's own client runtime: excluded by default like the above, included
+# with --with-steam-runtime. "steamrtarm64" is h96-steam-arm-install.sh's own
+# definition of the client program folder (the only dir it ever rm -rf's and
+# replaces on reinstall/update; see its "9/11 client package" step) -- using
+# that instead of a hand-picked list keeps this Steam-version-independent.
+# The rest are runtime/UI containers Steam's own bootstrapper (steam.sh)
+# re-creates on first launch if missing, on any Linux Steam install, not
+# specific to this image; never config/userdata/steamapps manifests.
+STEAM_RUNTIME_EXCLUDE = tuple(f"{STEAM_DATA_DIR}/{d}" for d in (
+    "steamrtarm64", "steamrt32", "steamrt64",              # h96 native-ARM client + legacy runtimes
+    "ubuntu12_32", "ubuntu12_64", "linux32", "linux64", "linuxarm64", "androidarm64",
+    "steamui", "clientui", "appcache", "package", "bin",
+    "legacycompat", "resource", "public", "graphics", "tenfoot",
+    "friends", "controller_base", "depotcache",
+))
+# A manifest for a game whose steamapps/common/<installdir> content is not
+# archived (excluded by `skip` above, or simply absent) is dropped: restore
+# would otherwise write an appmanifest for a game that is not actually there.
+APPMANIFEST_RE = re.compile(r"appmanifest_\d+\.acf$")
+
+def acf_installdir(path):
+    """installdir value out of a Steam .acf manifest file on disk, or None."""
+    try:
+        text = open(path, errors="replace").read()
+    except OSError:
+        return None
+    m = re.search(r'"installdir"\s*"([^"]*)"', text)
+    return m.group(1) if m else None
+
+def common_dir_captured(steam_home, rel_root, installdir, skip):
+    """True if steamapps/common/<installdir> would land in this archive: not
+    excluded by `skip` and actually present with content on disk."""
+    rel_common = os.path.normpath(os.path.join(rel_root, "common", installdir))
+    if any(rel_common == ex or rel_common.startswith(ex + os.sep) for ex in skip):
+        return False
+    full = os.path.join(steam_home, rel_common)
+    return os.path.isdir(full) and bool(os.listdir(full))
+
+# Emulator catalog: name -> flatpak app id (mirrors h96-emulators). cemu is a
+# box64 build (no flatpak) and is handled separately below.
+EMU_FLATPAK = {
+    "retroarch": "org.libretro.RetroArch",
+    "dolphin":   "org.DolphinEmu.dolphin-emu",
+    "ppsspp":    "org.ppsspp.PPSSPP",
+    "flycast":   "org.flycast.Flycast",
+    "melonds":   "net.kuribo64.melonDS",
+    "rmg":       "com.github.Rosalie241.RMG",
+    "azahar":    "org.azahar_emu.Azahar",
+}
+CEMU_SUBDIR = ".local/share/h96-emulators/cemu"        # under desktop user HOME
+GAMING_PREFIX_SUB = ".local/share/h96-gaming"          # wine prefixes, per user
+
+# Desktop-user config subset worth keeping (relative to HOME/.config). Globs are
+# expanded at capture time; missing entries are skipped.
+CONFIG_ITEMS = [
+    "plasma*",            # plasmarc, plasmashellrc, plasma-org.kde.plasma.desktop-appletsrc
+    "kwinrc", "kdeglobals", "kglobalshortcutsrc", "kscreenlockerrc",
+    "mpv", "autostart",
+    "dconf",              # GNOME settings live here (dconf database)
+]
+# Same idea, but these live under HOME directly (not HOME/.config): each entry
+# is a path relative to HOME.
+HOME_DATA_ITEMS = [
+    ".local/share/kscreen",   # per-display mode/scale choices (h96-scale, KDE 6)
+    ".local/state/wireplumber",  # default sink/source, EQ routing, BT autoswitch
+]
+
+# --------------------------------------------------------------- output ------
+def c(s, code): return f"\033[{code}m{s}\033[0m" if sys.stdout.isatty() else s
+def info(m): print(">> " + m)
+def warn(m): print(c("!! " + m, "93"), file=sys.stderr)
+def ok(m):   print(c(m, "92"))
+def die(m):  print(c("ERROR: " + m, "91"), file=sys.stderr); sys.exit(1)
+
+_ART = r"""
+   ██╗  ██╗ █████╗  ██████╗    ██╗   ██╗███████╗ █████╗
+   ██║  ██║██╔══██╗██╔════╝    ██║   ██║██╔════╝██╔══██╗
+   ███████║╚██████║███████╗    ██║   ██║███████╗╚█████╔╝
+   ██╔══██║ ╚═══██║██╔═══██╗    ╚██╗ ██╔╝╚════██║██╔══██╗
+   ██║  ██║ █████╔╝╚██████╔╝     ╚████╔╝ ███████║╚█████╔╝
+   ╚═╝  ╚═╝ ╚════╝  ╚═════╝       ╚═══╝  ╚══════╝ ╚════╝"""
+
+def banner(title):
+    if not sys.stdout.isatty() or os.environ.get("NO_COLOR"):
+        return
+    B, P, D, BOLD, X = "\033[96m", "\033[95m", "\033[2m", "\033[1m", "\033[0m"
+    def ctr(s): return s.rjust((64 + len(s)) // 2)
+    print(B + BOLD + _ART + X)
+    print(P + BOLD + ctr("  S C R U M P P E R ' S  ") + X)
+    print(P + BOLD + ctr("  " + "   ".join(title) + "  ") + X)
+    print(D + ctr("H96 Max V58  ·  Rockchip RK3588") + X)
+    print(D + "  " + "─" * 60 + X)
+
+# --------------------------------------------------------------- helpers -----
+def have(cmd): return shutil.which(cmd) is not None
+
+def desktop_user():
+    """Detect the desktop user dynamically. NEVER hardcode a name."""
+    v = os.environ.get("SUDO_USER")
+    if v and v != "root": return v
+    u = os.environ.get("USER")
+    if u and u != "root": return u
+    for p in pwd.getpwall():
+        if 1000 <= p.pw_uid < 65000 and os.path.isdir(p.pw_dir): return p.pw_name
+    die("cannot determine the desktop user")
+
+def user_home(user):
+    try: return pwd.getpwnam(user).pw_dir
+    except KeyError: return f"/home/{user}"
+
+def elevate():
+    """Re-exec as root (needs to read root-only WiFi confs + system state)."""
+    if os.geteuid() == 0: return
+    if not have("sudo"):
+        die("needs root to read system state (sudo not available); run as root")
+    os.execvp("sudo", ["sudo", "-E", sys.executable, os.path.abspath(__file__)] + sys.argv[1:])
+
+def dir_size(path):
+    total = 0
+    for root, _dirs, files in os.walk(path):
+        for f in files:
+            fp = os.path.join(root, f)
+            try:
+                if not os.path.islink(fp): total += os.path.getsize(fp)
+            except OSError:
+                pass
+    return total
+
+def human(n):
+    x = float(n)
+    for u in ("B", "KB", "MB", "GB", "TB"):
+        if x < 1024 or u == "TB":
+            return f"{x:.0f}{u}" if u == "B" else f"{x:.1f}{u}"
+        x /= 1024.0
+
+# --------------------------------------------------------- feature probe -----
+def dpkg_installed(pkg):
+    try:
+        r = subprocess.run(["dpkg-query", "-W", "-f=${Status}", pkg],
+                           capture_output=True, text=True)
+    except FileNotFoundError:
+        return False   # no dpkg on this host (not the target box)
+    return r.returncode == 0 and "install ok installed" in r.stdout
+
+def detect_desktop():
+    """Return (label, apt_package) for the installed DE, or ('none', None)."""
+    if dpkg_installed("kde-plasma-desktop"): return "kde", "kde-plasma-desktop"
+    if dpkg_installed("plasma-desktop"):     return "kde", "kde-plasma-desktop"
+    if dpkg_installed("gnome-shell"):        return "gnome", "gnome-shell"
+    return "none", None
+
+def flatpak_installed(app_id):
+    if not have("flatpak"): return False
+    return subprocess.run(["flatpak", "info", app_id],
+                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode == 0
+
+def detect_emulators(user):
+    """Installed emulators = catalog intersect installed flatpaks (+ cemu dir)."""
+    found = [name for name, app_id in EMU_FLATPAK.items() if flatpak_installed(app_id)]
+    if os.path.isdir(os.path.join(user_home(user), CEMU_SUBDIR)):
+        found.append("cemu")
+    return found
+
+def detect_waydroid_profile():
+    """Which image profile is installed, from the auto-detect symlink target.
+    Mirrors h96-waydroid _profile_tag(): gpu | custom | sw (LineageOS)."""
+    link = os.path.join(EXTRA_IMAGES, "system.img")
+    try:
+        tgt = os.path.realpath(link)
+    except OSError:
+        tgt = ""
+    if tgt.startswith(GPU_STASH):    return "gpu"
+    if tgt.startswith(CUSTOM_STASH): return "custom"
+    if tgt.startswith(LOS_STASH):    return "sw"
+    return None
+
+def waydroid_data_dir(user):
+    """The live Android /data. User sessions keep it under HOME, else system."""
+    u = os.path.join(user_home(user), ".local/share/waydroid/data")
+    if os.path.isdir(u) and os.listdir(u): return u, "userhome"
+    s = "/var/lib/waydroid/data"
+    if os.path.isdir(s) and os.listdir(s): return s, "system"
+    return None, None
+
+def detect_widevine():
+    return os.path.exists(WIDEVINE_CHROMIUM) or os.path.exists(WIDEVINE_STORE)
+
+def detect_gaming(user):
+    prefix = os.path.join(user_home(user), GAMING_PREFIX_SUB, "prefixes")
+    return os.path.isdir(prefix) or os.path.isdir(os.path.join(GAMING_ROOT, "wine"))
+
+def detect_npu():
+    return os.path.exists(NPU_RUNTIME)
+
+def list_wifi_confs():
+    try:
+        return sorted(os.path.join(WPA_DIR, f) for f in os.listdir(WPA_DIR)
+                      if f.startswith("wpa_supplicant-") and f.endswith(".conf"))
+    except OSError:
+        return []
+
+def read_text_flag(path):
+    """First-line content of a small text flag file, or None if absent."""
+    try:
+        with open(path) as fh:
+            return fh.readline().strip()
+    except OSError:
+        return None
+
+def is_display_conf_name(name):
+    """True for <key>.conf, key in [A-Za-z0-9_-]+."""
+    if not name.endswith(".conf"): return False
+    stem = name[:-5]
+    return bool(stem) and all(c.isalnum() or c in "_-" for c in stem)
+
+def parse_display_conf(text):
+    """Parse a per-display conf (color=/range= lines only); None if invalid."""
+    out = {}
+    for ln in text.splitlines():
+        s = ln.strip()
+        if not s: continue
+        if "=" not in s: return None
+        k, v = (p.strip() for p in s.split("=", 1))
+        if k == "color" and v in PER_DISPLAY_COLOR_VALUES: out["color"] = v
+        elif k == "range" and v in PER_DISPLAY_RANGE_VALUES: out["range"] = v
+        else: return None
+    return out
+
+def scan_display_dir():
+    """Valid per-display <key>.conf files under DISPLAY_DIR; anything else warns and is skipped."""
+    out = {}
+    if not os.path.isdir(DISPLAY_DIR):
+        return out
+    for name in sorted(os.listdir(DISPLAY_DIR)):
+        path = os.path.join(DISPLAY_DIR, name)
+        if not os.path.isfile(path):
+            continue
+        if not is_display_conf_name(name):
+            warn(f"display/{name}: unexpected name in {DISPLAY_DIR}; skipped")
+            continue
+        try:
+            text = open(path).read()
+        except OSError:
+            continue
+        parsed = parse_display_conf(text)
+        if parsed is None:
+            warn(f"display/{name}: invalid content; skipped")
+            continue
+        out[name[:-5]] = parsed
+    return out
+
+def source_version():
+    """H96_RELEASE= line from /etc/h96-release, else 'unknown' (pre-release box)."""
+    try:
+        for ln in open(H96_RELEASE_FILE):
+            if ln.startswith("H96_RELEASE="):
+                return ln.split("=", 1)[1].strip()
+    except OSError:
+        pass
+    return "unknown"
+
+def service_enabled(unit):
+    """True/False, or None when systemd or the unit itself is not present."""
+    try:
+        r = subprocess.run(["systemctl", "is-enabled", unit], capture_output=True, text=True)
+    except FileNotFoundError:
+        return None
+    out = r.stdout.strip()
+    if out in ("enabled", "enabled-runtime", "static", "indirect"): return True
+    if out in ("disabled", "masked", "linked"): return False
+    return None   # not-found, or systemctl failed outright
+
+def wol_state():
+    """'on'/'off' as h96-wol reports it, or None if the tool is not installed."""
+    if not have("h96-wol"): return None
+    try:
+        r = subprocess.run(["h96-wol", "status"], capture_output=True, text=True)
+    except FileNotFoundError:
+        return None
+    out = r.stdout.lower()
+    if "wake-on" not in out: return None
+    return "on" if "magic" in out else "off"
+
+def steam_arm_conf():
+    """Parse /etc/h96/steam-arm.conf (shell KEY=VALUE lines). {} if absent."""
+    out = {}
+    try:
+        for ln in open(STEAM_ARM_CONF):
+            ln = ln.strip()
+            if not ln or ln.startswith("#") or "=" not in ln: continue
+            k, v = ln.split("=", 1)
+            out[k.strip()] = v.strip().strip('"')
+    except OSError:
+        pass
+    return out
+
+def steam_arm_home():
+    """(user, home_dir, armhome_dir) for the Steam ARM account, or (None, None, None); armhome_dir lets restore rebuild the same relative layout."""
+    conf = steam_arm_conf()
+    user = conf.get("GAMEUSER")
+    if not user: return None, None, None
+    rel = conf.get("ARMHOME_DIR") or ".local/share/steam-arm"
+    home = user_home(user)
+    path = rel if os.path.isabs(rel) else os.path.join(home, rel)
+    return (user, path, rel) if os.path.isdir(path) else (user, None, rel)
+
+def steam_compatdata_bytes(steam_home):
+    if not steam_home: return 0
+    return safe_size(os.path.join(steam_home, STEAM_COMPATDATA))
+
+def steam_runtime_bytes(steam_home):
+    if not steam_home: return 0
+    return sum(safe_size(os.path.join(steam_home, d)) for d in STEAM_RUNTIME_EXCLUDE)
+
+def steam_client_present(steam_home):
+    """The native ARM64 client binary the installer manages, per its own
+    definition (see STEAM_RUNTIME_EXCLUDE)."""
+    return bool(steam_home) and os.path.exists(
+        os.path.join(steam_home, STEAM_DATA_DIR, "steamrtarm64", "steam"))
+
+def vm_names():
+    """VM names under /var/lib/h96-vm ('images' is the shared base-image cache)."""
+    try:
+        return sorted(n for n in os.listdir(VM_VAR_ROOT)
+                      if n != "images" and os.path.isdir(os.path.join(VM_VAR_ROOT, n)))
+    except OSError:
+        return []
+
+def vm_disk_bytes(names):
+    return sum(safe_size(os.path.join(VM_VAR_ROOT, n, "disk.qcow2")) for n in names)
+
+# ----------------------------------------------------------- archive out -----
+def open_archive(base_path):
+    """Return (tarfile, proc_or_None, dest_path). Prefer zstd, else gzip."""
+    if have("zstd"):
+        dest = base_path + ".tar.zst"
+        # tarfile streams uncompressed into zstd's stdin; zstd writes the file.
+        proc = subprocess.Popen(["zstd", "-q", "-T0", "-f", "-o", dest, "-"],
+                                stdin=subprocess.PIPE)
+        return tarfile.open(fileobj=proc.stdin, mode="w|"), proc, dest
+    dest = base_path + ".tar.gz"
+    return tarfile.open(dest, "w:gz"), None, dest
+
+def close_archive(tf, proc):
+    tf.close()
+    if proc is not None:
+        proc.stdin.close()
+        if proc.wait() != 0:
+            die("zstd compression failed")
+
+def add_bytes(tf, arcname, data):
+    ti = tarfile.TarInfo(arcname)
+    ti.size = len(data)
+    ti.mtime = int(time.time())
+    ti.mode = 0o600
+    tf.addfile(ti, io.BytesIO(data))
+
+def add_path(tf, src, arcname, quiet=False):
+    """Add a file or tree at src under arcname. Missing src is a clean skip."""
+    if not os.path.exists(src):
+        return 0
+    if not quiet:
+        info(f"  + {arcname}  ({human(dir_size(src) if os.path.isdir(src) else os.path.getsize(src))})")
+    tf.add(src, arcname=arcname, recursive=True)
+    return dir_size(src) if os.path.isdir(src) else os.path.getsize(src)
+
+# ------------------------------------------------------------ probe ---------
+def safe_size(path):
+    """dir_size that tolerates unreadable trees (probe may run unprivileged)."""
+    try:
+        return dir_size(path) if os.path.isdir(path) else (os.path.getsize(path) if os.path.exists(path) else 0)
+    except OSError:
+        return 0
+
+def probe(user):
+    """Everything the box has, plus the bytes each category would add. Works
+    without root; root-only trees (Waydroid /data) may report a smaller size."""
+    home = user_home(user)
+    de_label, de_pkg = detect_desktop()
+    emus = detect_emulators(user)
+    wprofile = detect_waydroid_profile()
+    wdata_dir, wdata_loc = waydroid_data_dir(user)
+    stashes_present = {k: os.path.isdir(v) and bool(os.listdir(v))
+                       for k, v in WAYDROID_STASHES.items() if os.path.isdir(v)}
+    stashes_present = {k: v for k, v in stashes_present.items() if v}
+    images_bytes = {k: safe_size(WAYDROID_STASHES[k]) for k in stashes_present}
+    wifi = list_wifi_confs()
+    cfg = os.path.join(home, ".config")
+    cfg_paths = [p for item in CONFIG_ITEMS for p in sorted(glob.glob(os.path.join(cfg, item)))]
+    emu_bytes = {}
+    for name in emus:
+        p = os.path.join(home, CEMU_SUBDIR) if name == "cemu" else os.path.join(home, ".var", "app", EMU_FLATPAK[name])
+        emu_bytes[name] = safe_size(p)
+    home_data_bytes = sum(safe_size(os.path.join(home, item)) for item in HOME_DATA_ITEMS)
+    steam_user, steam_home, _steam_rel = steam_arm_home()
+    compat_bytes = steam_compatdata_bytes(steam_home) if steam_home else 0
+    lib_bytes = sum(safe_size(os.path.join(steam_home, ex)) for ex in STEAM_LIB_EXCLUDE) if steam_home else 0
+    runtime_bytes = steam_runtime_bytes(steam_home) if steam_home else 0
+    steam_default_bytes = max(0, safe_size(steam_home) - compat_bytes - lib_bytes - runtime_bytes) if steam_home else 0
+    gaming = detect_gaming(user) or bool(steam_home)
+    services = {s: service_enabled(s) for s in OPT_IN_SERVICES}
+    vms = vm_names()
+    return {
+        "user": user, "home": home,
+        "source_version": source_version(), "tool_version": TOOL_VERSION,
+        "desktop": de_label, "desktop_package": de_pkg,
+        "emulators": emus,
+        "waydroid": {"profile": wprofile, "stashes": sorted(stashes_present),
+                     "data": bool(wdata_dir), "data_dir": wdata_dir,
+                     "data_location": wdata_loc, "images_bytes": images_bytes},
+        "widevine": detect_widevine(), "gaming": gaming, "npu_runtime": detect_npu(),
+        "wifi": len(wifi), "wifi_confs": wifi,
+        "services": services, "wol": wol_state(), "vms": vms,
+        "vm_disk_bytes": vm_disk_bytes(vms),
+        "steam_compatdata_bytes": compat_bytes,
+        "steam_runtime_bytes": runtime_bytes,
+        "categories": {
+            "desktop":         {"present": de_label != "none", "bytes": 0,
+                                "detail": de_label if de_label != "none" else ""},
+            "configs":         {"present": bool(cfg_paths) or home_data_bytes > 0,
+                                "bytes": sum(safe_size(p) for p in cfg_paths) + home_data_bytes,
+                                "detail": f"{len(cfg_paths)} items under ~/.config, display+audio state"},
+            "emulators":       {"present": bool(emus), "bytes": sum(emu_bytes.values()),
+                                "detail": ", ".join(emus), "items": emu_bytes},
+            "waydroid":        {"present": bool(wprofile or wdata_dir),
+                                "bytes": safe_size(wdata_dir) if wdata_dir else 0,
+                                "detail": f"profile {wprofile or 'none'}, /data {'yes' if wdata_dir else 'no'}"},
+            "waydroid-images": {"present": bool(stashes_present), "bytes": sum(images_bytes.values()),
+                                "detail": ", ".join(sorted(stashes_present))},
+            "widevine":        {"present": detect_widevine(), "bytes": 0, "detail": "L3 CDM"},
+            "gaming":          {"present": gaming,
+                                "bytes": safe_size(os.path.join(home, GAMING_PREFIX_SUB)) + steam_default_bytes,
+                                "detail": "wine prefixes" + (
+                                    f" + Steam ARM ({steam_user}); Proton prefixes {human(compat_bytes)} "
+                                    f"opt-in, client runtime {human(runtime_bytes)} opt-in"
+                                    if steam_home else "")},
+            "npu":             {"present": detect_npu(), "bytes": 0, "detail": "RKNN runtime"},
+            "wifi":            {"present": bool(wifi), "bytes": sum(safe_size(w) for w in wifi),
+                                "detail": f"{len(wifi)} wpa_supplicant conf(s)"},
+            "autologin":       {"present": os.path.isdir(LIGHTDM_CONF_D), "bytes": safe_size(LIGHTDM_CONF_D),
+                                "detail": "lightdm autologin"},
+            "system":          {"present": True, "bytes": safe_size(STEAM_ARM_CONF) + safe_size(HOTSPOT_CONF),
+                                "detail": "display/network/steam flags, opt-in service state"},
+            "vm":              {"present": bool(vms), "bytes": safe_size(VM_CONF),
+                                "detail": f"{len(vms)} VM(s) defined; disks {human(vm_disk_bytes(vms))} (opt-in)"},
+        },
+    }
+
+# --------------------------------------------------------------- main --------
+def main():
+    args = sys.argv[1:]
+    if any(a in ("-h", "--help", "help") for a in args):
+        print(HELP); return
+    if any(a in ("-v", "--version") for a in args):
+        print(f"h96-backup v{TOOL_VERSION} (schema {SCHEMA})"); return
+
+    with_images = False
+    with_vm_disks = False
+    with_proton_prefixes = False
+    with_steam_runtime = False
+    dest_arg = None
+    only, skip, emu_filter, probe_json = None, [], None, False
+    it = iter(args)
+    for a in it:
+        if a == "--with-images":  with_images = True
+        elif a == "--with-vm-disks": with_vm_disks = True
+        elif a == "--with-proton-prefixes": with_proton_prefixes = True
+        elif a == "--with-steam-runtime": with_steam_runtime = True
+        elif a == "--probe-json": probe_json = True
+        elif a.startswith("--only="):      only = parse_categories(a[7:], "--only")
+        elif a == "--only":                only = parse_categories(next(it, ""), "--only")
+        elif a.startswith("--skip="):      skip = parse_categories(a[7:], "--skip")
+        elif a == "--skip":                skip = parse_categories(next(it, ""), "--skip")
+        elif a.startswith("--emulators="): emu_filter = [x.strip() for x in a[12:].split(",") if x.strip()]
+        elif a == "--emulators":           emu_filter = [x.strip() for x in next(it, "").split(",") if x.strip()]
+        elif a.startswith("-"):   die(f"unknown option '{a}' (see --help)")
+        else:                     dest_arg = a
+    selected = [c for c in CATEGORIES if (only is None or c in only) and c not in skip]
+    if with_images and "waydroid-images" not in selected and only is None and "waydroid-images" not in skip:
+        selected.append("waydroid-images")
+    if "waydroid-images" in selected:
+        with_images = True
+    sel = set(selected)
+
+    if probe_json:
+        print(json.dumps(probe(desktop_user()), indent=2)); return
+
+    elevate()
+    banner("B A C K U P")
+    user = desktop_user()
+    home = user_home(user)
+    try:
+        pw = pwd.getpwnam(user)
+    except KeyError:
+        die(f"desktop user '{user}' has no passwd entry")
+
+    # ---- probe every feature (each may be absent) --------------------------
+    de_label, de_pkg = detect_desktop()
+    emus = detect_emulators(user)
+    if emu_filter is not None:
+        unknown = [e for e in emu_filter if e not in EMU_FLATPAK and e != "cemu"]
+        if unknown: die(f"--emulators: unknown name(s) {', '.join(unknown)}")
+        emus = [e for e in emus if e in emu_filter]
+    wprofile = detect_waydroid_profile()
+    wdata_dir, wdata_loc = waydroid_data_dir(user)
+    stashes_present = {k: os.path.isdir(v) and bool(os.listdir(v))
+                       for k, v in WAYDROID_STASHES.items()
+                       if os.path.isdir(v)}
+    stashes_present = {k: v for k, v in stashes_present.items() if v}
+    images_bytes = {k: dir_size(WAYDROID_STASHES[k]) for k in stashes_present}
+    wifi = list_wifi_confs()
+
+    # ---- apply the category selection ----------------------------------------
+    if "desktop" not in sel:   de_label, de_pkg = "none", None
+    if "emulators" not in sel: emus = []
+    if "waydroid" not in sel:  wprofile, wdata_dir, wdata_loc = None, None, None
+    if "wifi" not in sel:      wifi = []
+
+    steam_user, steam_home, steam_armhome_dir = steam_arm_home()
+    gaming_present = (detect_gaming(user) or bool(steam_home)) and "gaming" in sel
+    compatdata_bytes = steam_compatdata_bytes(steam_home) if steam_home else 0
+    runtime_bytes = steam_runtime_bytes(steam_home) if steam_home else 0
+    services = {s: service_enabled(s) for s in OPT_IN_SERVICES} if "system" in sel else {}
+    hdmi20_off = os.path.exists(DISPLAY_HDMI20_OFF)
+    frl_off = os.path.exists(DISPLAY_FRL_OFF)
+    color_val = read_text_flag(DISPLAY_COLOR)
+    range_val = read_text_flag(DISPLAY_RANGE)
+    per_display = scan_display_dir() if "system" in sel else {}
+    vms = vm_names() if "vm" in sel else []
+
+    manifest = {
+        "schema": SCHEMA,
+        "tool": "h96-backup",
+        "tool_version": TOOL_VERSION,
+        "created": datetime.datetime.now().astimezone().isoformat(timespec="seconds"),
+        "source_version": source_version(),
+        "categories": selected,
+        "desktop": de_label,
+        "desktop_package": de_pkg,
+        "features": {
+            "emulators": emus,
+            "waydroid": {
+                "profile": wprofile,
+                "stashes": sorted(stashes_present),
+                "data": bool(wdata_dir),
+                "data_location": wdata_loc,
+                "images_included": with_images,
+                "images_bytes": images_bytes,
+            },
+            "widevine": detect_widevine() and "widevine" in sel,
+            "gaming": gaming_present,
+            "steam_arm": {"user": steam_user if "gaming" in sel else None,
+                          "armhome_dir": steam_armhome_dir if "gaming" in sel else None,
+                          "home_included": bool(steam_home) and "gaming" in sel,
+                          "proton_prefixes_included": with_proton_prefixes and bool(steam_home) and "gaming" in sel,
+                          "runtime_included": with_steam_runtime and bool(steam_home) and "gaming" in sel,
+                          "client_present": steam_client_present(steam_home) if "gaming" in sel else False},
+            "npu_runtime": detect_npu() and "npu" in sel,
+            "wifi": len(wifi),
+            # v6.2 system state (schema 2). Absent/empty on a schema-1 archive;
+            # restore treats every key here as "leave alone" when missing.
+            "display": {"hdmi20_off": hdmi20_off if "system" in sel else False,
+                        "nolock": os.path.exists(DISPLAY_NOLOCK) if "system" in sel else False,
+                        "frl_off": frl_off if "system" in sel else False,
+                        "color": color_val if "system" in sel else None,
+                        "range": range_val if "system" in sel else None,
+                        "per_display": per_display},
+            "services": services,
+            "wol": wol_state() if "system" in sel else None,
+            "vm": {"names": vms, "disks_included": with_vm_disks and bool(vms)},
+        },
+    }
+
+    # ---- pick a destination ------------------------------------------------
+    stamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+    if dest_arg and os.path.isdir(dest_arg):
+        base = os.path.join(dest_arg, f"h96-backup-{stamp}")
+    elif dest_arg:
+        base = dest_arg  # explicit path; extension appended by open_archive
+    else:
+        base = os.path.join(home, f"h96-backup-{stamp}")
+    os.makedirs(os.path.dirname(base) or ".", exist_ok=True)
+
+    info(f"desktop user : {user}   (HOME {home})")
+    info(f"categories   : {', '.join(selected)}")
+    info(f"desktop DE   : {de_label}")
+    info(f"emulators    : {', '.join(emus) if emus else '(none)'}")
+    info(f"waydroid     : profile={wprofile or '(none)'} data={'yes' if wdata_dir else 'no'} "
+         f"stashes={','.join(sorted(stashes_present)) or '-'}")
+    info(f"widevine     : {manifest['features']['widevine']}")
+    info(f"gaming       : {manifest['features']['gaming']}"
+         + (f"  (+ Steam ARM: {steam_user})" if steam_home and "gaming" in sel else ""))
+    info(f"npu runtime  : {manifest['features']['npu_runtime']}")
+    info(f"wifi confs   : {len(wifi)}")
+    if "system" in sel:
+        on_svcs = [s for s, v in services.items() if v]
+        info(f"system state : hdmi20_off={hdmi20_off} frl_off={frl_off} "
+             f"color={color_val or 'rgb'} range={range_val or 'full'} per_display={len(per_display)} "
+             f"wol={manifest['features']['wol']} services_on={','.join(on_svcs) or '(none)'}")
+    if vms:
+        vm_bytes = vm_disk_bytes(vms)
+        info(f"h96-vm       : {len(vms)} VM(s) ({', '.join(vms)}); disk images {human(vm_bytes)}"
+             + ("" if with_vm_disks else " (NOT bundled; pass --with-vm-disks to include)"))
+    if steam_home and "gaming" in sel and compatdata_bytes:
+        info(f"steam proton : prefixes {human(compatdata_bytes)}"
+             + ("" if with_proton_prefixes else " (NOT bundled; pass --with-proton-prefixes to include)"))
+    if steam_home and "gaming" in sel and runtime_bytes:
+        info(f"steam runtime: client program {human(runtime_bytes)}"
+             + ("" if with_steam_runtime else " (NOT bundled; pass --with-steam-runtime to include)"))
+    if stashes_present and not with_images:
+        warn(f"waydroid image stashes ({human(sum(images_bytes.values()))}) NOT bundled "
+             f"(pass --with-images to include; restore re-downloads them otherwise)")
+
+    # ---- write the archive -------------------------------------------------
+    info(f"writing archive base {base} ...")
+    tf, proc, dest = open_archive(base)
+    try:
+        # manifest first so restore can read it from the head of the stream.
+        add_bytes(tf, "manifest.json",
+                  json.dumps(manifest, indent=2).encode() + b"\n")
+
+        # desktop-user config subset -> userhome/.config/<item>
+        if "configs" in sel:
+            cfg = os.path.join(home, ".config")
+            for item in CONFIG_ITEMS:
+                for src in sorted(glob.glob(os.path.join(cfg, item))):
+                    rel = os.path.relpath(src, home)
+                    add_path(tf, src, os.path.join("userhome", rel))
+            # kscreen (display mode/scale) and WirePlumber state live under
+            # HOME directly, not HOME/.config.
+            for item in HOME_DATA_ITEMS:
+                src = os.path.join(home, item)
+                add_path(tf, src, os.path.join("userhome", item))
+
+        # emulator saves/config: flatpak per-app data -> userhome/.var/app/<id>
+        for name in emus:
+            if name == "cemu":
+                add_path(tf, os.path.join(home, CEMU_SUBDIR),
+                         os.path.join("userhome", CEMU_SUBDIR))
+                continue
+            app_id = EMU_FLATPAK[name]
+            add_path(tf, os.path.join(home, ".var", "app", app_id),
+                     os.path.join("userhome", ".var", "app", app_id))
+
+        # wine prefixes (gaming) -> userhome/.local/share/h96-gaming
+        if manifest["features"]["gaming"]:
+            add_path(tf, os.path.join(home, GAMING_PREFIX_SUB),
+                     os.path.join("userhome", GAMING_PREFIX_SUB))
+
+        # Steam ARM home (may be a different account than the desktop user) ->
+        # steamhome/<rel>; game library content is never bundled (re-installed
+        # from Steam's cloud); Proton prefixes and the Steam client program
+        # itself are bundled only with --with-proton-prefixes / --with-steam-runtime
+        # (config, userdata, steamapps manifests and the h96 launcher settings
+        # are never excluded by either flag).
+        if steam_home and "gaming" in sel:
+            skip = list(STEAM_LIB_EXCLUDE)
+            if not with_proton_prefixes:
+                skip.append(STEAM_COMPATDATA)
+            if not with_steam_runtime:
+                skip.extend(STEAM_RUNTIME_EXCLUDE)
+            appmanifests_skipped = 0
+            for root, dirs, files in os.walk(steam_home):
+                rel_root = os.path.relpath(root, steam_home)
+                dirs[:] = [d for d in dirs if not any(
+                    os.path.normpath(os.path.join(rel_root, d)) == ex or
+                    os.path.normpath(os.path.join(rel_root, d)).startswith(ex + os.sep)
+                    for ex in skip)]
+                for f in files:
+                    src = os.path.join(root, f)
+                    rel = os.path.relpath(src, steam_home)
+                    if os.path.basename(root) == "steamapps" and APPMANIFEST_RE.match(f):
+                        installdir = acf_installdir(src)
+                        if not installdir or not common_dir_captured(steam_home, rel_root, installdir, skip):
+                            appmanifests_skipped += 1
+                            continue
+                    add_path(tf, src, os.path.join("steamhome", rel), quiet=True)
+            info(f"  + steamhome/  ({human(safe_size(steam_home))}, library content excluded"
+                 + ("" if with_proton_prefixes else
+                    f", Proton prefixes {human(compatdata_bytes)} NOT bundled "
+                    "(pass --with-proton-prefixes to include)")
+                 + ("" if with_steam_runtime else
+                    f", Steam client runtime {human(runtime_bytes)} NOT bundled "
+                    "(pass --with-steam-runtime to include)") + ")")
+            if appmanifests_skipped:
+                info(f"  {appmanifests_skipped} game install record(s) skipped "
+                     "(game files not archived; reinstall from Steam)")
+
+        # WiFi credentials (0600, root-owned) -> wifi/<basename>
+        for w in wifi:
+            add_path(tf, w, os.path.join("wifi", os.path.basename(w)))
+
+        # autologin (lightdm) -> system/lightdm/...; restore reads only the
+        # autologin-user/-session setting out of these, never writes them back
+        if "autologin" in sel:
+            add_path(tf, LIGHTDM_CONF, "system/lightdm/lightdm.conf", quiet=True)
+            add_path(tf, LIGHTDM_CONF_D, "system/lightdm/lightdm.conf.d", quiet=True)
+
+        # v6.2 system state: display/network/steam/hotspot flags (small text
+        # files and 0-byte markers only; hdmi-sink.json is never included).
+        if "system" in sel:
+            add_path(tf, STEAM_ARM_CONF, "system/etc-h96/steam-arm.conf", quiet=True)
+            add_path(tf, HOTSPOT_CONF, "system/etc-h96/hotspot.conf", quiet=True)
+            add_path(tf, LEDS_CONF, "system/etc-h96/leds.conf", quiet=True)
+            add_path(tf, EQ_ACTIVE, "system/etc-h96/eq/active.txt", quiet=True)
+            if hdmi20_off:
+                add_path(tf, DISPLAY_HDMI20_OFF, "system/etc-h96/display-hdmi20.off", quiet=True)
+            if os.path.exists(DISPLAY_NOLOCK):
+                add_path(tf, DISPLAY_NOLOCK, "system/etc-h96/display-nolock", quiet=True)
+            if frl_off:
+                add_path(tf, DISPLAY_FRL_OFF, "system/etc-h96/display-frl.off", quiet=True)
+            # CEC flags: existence is the setting, archived as 0-byte markers
+            if os.path.exists(CEC_WAKE_OFF):
+                add_bytes(tf, "system/etc-h96/cec-wake.off", b"")
+            if os.path.exists(CEC_STANDBY_BLANK):
+                add_bytes(tf, "system/etc-h96/cec-standby-on-blank", b"")
+            if color_val:
+                add_path(tf, DISPLAY_COLOR, "system/etc-h96/display-color", quiet=True)
+            if range_val:
+                add_path(tf, DISPLAY_RANGE, "system/etc-h96/display-range", quiet=True)
+            for key in per_display:
+                add_path(tf, os.path.join(DISPLAY_DIR, key + ".conf"),
+                         f"system/etc-h96/display/{key}.conf", quiet=True)
+
+        # Waydroid Android userdata -> waydroid-data/... (numeric owner preserved)
+        if wdata_dir:
+            add_path(tf, wdata_dir, "waydroid-data")
+
+        # Waydroid image stashes (multi-GB), only when asked
+        if with_images:
+            for k in stashes_present:
+                add_path(tf, WAYDROID_STASHES[k], os.path.join("waydroid-stash", k))
+
+        # h96-vm: definitions always (small); disk images only with --with-vm-disks
+        if vms:
+            add_path(tf, VM_CONF, "system/etc-h96/vm.conf", quiet=True)
+            for name in vms:
+                vmdir = os.path.join(VM_VAR_ROOT, name)
+                for f in ("meta.json", "seed.img", "user-data", "meta-data"):
+                    add_path(tf, os.path.join(vmdir, f), os.path.join("vm", name, f), quiet=True)
+                if with_vm_disks:
+                    add_path(tf, os.path.join(vmdir, "disk.qcow2"),
+                             os.path.join("vm", name, "disk.qcow2"))
+    except Exception as e:
+        close_archive(tf, proc)
+        try: os.unlink(dest)
+        except OSError: pass
+        die(f"archive write failed: {e}")
+    close_archive(tf, proc)
+
+    # ---- own the archive by the desktop user, report ------------------------
+    try: os.chown(dest, pw.pw_uid, pw.pw_gid)
+    except OSError: pass
+    size = os.path.getsize(dest)
+    print()
+    ok(f"backup complete: {dest}")
+    ok(f"  size {human(size)}   schema {SCHEMA}   tool v{TOOL_VERSION}")
+    ok(f"  restore with:  h96-restore {dest}")
+    if stashes_present and not with_images:
+        print(f"  note: {len(stashes_present)} Waydroid image stash(es) omitted; "
+              f"restore re-downloads them via h96-waydroid init.")
+    if vms and not with_vm_disks:
+        print(f"  note: {len(vms)} h96-vm disk image(s) omitted (definitions only); "
+              f"pass --with-vm-disks to include them.")
+    if steam_home and "gaming" in sel and not with_proton_prefixes and compatdata_bytes:
+        print(f"  note: Steam ARM Proton prefixes ({human(compatdata_bytes)}) omitted; "
+              f"pass --with-proton-prefixes to include them.")
+    if steam_home and "gaming" in sel and not with_steam_runtime and runtime_bytes:
+        print(f"  note: Steam client program ({human(runtime_bytes)}) omitted; restore prints "
+              f"the install command needed to get it back (or pass --with-steam-runtime here).")
+    if "system" in sel:
+        print("  note: hdmi-sink.json is never bundled; run 'h96-display detect' after restore.")
+
+if __name__ == "__main__":
+    main()

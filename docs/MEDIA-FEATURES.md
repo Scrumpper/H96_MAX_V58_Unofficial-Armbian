@@ -9,11 +9,11 @@ wireplumber/, pipewire/, etc-h96/, modules-load.d/).
 
 - **h96-cec** - HDMI-CEC: control box with TV remote. Daemon (lib/h96-cecd)
   maps CEC remote keys to uinput events. Needs /dev/cec0 from dw-hdmi-qp CEC
-  block + v4l-utils/cec-utils (installed on enable). BOX-VERIFIED NON-FUNCTIONAL: this
-  6.1 BSP kernel has CEC core (CONFIG_CEC_CORE) but does NOT build DesignWare HDMI
-  CEC driver (no CONFIG_DRM_DW_HDMI_CEC, no /sys/class/cec), so /dev/cec0 never appears.
-  Tool self-reports this. Fixing it needs kernel rebuild with dw-hdmi(-qp) CEC
-  driver + DT wiring; not userspace fix.
+  block + v4l-utils (cec-ctl). v6.2 kernel enables dw-hdmi-qp vendor CEC adapter on
+  HDMI0 (`cec-enable` DT property), so /dev/cec0 exists: TV remote controls box, box
+  puts TV in standby and wakes it (verified on Sony TV). Off by default:
+  `sudo systemctl enable --now h96-cec.service`. Kernels before v6.2 do not build
+  CEC adapter, so /dev/cec0 never appears there.
 - **h96-hdr** - mpv HDR10 handling: tone-map HDR10 to SDR via vo=gpu-next/libplacebo
   (reliable path; true passthrough is X11-limited on this stack).
 - **h96-motion** - mpv BUILT-IN frame interpolation (judder reduction), GPU-side,

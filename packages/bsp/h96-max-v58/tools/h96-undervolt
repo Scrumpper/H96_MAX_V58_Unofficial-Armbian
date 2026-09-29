@@ -1,0 +1,540 @@
+#!/usr/bin/env python3
+"""
+h96-undervolt - opt-in, per-chip CPU undervolt for the H96 Max V58 (RK3588).
+
+WHY THIS IS OPT-IN AND NOT BAKED INTO THE IMAGE
+-----------------------------------------------
+RK3588 measures every individual chip at boot: an on-die ring oscillator (PVTM) plus a
+leakage value burned into eFuse select one of several voltage bins (L0-L7) that the vendor
+ships in the device tree. The kernel logs it:
+
+    cpu cpu1: leakage=8  pvtm=1677  pvtm-volt-sel=4
+
+Two physically identical boxes can land on different bins. A box on bin L0 is assigned
+987500 uV at 2208 MHz where a box on L7 is assigned 912500 uV. So there is no single
+"undervolt value" that is safe to ship to everyone -- a fixed number baked into an image
+would undervolt some units below their assigned value, causing instability that is hard to trace.
+
+This script therefore never uses an absolute voltage. It reads THIS chip's own selected
+bin, takes the vendor's value for that bin, and shifts down from there by an offset you
+choose. Your neighbour's box computes a different starting point from the same command.
+
+WHAT THIS DOES AND DOES NOT ADDRESS
+----------------------------------
+Undervolting lowers the voltage the CPU runs at, so it draws less current for the same
+work. It does not change the maximum current the board's supply and regulators can
+deliver. If the box resets under sustained heavy load, that ceiling is what is being hit,
+and a higher-rated power supply addresses it directly. Capping the maximum CPU frequency
+also selects a lower stock voltage from the vendor table and reduces draw considerably
+more than undervolting alone. Treat this tool as a way to reduce draw, not as a fix for
+resets under load.
+
+SAFETY PROPERTIES
+-----------------
+1. Always derives from the pristine stock DTB backup, never from an already-modified tree,
+   so repeated runs cannot compound into an ever-deeper undervolt.
+2. Refuses to go below the lowest value the vendor themselves ship for that frequency
+   (the L7 entry). Rockchip validated that number for their lowest-leakage silicon; below it is untested.
+3. Writes every bin variant to the same value, so the result does not depend on which bin
+   the kernel picks at boot.
+4. Arms a trial. After you reboot, the new tree is active for that boot so you can test it;
+   it stays only if you run `h96-undervolt confirm`. Reboot without confirming and a
+   boot-time guard restores the stock DTB automatically. A setting that makes the box
+   unstable therefore undoes itself, after one boot to test it.
+5. `h96-undervolt revert` always works, and the stock DTB is kept forever.
+
+LIMITS OF THE SAFETY NET (read this)
+------------------------------------
+The auto-revert runs early in userspace. It protects you from "boots but is unstable".
+It CANNOT protect you from a value so low the kernel never reaches userspace -- if that
+happens the box will not boot and you will need to reflash over USB (Maskrom). Step in
+small increments to stay above that point.
+"""
+
+import os
+import re
+import subprocess
+import sys
+
+DTB = "/boot/dtb/rockchip/rk3588-h96-max-v58-panthor.dtb"
+STOCK = DTB + ".stock-backup"
+TRIAL_FLAG = "/var/lib/h96-undervolt-trial"
+STATE = "/var/lib/h96-undervolt-state"
+WORK = "/tmp/h96-undervolt"
+
+# cluster<N>-opp-table -> the cpu whose pvtm-volt-sel line describes it
+CLUSTER_CPU = {1: "cpu1", 2: "cpu3"}
+DEFAULT_FREQ = 2208000000
+
+# --- overclock ---
+# Vendor tree stops A76 clusters at 2208 MHz; `oc` adds a higher operating point by
+# cloning the 2208 node. Measured: 2400 MHz gives +0.53% work for +8.7% clock (peak
+# temp 82C -> 85C), since the bottleneck is memory/interconnect, not core frequency.
+# Offered because it works and is safe to try; undervolting at stock clocks is the
+# better trade on this hardware.
+OC_MAX_HZ   = 2400000000      # only speed validated here
+OC_MAX_UV   = 1025000         # regulator ceiling is 1050000; keep margin
+OC_TESTED_UV = 975000         # 2400 MHz ran clean at this on an L2 chip
+
+
+def die(msg):
+    sys.exit(f"h96-undervolt: {msg}")
+
+
+def need_root():
+    if os.geteuid() != 0:
+        die("must be run as root")
+
+
+# --- colours + banner ---
+# block-letter art and colours live in one place, /usr/local/lib/h96/banner.py
+sys.path.insert(0, "/usr/local/lib/h96")
+try:
+    from banner import banner as _shared_banner, B as _B, P as _P, DIM as _DIM, BOLD as _BOLD, X as _X
+except Exception:
+    def _shared_banner(sub=""): pass
+    _B = _P = _DIM = _BOLD = _X = ""
+
+
+class C:
+    R = "\033[91m"; G = "\033[92m"; Y = "\033[93m"; B = _B
+    P = _P; W = "\033[97m"; DIM = _DIM; BOLD = _BOLD; X = _X
+
+    @staticmethod
+    def off():
+        for k in ("R", "G", "Y", "B", "P", "W", "DIM", "BOLD", "X"):
+            setattr(C, k, "")
+
+
+if not sys.stdout.isatty() or os.environ.get("NO_COLOR"):
+    C.off()
+
+
+def banner():
+    _shared_banner("P E R - C H I P   C P U   U N D E R V O L T")
+
+
+def sh(cmd, **kw):
+    return subprocess.run(cmd, shell=True, capture_output=True, text=True, **kw)
+
+
+def ensure_stock_backup():
+    if not os.path.isfile(DTB):
+        die(f"{DTB} not found - is this an H96 Max V58 running this image?")
+    if not os.path.isfile(STOCK):
+        subprocess.run(["cp", DTB, STOCK], check=True)
+        print(f"  created stock backup: {STOCK}")
+
+
+def decompile(path):
+    out = f"{WORK}/stock.dts"
+    os.makedirs(WORK, exist_ok=True)
+    r = sh(f"dtc -I dtb -O dts -o {out} {path} 2>/dev/null")
+    if not os.path.isfile(out):
+        die("dtc failed to decompile the device tree (is device-tree-compiler installed?)")
+    return out
+
+
+def chip_bins():
+    """This chip's PVTM-selected voltage bin per big cluster, from the kernel log."""
+    bins = {}
+    r = sh("dmesg 2>/dev/null | grep -E 'pvtm-volt-sel'")
+    for cluster, cpu in CLUSTER_CPU.items():
+        m = re.search(rf"{cpu}:\s*pvtm-volt-sel=(\d+)", r.stdout)
+        if m:
+            bins[cluster] = int(m.group(1))
+    return bins
+
+
+def parse_opp(dts_path, freq_hz):
+    """Return {cluster: {'props': [(name, uV)], 'lines': (start, end)}} for one frequency."""
+    lines = open(dts_path).read().split("\n")
+    tables = {}
+    for i, l in enumerate(lines):
+        m = re.match(r"\s*cluster(\d)-opp-table\s*\{", l)
+        if m:
+            tables[int(m.group(1))] = i
+    out = {}
+    hz_hex = f"0x{freq_hz & 0xFFFFFFFF:x}"
+    for cluster, tstart in tables.items():
+        if cluster == 0:
+            continue  # LITTLE cluster: not touched by this tool
+        # find the opp block for this frequency inside this table
+        nxt = min([v for v in tables.values() if v > tstart] + [len(lines)])
+        for i in range(tstart, nxt):
+            if "opp-hz" in lines[i] and hz_hex in lines[i].replace(" ", ""):
+                s = i
+                while s > tstart and "{" not in lines[s]:
+                    s -= 1
+                e = i
+                while e < nxt and lines[e].strip() != "};":
+                    e += 1
+                props = []
+                for j in range(s, e + 1):
+                    pm = re.match(r"\s*(opp-microvolt[\w-]*)\s*=\s*<([^>]+)>", lines[j])
+                    if pm:
+                        first = pm.group(2).split()[0]
+                        props.append((pm.group(1), int(first, 16), j))
+                if props:
+                    out[cluster] = {"props": props, "range": (s, e)}
+                break
+    return out
+
+
+def stock_value_for(cluster, props, bins):
+    """The vendor voltage THIS chip actually uses: its bin's variant, else the base."""
+    sel = bins.get(cluster)
+    if sel is not None:
+        for name, uv, _ in props:
+            if name == f"opp-microvolt-L{sel}":
+                return uv, f"L{sel}"
+    for name, uv, _ in props:
+        if name == "opp-microvolt":
+            return uv, "base (bin unknown)"
+    die(f"could not determine stock voltage for cluster{cluster}")
+
+
+def cmd_status():
+    ensure_stock_backup()
+    dts = decompile(STOCK)
+    bins = chip_bins()
+    opp = parse_opp(dts, DEFAULT_FREQ)
+    print(f"\n  Target frequency: {C.W}{C.BOLD}{DEFAULT_FREQ // 1000000} MHz{C.X}\n")
+    if not bins:
+        print("  NOTE: kernel log no longer contains the pvtm-volt-sel lines (dmesg rolled).")
+        print("        Falling back to the base table entry; reboot for an exact reading.\n")
+    for cluster in sorted(opp):
+        props = opp[cluster]["props"]
+        uv, which = stock_value_for(cluster, props, bins)
+        floor = min(p[1] for p in props)
+        print(f"  {C.W}{C.BOLD}cluster{cluster}{C.X}:  this chip's bin = {C.W}{C.BOLD}{which}{C.X}")
+        print(f"    vendor value for it : {C.W}{uv}{C.X} uV")
+        print(f"    vendor floor (L7)   : {C.Y}{floor}{C.X} uV   {C.DIM}<- this tool will not go below it{C.X}")
+        print(f"    headroom available  : {C.G}{C.BOLD}{(uv - floor) // 1000} mV{C.X}")
+    live = []
+    for r in sorted(os.listdir("/sys/class/regulator")):
+        p = f"/sys/class/regulator/{r}"
+        try:
+            n = open(f"{p}/name").read().strip()
+        except OSError:
+            continue
+        if n.startswith("vdd_cpu_big"):
+            live.append(f"{n}={open(f'{p}/microvolts').read().strip()}")
+    print(f"\n  live rails now: {'  '.join(live)}")
+    if os.path.isfile(STATE):
+        _st = open(STATE).read().strip()
+        _lbl = "active change " if _st.startswith("oc ") else "applied offset"
+        print(f"  {_lbl}: {_st}")
+    else:
+        print("  applied offset: none recorded by this tool")
+    # device tree can also be edited by hand; report a mismatch here rather than
+    # claiming stock because this tool has no state file
+    a = sh(f"md5sum {DTB}").stdout.split()[0] if os.path.isfile(DTB) else ""
+    b = sh(f"md5sum {STOCK}").stdout.split()[0] if os.path.isfile(STOCK) else ""
+    if a and b:
+        if a == b:
+            print(f"  device tree : {C.G}matches{C.X} the stock backup")
+        else:
+            print(f"  device tree : {C.Y}DIFFERS{C.X} from the stock backup")
+            if not os.path.isfile(STATE):
+                print("                (modified outside this tool. `revert` restores stock)")
+    if os.path.isfile(TRIAL_FLAG):
+        _tf = open(TRIAL_FLAG).read().strip()
+        if _tf == "armed":
+            print(f"\n  {C.Y}{C.BOLD}⚠ TRIAL, not booted yet{C.X} - reboot to activate this setting, then test it.")
+        else:
+            print(f"\n  {C.Y}{C.BOLD}⚠ TRIAL ACTIVE this boot{C.X} - it reverts on the next reboot unless you run:")
+        print(f"      {C.W}h96-undervolt confirm{C.X}   (keeps it permanently)")
+    print()
+
+
+def cmd_set(offset_mv):
+    need_root()
+    if offset_mv <= 0:
+        die("offset must be a positive number of millivolts to subtract")
+    # `set` and `oc` edit the same device tree; refuse rather than silently replace
+    # one with the other, so the user knows which change is active
+    _st = open(STATE).read().strip() if os.path.isfile(STATE) else ""
+    if _st.startswith("oc "):
+        die(f"an overclock is active ({_st}). Run `h96-undervolt revert` first - "
+            "one device-tree change at a time.")
+    ensure_stock_backup()
+    dts = decompile(STOCK)          # always from STOCK: offsets never compound
+    bins = chip_bins()
+    opp = parse_opp(dts, DEFAULT_FREQ)
+    if not opp:
+        die("could not find the target OPP block in the device tree")
+
+    lines = open(dts).read().split("\n")
+    plan = []
+    for cluster in sorted(opp):
+        props = opp[cluster]["props"]
+        stock_uv, which = stock_value_for(cluster, props, bins)
+        floor = min(p[1] for p in props)
+        target = stock_uv - offset_mv * 1000
+        if target < floor:
+            die(f"cluster{cluster}: {stock_uv} uV - {offset_mv} mV = {target} uV is below the\n"
+                f"  vendor floor of {floor} uV for this frequency. Refusing.\n"
+                f"  Maximum safe offset for this chip: {(stock_uv - floor) // 1000} mV")
+        plan.append((cluster, which, stock_uv, target, props))
+
+    print(f"\n  Plan (offset -{offset_mv} mV, derived from THIS chip's bins):\n")
+    for cluster, which, stock_uv, target, _ in plan:
+        print(f"    cluster{cluster} (bin {which}): {stock_uv} -> {target} uV")
+    print("\n  Every bin variant is set to the same value, so the result does not depend")
+    print("  on which bin the kernel selects at boot.\n")
+
+    for cluster, _, _, target, props in plan:
+        for name, _uv, lineno in props:
+            def repl(m):
+                vals = m.group(1).split()
+                return "<" + " ".join(
+                    "0xf4240" if int(v, 16) == 1000000 else hex(target) for v in vals
+                ) + ">"
+            lines[lineno] = re.sub(r"<([^>]+)>", repl, lines[lineno])
+
+    newdts = f"{WORK}/uv.dts"
+    open(newdts, "w").write("\n".join(lines))
+    newdtb = f"{WORK}/uv.dtb"
+    sh(f"dtc -I dts -O dtb -o {newdtb} {newdts} 2>/dev/null")
+    if not os.path.isfile(newdtb):
+        die("dtc failed to compile the modified device tree - nothing was changed")
+
+    subprocess.run(["cp", newdtb, DTB], check=True)
+    open(STATE, "w").write(f"-{offset_mv} mV\n")
+    open(TRIAL_FLAG, "w").write("armed\n")
+    sh("sync")
+    print("  Installed. TRIAL ARMED.\n")
+    print("  Next step: reboot. On that boot the undervolt is ACTIVE so you can test it.")
+    print("    stable  ->  h96-undervolt confirm   (keeps it permanently)")
+    print("    reboot without confirming           (stock voltages come back on their own)")
+    print("  If the box will not boot at all, reflash over USB (Maskrom).\n")
+    print("  Already trust this value? You can run `confirm` now, before rebooting.\n")
+    print("  Test with a SIMD workload, not a shell busy-loop (a tight integer loop draws")
+    print("  less current and can pass where real work does not):  h96-undervolt test\n")
+
+
+def find_opp_blocks(text, hz):
+    """Every opp-<hz> node in the tree, with its byte range and indentation."""
+    out = []
+    for m in re.finditer(rf"([ \t]*)opp-{hz}\s*{{", text):
+        indent, start = m.group(1), m.start()
+        depth, i = 0, text.index("{", start)
+        for k in range(i, len(text)):
+            if text[k] == "{":
+                depth += 1
+            elif text[k] == "}":
+                depth -= 1
+                if depth == 0:
+                    out.append((start, text.index(";", k) + 1, indent))
+                    break
+    return out
+
+
+def cmd_oc(mhz, uv):
+    """Add a higher operating point by cloning the 2208 MHz node."""
+    need_root()
+    hz = mhz * 1000000
+    if hz <= DEFAULT_FREQ:
+        die(f"{mhz} MHz is not above the vendor's top of {DEFAULT_FREQ // 1000000} MHz")
+    if hz > OC_MAX_HZ:
+        die(f"{mhz} MHz is beyond the only speed validated on this board "
+            f"({OC_MAX_HZ // 1000000} MHz). Refusing.")
+    if uv > OC_MAX_UV:
+        die(f"{uv / 1000:.1f} mV exceeds this tool's ceiling of {OC_MAX_UV / 1000:.1f} mV "
+            f"(the regulator's own max is 1050 mV). Refusing.")
+    if os.path.isfile(STATE):
+        die(f"a change is already active ({open(STATE).read().strip()}). "
+            "Run `h96-undervolt revert` first - one device-tree change at a time.")
+
+    ensure_stock_backup()
+    dts = decompile(STOCK)            # always from STOCK, never compounding
+    text = open(dts).read()
+    if f"opp-{hz}" in text:
+        die(f"the stock tree already defines {mhz} MHz - nothing to add")
+    blocks = find_opp_blocks(text, DEFAULT_FREQ)
+    if not blocks:
+        die("could not find the 2208 MHz operating point to clone")
+
+    print(f"\n  Plan: add {mhz} MHz at {uv / 1000:.1f} mV to {len(blocks)} big cluster(s).\n")
+    print("  Every bin variant is set to the same value, so the result does not depend")
+    print("  on which bin the kernel selects at boot.\n")
+    print("  MEASURED HERE: +8.7% clock produced +0.53% work (3730.5 -> 3750.2 events/s),")
+    print("  and 3 C more heat. The bottleneck on this SoC is memory, not core clock.")
+    print("  Undervolting at stock speed is the better trade.\n")
+
+    out, last = [], 0
+    for start, end, indent in blocks:
+        block = text[start:end]
+        new = block.replace(f"opp-{DEFAULT_FREQ}", f"opp-{hz}", 1)
+        new = re.sub(r"opp-hz\s*=\s*<[^>]*>",
+                     f"opp-hz = <0x00 0x{hz & 0xffffffff:x}>", new, count=1)
+
+        def setv(m):
+            name, vals = m.group(1), m.group(2).split()
+            nv = [hex(uv)] * len(vals)
+            if len(nv) >= 3:
+                nv[2] = hex(max(uv, 1050000))     # keep a sane regulator max cell
+            return f"{name} = <{' '.join(nv)}>"
+
+        new = re.sub(r"(opp-microvolt[\w-]*)\s*=\s*<([^>]+)>", setv, new)
+        out.append(text[last:end])
+        out.append("\n\n" + indent + new.lstrip())
+        last = end
+    out.append(text[last:])
+    newtext = "".join(out)
+
+    if newtext.count(f"opp-{hz}") != len(blocks):
+        die("internal error: wrong number of operating points inserted")
+
+    newdts, newdtb = f"{WORK}/oc.dts", f"{WORK}/oc.dtb"
+    os.makedirs(WORK, exist_ok=True)
+    open(newdts, "w").write(newtext)
+    sh(f"dtc -I dts -O dtb -o {newdtb} {newdts} 2>/dev/null")
+    if not os.path.isfile(newdtb):
+        die("the modified device tree does not compile - nothing was changed")
+    back = sh(f"dtc -I dtb -O dts -o - {newdtb} 2>/dev/null").stdout
+    if back.count(f"opp-{hz}") != len(blocks):
+        die("verification failed: the recompiled tree lost the new operating points")
+
+    subprocess.run(["cp", newdtb, DTB], check=True)
+    open(STATE, "w").write(f"oc {mhz} MHz @ {uv / 1000:.1f} mV\n")
+    open(TRIAL_FLAG, "w").write("armed\n")
+    sh("sync")
+    print("  Installed. TRIAL ARMED.\n")
+    print("  Next step: reboot. On that boot the change is ACTIVE so you can test it.")
+    print("    stable  ->  h96-undervolt confirm   (keeps it)")
+    print("    reboot without confirming           (stock tree comes back on its own)\n")
+    print("  Test with a SIMD workload pinned to the BIG cores - an 8-thread run")
+    print("  hides the effect, because the A55s are unchanged and gate the total:")
+    print("      taskset -c 1,2,3,4 sysbench cpu --threads=4 --time=15 run\n")
+
+
+def cmd_confirm():
+    need_root()
+    if not os.path.isfile(TRIAL_FLAG):
+        if os.path.isfile(STATE):
+            print(f"  already permanent ({open(STATE).read().strip()}). Nothing to confirm.")
+        else:
+            print("  no trial to confirm. Run `h96-undervolt set <mV>` first.")
+        return
+    os.unlink(TRIAL_FLAG)
+    sh("sync")
+    offset = open(STATE).read().strip() if os.path.isfile(STATE) else "unknown"
+    print(f"  confirmed. Setting ({offset}) is now permanent until you revert it.")
+
+
+def cmd_revert():
+    need_root()
+    if not os.path.isfile(STOCK):
+        die("no stock backup found - cannot revert")
+    subprocess.run(["cp", STOCK, DTB], check=True)
+    for f in (TRIAL_FLAG, STATE):
+        if os.path.isfile(f):
+            os.unlink(f)
+    sh("sync")
+    print("  stock device tree restored. Reboot to return to vendor voltages.")
+
+
+def cmd_test():
+    """SIMD/NEON stress - deliberately NOT a shell busy-loop."""
+    need_root()
+    if not sh("command -v openssl").stdout.strip():
+        die("openssl not found. Install it, or validate with a benchmark run instead")
+    print("\n  Running a NEON-heavy load on all cores for 60 s.")
+    print("  A tight integer busy-loop is not a valid test: it exercises a narrow part of")
+    print("  the CPU and draws less current than application work, so it can report a")
+    print("  setting as stable when it is not.")
+    print("  Even this NEON load is only a proxy. A full benchmark run is stronger.\n")
+    n = os.cpu_count() or 8
+    p = subprocess.Popen(
+        f"openssl speed -evp aes-256-gcm -seconds 60 -multi {n} >/dev/null 2>&1",
+        shell=True)
+    try:
+        p.wait()
+        print("  survived the NEON load.")
+        print("  Run a full multi-core benchmark before confirming.\n")
+    except KeyboardInterrupt:
+        p.kill()
+        print("\n  interrupted")
+
+
+USAGE = """h96-undervolt - opt-in CPU voltage and frequency tuning (H96 Max V58 / RK3588)
+
+  h96-undervolt status         show this chip's bin, its vendor voltage, and the floor
+  h96-undervolt set <mV>       undervolt by <mV> below THIS chip's own vendor value
+  h96-undervolt oc [mhz] [mV]  ADD a higher operating point (default 2400 MHz @ 975 mV)
+  h96-undervolt test           NEON stress test (a proxy; a benchmark run is stronger)
+  h96-undervolt confirm        keep the current setting (clears the auto-revert trial)
+  h96-undervolt revert         restore the vendor device tree
+
+Both `set` and `oc` edit the same device tree, so only one may be active at a time. Each
+arms a trial: after you reboot, the new setting is active for that boot so you can test it,
+and it stays only if you `confirm`. Reboot without confirming and the stock tree returns on
+its own. (You can also `confirm` in the same session as `set`, before rebooting, if you
+already trust the value.)
+
+UNDERVOLTING is the useful one. The flow is:  set <mV>  ->  reboot  ->  test  ->  confirm
+Start at 10-25 mV.
+
+OVERCLOCKING mostly is not, and the numbers measured on this board say so plainly:
+
+    2208 MHz -> 3730.5 events/s        2400 MHz -> 3750.2 events/s
+    +8.7% clock  ->  +0.53% work,  peak temp 82 C -> 85 C
+
+(sysbench cpu, 4 threads pinned to the big cores, 3 alternating reps, clock verified
+mid-run.) A compute-bound workload that should scale with clock does not, because the
+limit on this SoC is memory bandwidth (~21 GB/s), not core frequency. `oc` is provided
+because it works and is safe to try, not because it is worth keeping.
+
+When testing an overclock, PIN TO THE BIG CORES. An 8-thread run hides the effect
+entirely: this SoC is 4x A76 + 4x A55, the A55s are unchanged, and they gate the total.
+The big cores are 1,2,3,4 - the topology is NOT contiguous (policy0 = cpus 0,5,6,7).
+
+Neither raises the board's power-delivery ceiling. If the box resets under heavy load,
+that is the power supply: this board wants 12 V, and a 5 V adapter will boot it but
+collapse under all-core load."""
+
+
+def main():
+    if len(sys.argv) < 2:
+        print(USAGE)
+        return
+    cmd = sys.argv[1]
+    if cmd in ("status", "test", "help", "-h", "--help"):
+        banner()
+    if cmd == "status":
+        cmd_status()
+    elif cmd == "set":
+        if len(sys.argv) < 3:
+            die("usage: h96-undervolt set <millivolts>")
+        try:
+            cmd_set(int(sys.argv[2]))
+        except ValueError:
+            die("offset must be an integer number of millivolts")
+    elif cmd == "oc":
+        mhz = OC_MAX_HZ // 1000000
+        uv = OC_TESTED_UV
+        if len(sys.argv) >= 3:
+            try:
+                mhz = int(sys.argv[2])
+            except ValueError:
+                die("usage: h96-undervolt oc [mhz] [millivolts]")
+        if len(sys.argv) >= 4:
+            try:
+                uv = int(float(sys.argv[3]) * 1000)
+            except ValueError:
+                die("voltage must be a number of millivolts")
+        cmd_oc(mhz, uv)
+    elif cmd == "confirm":
+        cmd_confirm()
+    elif cmd == "revert":
+        cmd_revert()
+    elif cmd == "test":
+        cmd_test()
+    else:
+        print(USAGE)
+
+
+if __name__ == "__main__":
+    main()

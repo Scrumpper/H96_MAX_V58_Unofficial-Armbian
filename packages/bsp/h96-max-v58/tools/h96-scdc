@@ -1,0 +1,687 @@
+#!/usr/bin/env python3
+"""h96-scdc: HDMI 2.0 scrambling check + HDMI 2.1 FRL link check for H96 Max V58 (HDMI0).
+
+TMDS modes above 340 MHz need sink scrambling + 1/40 clock ratio (SCDC 0x20 = 0x03).
+dw-hdmi-qp's own DDC controller never completes a transfer on this board, so this daemon
+writes it over i2c-gpio bus 'i2c-ddc' (0x54) after every modeset: 0x03 above 340 MHz,
+0x00 at or below (only if not already 0). Verifies sink status 0x21 bit0 (scrambled) and
+0x40 & 0x0f (clock + 3 lanes locked).
+
+FRL modes (pixel clock >= 600 MHz; kernel trains the link over the same bus): 0x20 never
+written. Outcome from kernel log ('flt success' = trained; training error lines = failed).
+No outcome after FRL_GRACE_S: SCDC 0x40-0x42 read once; lane training requests still set =
+failed; unreadable or unclear status = logged only. Untested on hardware.
+
+No lock after a modeset (TMDS: clock seen, scrambler or lanes not locked, one retry; FRL:
+failed as above): switches back to the last mode that worked (1920x1080@60 if none)
+through KDE (kscreen-doctor, so KDE remembers it for this display; xrandr without a
+session) and records the mode in /etc/h96/display-nolock. Kernel EDID untouched. At most
+one automatic revert per 15 s: never loops. Sink not answering or no clock (display
+asleep) = logged only.
+
+Trigger: kernel log line 'fde80000.hdmi: final tmdsclk = N' (every HDMI modeset,
+console or X); current mode read from /sys/kernel/debug/dri/0/summary.
+While scrambled: 0x20 re-checked every 5 s (sink reset without hotplug).
+
+  h96-scdc daemon     run (h96-scdc.service; off with 'h96-display hdmi20 off')
+  h96-scdc apply      one evaluation now (no revert)
+  h96-scdc set-mode WxH@HZ   switch through KDE (xrandr fallback); h96-display revert|native
+  h96-scdc status     current clock, link mode and sink SCDC registers
+  h96-scdc --selftest host tests with mocked registers and kernel log
+"""
+import ctypes
+import errno
+import fcntl
+import json
+import os
+import pwd
+import re
+import select
+import subprocess
+import sys
+import time
+
+SCDC = 0x54
+I2C_SLAVE = 0x0703
+I2C_RDWR = 0x0707
+I2C_M_RD = 0x0001
+TIER_KHZ = 340000                          # HDMI 1.4 TMDS limit; above = scrambling
+FRL_KHZ = 600000                           # pixel clock from which the driver uses FRL
+SUMMARY = "/sys/kernel/debug/dri/0/summary"
+HDMI_STATUS = "/sys/kernel/debug/dw-hdmi0/status"
+CONN_STATUS = "/sys/class/drm/card0-HDMI-A-1/status"
+LOCK = "/run/h96-audio-detect.lock"         # detect DDC lock
+STATE = "/run/h96-scdc.state"
+NOLOCK = "/etc/h96/display-nolock"          # "display_md5 kHz WxH@HZ"
+SINK_JSON = "/etc/h96/hdmi-sink.json"
+X_AUTH = "/var/run/lightdm/root/:0"
+SAFE_MODE = "1920x1080@60"
+TRIG = re.compile(r"fde80000\.hdmi: final tmdsclk = (\d+)")
+KDEV = re.compile(r"(fde80000\.hdmi|hdmiphy)")          # controller + hdptx PHY lines
+FRL_OK = ("flt success",)
+FRL_FAIL = ("scdc sink version is zero", "sink flt isn't ready", "ffe level out of range",
+            "goto ltsl", "wait flt_start or flt_update time out", "flt failed",
+            "hdmi set operation mode failed", "can't find frl rate")
+FRL_ABORT = ("hdmi dclk is disabled", "hdmi is disconnected")   # output switched off, not a failure
+FRL_GRACE_S = 15                            # 3 rate steps x 2 s lts3 + 2 s ltsp + PHY init
+FRL_SETTLE_S = 1.5                          # failure line then new modeset = mode switch
+RECHECK_S = 5
+REVERT_HOLD_S = 15                          # no second automatic revert inside this window
+
+
+def log(msg):
+    print(msg, flush=True)
+
+
+def ddc_bus():
+    for d in sorted(os.listdir("/sys/class/i2c-dev")):
+        try:
+            if open(f"/sys/class/i2c-dev/{d}/name").read().strip() == "i2c-ddc":
+                return int(d.split("-")[1])
+        except OSError:
+            pass
+    return None
+
+
+def _read(path):
+    try:
+        return open(path).read()
+    except OSError:
+        return ""
+
+
+def _summary():
+    return _read(SUMMARY)
+
+
+def _hdmi_vp():
+    """VOP2 summary section of the port driving HDMI-A-1 ('' = off)."""
+    for vp in re.split(r"(?m)^Video Port\d+: ", _summary())[1:]:
+        if vp.startswith("ACTIVE") and "HDMI-A-1" in vp:
+            return vp
+    return ""
+
+
+def pixel_khz():
+    """HDMI-A-1 mode pixel clock; None = output off."""
+    m = re.search(r"dclk\[(\d+) kHz\]", _hdmi_vp())
+    return int(m.group(1)) if m else None
+
+
+def tmds_khz():
+    """HDMI-A-1 TMDS clock from VOP2 debugfs summary; None = output off."""
+    vp = _hdmi_vp()
+    khz = pixel_khz()
+    if khz is None:
+        return None
+    fmt = re.search(r"bus_format\[[0-9a-f]+\]: (\S+)", vp)
+    fmt = fmt.group(1) if fmt else ""
+    if "UYYVYY" in fmt:                     # 4:2:0 halves TMDS
+        khz //= 2
+    elif "101010" in fmt:                   # 10-bit: 1.25x
+        khz = khz * 5 // 4
+    return khz
+
+
+def frl_active():
+    """Current mode driven in FRL (driver: mode clock >= 600 MHz)."""
+    pk = pixel_khz()
+    return bool(pk and pk >= FRL_KHZ) or "FRL Mode" in _read(HDMI_STATUS)
+
+
+def connected():
+    return _read(CONN_STATUS).strip() != "disconnected"
+
+
+def cur_mode():
+    """Current HDMI mode as WxH@HZ ('' = off)."""
+    m = re.search(r"Display mode: (\d+x\d+)[pi](\d+)", _summary())
+    return f"{m.group(1)}@{m.group(2)}" if m else ""
+
+
+def desktop_session():
+    """(user, uid, home) owning a running plasmashell, else None."""
+    for p in os.listdir("/proc"):
+        if not p.isdigit():
+            continue
+        try:
+            if open(f"/proc/{p}/comm").read().strip() == "plasmashell":
+                pw = pwd.getpwuid(os.stat(f"/proc/{p}").st_uid)
+                return pw.pw_name, pw.pw_uid, pw.pw_dir
+        except (OSError, KeyError):
+            pass
+    return None
+
+
+def as_user(sess, argv):
+    user, uid, home = sess
+    return ["runuser", "-u", user, "--", "env", "DISPLAY=:0", f"XAUTHORITY={home}/.Xauthority",
+            f"XDG_RUNTIME_DIR=/run/user/{uid}",
+            f"DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/{uid}/bus"] + argv
+
+
+def kscreen_mode(mode):
+    """Mode switch through KDE (kscreen-doctor as session user): KDE saves it for this display."""
+    sess = desktop_session()
+    if not sess:
+        return False
+    try:
+        w, h, r = (int(float(x)) for x in re.split(r"[x@]", mode))
+        j = json.loads(subprocess.run(as_user(sess, ["kscreen-doctor", "-j"]), capture_output=True,
+                                      text=True, timeout=15).stdout)
+        for o in j["outputs"]:
+            if not (o.get("connected") and o.get("enabled")):
+                continue
+            ids = [m["id"] for m in o["modes"] if m["size"]["width"] == w and m["size"]["height"] == h
+                   and round(m["refreshRate"]) == r]
+            if ids:
+                return subprocess.run(as_user(sess, ["kscreen-doctor", f"output.{o['name']}.mode.{ids[0]}"]),
+                                      capture_output=True, timeout=15).returncode == 0
+    except (OSError, ValueError, KeyError, subprocess.SubprocessError):
+        pass
+    return False
+
+
+def xrandr_mode(mode):
+    """Fallback without KDE: X root auth (KDE does not remember it)."""
+    env = dict(os.environ, DISPLAY=":0", XAUTHORITY=X_AUTH)
+    try:
+        q = subprocess.run(["xrandr", "-q"], env=env, capture_output=True, text=True, timeout=10)
+        out = next((ln.split()[0] for ln in q.stdout.splitlines() if " connected" in ln), None)
+        if not out:
+            return False
+        w, hz = mode.split("@")
+        return subprocess.run(["xrandr", "--output", out, "--mode", w, "--rate", hz],
+                              env=env, timeout=10).returncode == 0
+    except (OSError, subprocess.SubprocessError, ValueError):
+        return False
+
+
+def set_mode(mode):
+    return kscreen_mode(mode) or xrandr_mode(mode)
+
+
+def display_md5():
+    try:
+        return json.load(open(SINK_JSON)).get("display_md5")
+    except (OSError, ValueError):
+        return None
+
+
+class _Msg(ctypes.Structure):
+    _fields_ = [("addr", ctypes.c_uint16), ("flags", ctypes.c_uint16),
+                ("len", ctypes.c_uint16), ("buf", ctypes.POINTER(ctypes.c_uint8))]
+
+
+class _RdWr(ctypes.Structure):
+    _fields_ = [("msgs", ctypes.POINTER(_Msg)), ("nmsgs", ctypes.c_uint32)]
+
+
+class Sink:
+    def __init__(self, bus):
+        self.fd = os.open(f"/dev/i2c-{bus}", os.O_RDWR)
+        fcntl.ioctl(self.fd, I2C_SLAVE, SCDC)
+
+    def close(self):
+        os.close(self.fd)
+
+    def read(self, reg):
+        """Offset write + repeated-start read (I2C_RDWR)."""
+        off, val = (ctypes.c_uint8 * 1)(reg), (ctypes.c_uint8 * 1)()
+        msgs = (_Msg * 2)(_Msg(SCDC, 0, 1, off), _Msg(SCDC, I2C_M_RD, 1, val))
+        fcntl.ioctl(self.fd, I2C_RDWR, _RdWr(msgs, 2))
+        return val[0]
+
+    def write(self, reg, val):
+        os.write(self.fd, bytes([reg, val]))
+
+
+def open_sink(bus):
+    return Sink(bus)
+
+
+def ddc_lock():
+    """Detect's flock, 5 s max; per-transfer atomicity comes from the i2c core."""
+    try:
+        f = open(LOCK, "a")
+    except OSError:
+        return None
+    end = time.monotonic() + 5
+    while True:
+        try:
+            fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return f
+        except OSError:
+            if time.monotonic() > end:
+                f.close()
+                return None
+            time.sleep(0.1)
+
+
+def locked(s):
+    return (s.read(0x21) & 1) == 1 and (s.read(0x40) & 0x0F) == 0x0F
+
+
+def record(res):
+    log(res)
+    try:
+        with open(STATE, "w") as f:
+            f.write(f"{time.strftime('%F %T')} {res}\n")
+    except OSError:
+        pass
+
+
+def frl_regs():
+    """SCDC 0x40-0x42 read-only under the detect lock; None = not readable."""
+    bus = ddc_bus()
+    if bus is None:
+        return None
+    lk = ddc_lock()
+    try:
+        s = open_sink(bus)
+    except OSError:
+        if lk:
+            lk.close()
+        return None
+    try:
+        return {r: s.read(r) for r in (0x40, 0x41, 0x42)}
+    except OSError:
+        return None
+    finally:
+        s.close()
+        if lk:
+            lk.close()
+
+
+def frl_verdict(regs):
+    """SCDC after grace -> 'locked' | 'nolock' | 'unknown' (only lane requests count as failure)."""
+    if not regs:
+        return "unknown"
+    ltp = regs[0x41] | regs[0x42]            # per-lane LTP / FFE / rate requests, 0 = done
+    if ltp and any(ltp >> n & 0xF for n in (0, 4)):
+        return "nolock"
+    if not ltp and regs[0x40] & 0x0E == 0x0E:  # Ln0-2 locked (bit 4 = Ln3)
+        return "locked"
+    return "unknown"
+
+
+def evaluate(hint_khz=None):
+    """Bring sink TMDS_Config in line with current mode.
+    -> (khz, state): off | plain | locked | nolock | asleep | nosink | error | frl."""
+    if frl_active():
+        return pixel_khz(), "frl"           # kernel owns SCDC during FRL training
+    khz = tmds_khz() or hint_khz
+    if khz is None:
+        return None, "off"
+    want = 0x03 if khz > TIER_KHZ else 0x00
+    bus = ddc_bus()
+    if bus is None:
+        log("no i2c-ddc adapter: SCDC not written")
+        return khz, "error"
+    lk = ddc_lock()
+    try:
+        s = open_sink(bus)
+    except OSError as e:
+        log(f"i2c-{bus}: {e}")
+        if lk:
+            lk.close()
+        return khz, "error"
+    state, res = "plain", ""
+    try:
+        try:
+            cur = s.read(0x20)
+        except OSError:
+            if want:
+                record(f"{khz} kHz: sink SCDC not answering (0x54 NACK)")
+            return khz, "nosink" if want else "plain"
+        if cur != want:
+            s.write(0x20, want)
+        if want:
+            ok = False
+            for attempt in (1, 2):
+                for _ in range(20):
+                    time.sleep(0.1)
+                    if locked(s):
+                        ok = True
+                        break
+                if ok:
+                    break
+                if attempt == 1:
+                    s.write(0x20, want)
+            st40 = s.read(0x40)
+            state = "locked" if ok else ("nolock" if st40 & 1 else "asleep")
+            res = (f"{khz} kHz: 0x20 {cur:#04x} -> {s.read(0x20):#04x}, 0x21 {s.read(0x21):#04x}, "
+                   f"0x40 {st40:#04x}: " + {"locked": "locked", "nolock": "NOT LOCKED",
+                                            "asleep": "no clock seen (display asleep?)"}[state])
+        elif cur != want:
+            res = f"{khz} kHz: 0x20 {cur:#04x} -> {s.read(0x20):#04x} (scrambling off)"
+    except OSError as e:
+        state, res = "error", f"{khz} kHz: DDC error {e}"
+    finally:
+        s.close()
+        if lk:
+            lk.close()
+    if res:
+        record(res)
+    return khz, state
+
+
+class Daemon:
+    def __init__(self):
+        self.last_good = ""                  # last mode shown with lock (or unscrambled)
+        self.last_revert = -1e9
+        self.scrambled = False
+        self.pending = self.hint = None      # modeset settle deadline, trigger TMDS kHz
+        self.buf = []                        # controller/PHY lines since last trigger
+        self.frl = None                      # FRL watch: mode, khz, start, ok, fail, fail_at, abort
+        self.next_recheck = 0.0
+
+    def on_modeset(self, hint_khz=None, now=None):
+        now = time.monotonic() if now is None else now
+        mode = cur_mode()
+        khz, state = evaluate(hint_khz)
+        self.scrambled = bool(khz and khz > TIER_KHZ and state == "locked")
+        self.frl = None
+        if state == "frl":
+            self.frl = {"mode": mode, "khz": khz, "start": now, "ok": False, "fail": "",
+                        "fail_at": 0.0, "abort": False}
+            record(f"{khz} kHz {mode}: FRL (kernel link training, SCDC 0x20 not written)")
+            for ln in self.buf:
+                self.frl_line(ln, now)
+        elif state in ("plain", "locked"):
+            self.last_good = mode
+        elif state == "nolock":
+            self.no_lock(mode, khz)
+        self.buf = []
+        return state
+
+    def frl_line(self, text, now):
+        f = self.frl
+        if f is None or f["ok"] or f["fail"]:
+            return
+        if any(s in text for s in FRL_ABORT):
+            f["abort"] = True
+        elif any(s in text for s in FRL_OK):
+            f["ok"] = True
+            self.last_good = f["mode"]
+            record(f"{f['khz']} kHz {f['mode']}: FRL trained (kernel 'flt success')")
+        elif not f["abort"] and any(s in text for s in FRL_FAIL):
+            f["fail"], f["fail_at"] = text.split(": ", 1)[-1].strip(), now + FRL_SETTLE_S
+
+    def frl_tick(self, now):
+        f = self.frl
+        if f["ok"] or f["abort"]:
+            return
+        if f["fail"] and now >= f["fail_at"]:
+            self.frl = None
+            if cur_mode() == f["mode"] and (pixel_khz() or 0) >= FRL_KHZ and connected():
+                record(f"{f['khz']} kHz {f['mode']}: FRL training failed ({f['fail']})")
+                self.no_lock(f["mode"], f["khz"])
+        elif not f["fail"] and now - f["start"] >= FRL_GRACE_S:
+            self.frl = None
+            if cur_mode() != f["mode"] or not connected():
+                return
+            regs = frl_regs()
+            v = frl_verdict(regs)
+            rs = " ".join(f"{r:#04x}={x:#04x}" for r, x in regs.items()) if regs else "not readable"
+            record(f"{f['khz']} kHz {f['mode']}: no FRL result in kernel log after {FRL_GRACE_S}s, "
+                   f"SCDC {rs}: " + {"locked": "lanes locked", "nolock": "lanes still training",
+                                     "unknown": "status unclear, left as is"}[v])
+            if v == "locked":
+                self.last_good = f["mode"]
+            elif v == "nolock":
+                self.no_lock(f["mode"], f["khz"])
+
+    def no_lock(self, mode, khz):
+        now = time.monotonic()
+        if now - self.last_revert < REVERT_HOLD_S:
+            log(f"{mode}: no lock again within {REVERT_HOLD_S}s of an automatic revert: left as is")
+            return
+        self.last_revert = now
+        target = self.last_good if self.last_good and self.last_good != mode else SAFE_MODE
+        md5 = display_md5()
+        if md5 and mode:
+            try:
+                with open(NOLOCK, "a") as f:
+                    f.write(f"{md5} {khz} {mode}\n")
+            except OSError:
+                pass
+        if set_mode(target):
+            log(f"{mode} ({khz} kHz): sink did not lock, switched back to {target}")
+        else:
+            log(f"{mode} ({khz} kHz): sink did not lock, switch to {target} failed (no X?)")
+
+    def recheck(self):
+        """Scrambled: rewrite 0x20 when sink lost it (monitor power toggle keeps HPD)."""
+        bus = ddc_bus()
+        if bus is None:
+            return
+        try:
+            s = open_sink(bus)
+        except OSError:
+            return
+        try:
+            lost = s.read(0x20) != 0x03
+        except OSError:
+            lost = False
+        s.close()
+        if lost:
+            evaluate()                       # no revert: not a modeset
+
+    def feed(self, rec, now):
+        """One kernel log record."""
+        m = TRIG.search(rec)
+        if m:
+            self.hint = int(m.group(1)) // 1000
+            self.pending = now + 0.4         # settle: commit finishes, repeats merge
+            self.buf, self.frl = [], None
+        elif KDEV.search(rec):
+            if self.pending is not None:
+                self.buf = self.buf[-50:] + [rec]
+            elif self.frl:
+                self.frl_line(rec, now)
+
+    def timeout(self, now):
+        t = [RECHECK_S]
+        if self.pending is not None:
+            t.append(self.pending - now)
+        if self.frl and not (self.frl["ok"] or self.frl["abort"]):
+            t.append((self.frl["fail_at"] if self.frl["fail"] else
+                      self.frl["start"] + FRL_GRACE_S) - now)
+        return max(0.0, min(t))
+
+    def tick(self, now):
+        if self.pending is not None and now >= self.pending:
+            self.pending = None
+            self.on_modeset(self.hint, now)
+        elif self.frl:
+            self.frl_tick(now)
+        elif self.scrambled and now >= self.next_recheck:
+            self.next_recheck = now + RECHECK_S
+            self.recheck()
+
+    def run(self):
+        fd = os.open("/dev/kmsg", os.O_RDONLY | os.O_NONBLOCK)
+        os.lseek(fd, 0, os.SEEK_END)
+        khz, state = evaluate()              # startup: no revert
+        self.last_good = cur_mode() if state in ("plain", "locked") else ""
+        self.scrambled = bool(khz and khz > TIER_KHZ and state == "locked")
+        while True:
+            r, _, _ = select.select([fd], [], [], self.timeout(time.monotonic()))
+            if r:
+                try:
+                    rec = os.read(fd, 8192).decode("utf-8", "replace")
+                except OSError as e:
+                    if e.errno in (errno.EPIPE, errno.EAGAIN):
+                        continue
+                    raise
+                self.feed(rec, time.monotonic())
+                continue
+            self.tick(time.monotonic())
+
+
+def status():
+    pk, khz = pixel_khz(), tmds_khz()
+    if pk is None:
+        print("HDMI-A-1 output off")
+    elif frl_active():
+        print(f"FRL, pixel clock {pk} kHz (kernel link training; untested on hardware)")
+    else:
+        print(f"TMDS {khz} kHz")
+    bus = ddc_bus()
+    if bus is None:
+        print("no i2c-ddc adapter")
+        return 1
+    try:
+        s = open_sink(bus)
+        print(f"i2c-{bus}: " + " ".join(f"{r:#04x} {s.read(r):#04x}" for r in (0x20, 0x21, 0x40, 0x41, 0x42)))
+        s.close()
+    except OSError as e:
+        print(f"i2c-{bus}: sink SCDC not answering ({e})")
+    try:
+        print("last: " + open(STATE).read().strip())
+    except OSError:
+        pass
+    return 0
+
+
+# ------------------------------------------------------------------ host tests
+class _FakeSink:
+    def __init__(self, regs, writes, fail=False, on_write=None):
+        self.regs, self.writes, self.fail, self.on_write = regs, writes, fail, on_write
+
+    def read(self, reg):
+        if self.fail:
+            raise OSError(errno.ENXIO, "NACK")
+        return self.regs.get(reg, 0)
+
+    def write(self, reg, val):
+        self.writes.append((reg, val))
+        self.regs[reg] = val
+        if self.on_write:
+            self.on_write(self.regs)
+
+    def close(self):
+        pass
+
+
+def selftest(check):
+    g = globals()
+    env = {"summary": "", "regs": {}, "fail": False, "on_write": None}
+    writes, modes = [], []
+
+    def summ(mode, khz, fmt="RGB888_1X24"):
+        w, r = mode.split("@")
+        return (f"Video Port0: ACTIVE\n    Connector:HDMI-A-1\tEncoder: TMDS-472\n"
+                f"\tbus_format[100a]: {fmt}\n    Display mode: {w}p{r}\n"
+                f"\tdclk[{khz} kHz] real_dclk[{khz} kHz] aclk[800000 kHz]\n")
+
+    g.update(_summary=lambda: env["summary"], _read=lambda p: "connected" if p == CONN_STATUS else "",
+             ddc_bus=lambda: 10, ddc_lock=lambda: None, display_md5=lambda: None,
+             open_sink=lambda bus: _FakeSink(env["regs"], writes, env["fail"], env["on_write"]),
+             set_mode=lambda m: modes.append(m) or True, record=lambda res: None, log=lambda m: None)
+    time.sleep = lambda s: None
+
+    def reset(mode, khz, regs, fmt="RGB888_1X24", fail=False, on_write=None):
+        env.update(summary=summ(mode, khz, fmt), regs=dict(regs), fail=fail, on_write=on_write)
+        writes.clear()
+        modes.clear()
+
+    def lock_on_write(r):
+        r.update({0x21: 1, 0x40: 0x0F} if r.get(0x20) == 3 else {})
+
+    reset("2560x1440@120", 497750, {0x20: 0}, on_write=lock_on_write)
+    d = Daemon()
+    d.last_good = "2560x1440@60"
+    check(d.on_modeset(497750) == "locked" and writes == [(0x20, 3)] and not modes,
+          "TMDS 497.75 MHz: 0x20 = 0x03 written, locked, no revert")
+    reset("2560x1440@144", 596250, {0x20: 0, 0x21: 0, 0x40: 0x01})
+    d = Daemon()
+    d.last_good = "2560x1440@60"
+    check(d.on_modeset(596250) == "nolock" and writes[0] == (0x20, 3) and modes == ["2560x1440@60"],
+          "TMDS 596.25 MHz no lock: reverted to last working mode")
+    reset("1920x1080@60", 148500, {0x20: 3})
+    check(Daemon().on_modeset(148500) == "plain" and writes == [(0x20, 0)],
+          "TMDS 148.5 MHz: scrambling cleared")
+
+    def frl_run(mode, khz, fmt, lines, t_end, regs=None, fail=False, trig_again=None):
+        reset(mode, khz, regs or {}, fmt, fail)
+        d = Daemon()
+        d.last_good = "2560x1440@60"
+        d.feed(f"6,1,1,-;dwhdmi-rockchip fde80000.hdmi: final tmdsclk = {khz * 1000}", 0.0)
+        t = 0.0
+        for ln in lines:
+            t += 0.1
+            d.feed(f"3,2,2,-;dwhdmi-rockchip fde80000.hdmi: {ln}", t)
+            d.tick(t)
+        if trig_again is not None:
+            d.feed(f"6,3,3,-;dwhdmi-rockchip fde80000.hdmi: final tmdsclk = {trig_again}", t + 0.2)
+            env["summary"] = summ("1920x1080@60", 148500)
+        while t < t_end:
+            t += 0.25
+            d.tick(t)
+        return d
+
+    d = frl_run("3840x2160@120", 1188000, "RGB888_1X24", ["Training finish, go to ltsp", "flt success"], 30)
+    check(not writes and not modes and d.last_good == "3840x2160@120",
+          "FRL 4K120 trained: no SCDC write, no revert, kept as last working")
+    d = frl_run("7680x4320@60", 2376000, "UYYVYY8_0_5X24", ["flt success"], 30)
+    check(not writes and not modes, "FRL 8K60 4:2:0: no scrambling write (TMDS clock halved ignored)")
+    d = frl_run("3840x2160@120", 1188000, "UYYVYY8_0_5X24", ["flt success"], 30)
+    check(not writes and not modes, "FRL 4K120 4:2:0 (TMDS 594 MHz): FRL path, no 0x20 write")
+    frl_run("3840x2160@120", 1188000, "RGB888_1X24", ["goto lts4", "from lts4 go to lts3",
+                                                      "lts3 time out, goto ltsl"], 5)
+    check(not writes and modes == ["2560x1440@60"], "FRL training failed (lts3 time out): reverted")
+    frl_run("7680x4320@60", 2376000, "UYYVYY8_0_5X24", ["sink flt isn't ready,SCDC_STATUS_FLAGS_0:0x0"], 5)
+    check(modes == ["2560x1440@60"], "FRL sink not ready: reverted")
+    frl_run("3840x2160@120", 1188000, "RGB888_1X24", ["hdmi dclk is disabled, stop flt",
+                                                      "lts3 time out, goto ltsl"], 30)
+    check(not modes, "FRL aborted by output disable: no revert")
+    frl_run("3840x2160@120", 1188000, "RGB888_1X24", ["lts3 time out, goto ltsl"], 30,
+            trig_again=148500000)
+    check(not modes, "FRL failure line then new modeset: no revert")
+    frl_run("3840x2160@120", 1188000, "RGB888_1X24", [], 30, regs={0x40: 0x40, 0x41: 0x21, 0x42: 0x43})
+    check(not writes and modes == ["2560x1440@60"], "FRL no log, lanes still requesting LTP: reverted")
+    frl_run("3840x2160@120", 1188000, "RGB888_1X24", [], 30, fail=True)
+    check(not modes, "FRL no log, SCDC not readable: left as is")
+    frl_run("3840x2160@120", 1188000, "RGB888_1X24", [], 30, regs={0x40: 0x00, 0x41: 0, 0x42: 0})
+    check(not modes, "FRL no log, SCDC all zero: left as is")
+    d = frl_run("3840x2160@120", 1188000, "RGB888_1X24", [], 30, regs={0x40: 0x5E, 0x41: 0, 0x42: 0})
+    check(not modes and d.last_good == "3840x2160@120", "FRL no log, lanes locked: kept")
+    check(frl_verdict({0x40: 0x40, 0x41: 0xFF, 0x42: 0xFF}) == "nolock" and
+          frl_verdict(None) == "unknown", "frl_verdict: rate-change request = failed, None = unknown")
+
+
+def main(argv):
+    cmd = argv[1] if len(argv) > 1 else "status"
+    if cmd in ("-h", "--help"):
+        print(__doc__)
+        return 0
+    if cmd == "--selftest":
+        ok = [True]
+
+        def check(c, msg):
+            print(("PASS " if c else "FAIL ") + msg)
+            ok[0] &= bool(c)
+        selftest(check)
+        return 0 if ok[0] else 1
+    if cmd == "status":
+        return status()
+    if os.geteuid() != 0:
+        print("h96-scdc: needs root", file=sys.stderr)
+        return 1
+    if cmd == "daemon":
+        Daemon().run()
+    elif cmd == "apply":
+        khz, state = evaluate()
+        print(f"{'FRL pixel clock' if state == 'frl' else 'TMDS'} {khz} kHz: {state}")
+    elif cmd == "set-mode" and len(argv) > 2:
+        return 0 if set_mode(argv[2]) else 1
+    else:
+        print(__doc__)
+        return 2
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))

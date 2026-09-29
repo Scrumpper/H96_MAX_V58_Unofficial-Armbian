@@ -1,0 +1,80 @@
+#!/bin/bash
+# h96-wifi-connect: joins wlan0 directly via wpa_supplicant (NetworkManager's D-Bus control fails on this bcmdhd driver); forces single-AKM WPA-PSK, PMF off.
+
+# shared banner; stub avoids "command not found" if lib is missing
+[ -r /usr/local/lib/h96/banner.sh ] && . /usr/local/lib/h96/banner.sh
+command -v h96_banner >/dev/null 2>&1 || h96_banner() { :; }
+
+set -u
+
+usage(){
+  echo "usage: sudo h96-wifi-connect <SSID> [password]"
+  echo "  Joins WiFi network on wlan0 (WPA-PSK, single AKM, PMF off) and saves it."
+  echo "  Without password, prompts for it. Without SSID, lists visible networks."
+  echo "  -h, --help   show this help"
+}
+case "${1:-}" in
+  -h|--help) usage; exit 0;;
+  -*) echo "h96-wifi-connect: unknown option '$1' (SSID cannot start with '-')" >&2; usage >&2; exit 2;;
+esac
+
+h96_banner "W I F I   S E T U P"
+
+IFACE="${H96_WIFI_IFACE:-wlan0}"
+WPACLI="wpa_cli -i $IFACE"
+
+[ "$(id -u)" = 0 ] || { echo "must run as root (sudo h96-wifi-connect ...)"; exit 1; }
+$WPACLI status >/dev/null 2>&1 || {
+  echo "wpa_supplicant isn't reachable on $IFACE."
+  echo "check: systemctl status h96-wpa-supplicant-wlan0.service"
+  exit 1
+}
+
+if [ $# -lt 1 ]; then
+  echo "usage: h96-wifi-connect <SSID> [password]"
+  echo
+  echo "visible networks:"
+  $WPACLI scan >/dev/null
+  sleep 3
+  $WPACLI scan_results | tail -n +2 | sort -t$'\t' -k3 -rn | cut -f1,3,5 | column -t
+  exit 2
+fi
+
+SSID="$1"
+if [ $# -ge 2 ]; then PASS="$2"; else read -r -s -p "password for '$SSID': " PASS; echo; fi
+
+# drop existing network blocks for this SSID (idempotent re-run)
+while id=$($WPACLI list_networks | tail -n +2 | awk -F'\t' -v s="$SSID" '$2==s{print $1; exit}'); [ -n "$id" ]; do
+  $WPACLI remove_network "$id" >/dev/null
+done
+
+netid=$($WPACLI add_network)
+$WPACLI set_network "$netid" ssid "\"$SSID\"" >/dev/null
+$WPACLI set_network "$netid" psk "\"$PASS\"" >/dev/null
+# single-AKM WPA-PSK with PMF off: the combination proven to associate on this driver
+$WPACLI set_network "$netid" key_mgmt WPA-PSK >/dev/null
+$WPACLI set_network "$netid" ieee80211w 0 >/dev/null
+$WPACLI set_network "$netid" priority 1 >/dev/null
+$WPACLI enable_network "$netid" >/dev/null
+
+echo "connecting to '$SSID' (WPA-PSK, single AKM, PMF off)..."
+ok=0
+for _ in $(seq 1 20); do
+  state=$($WPACLI status | grep -m1 "^wpa_state=" | cut -d= -f2)
+  if [ "$state" = "COMPLETED" ]; then ok=1; break; fi
+  sleep 1
+done
+
+if [ "$ok" = 1 ]; then
+  $WPACLI save_config >/dev/null
+  echo
+  $WPACLI status | grep -E "^(ssid|ip_address|wpa_state)="
+  echo "saved to /etc/wpa_supplicant/wpa_supplicant-$IFACE.conf"
+  exit 0
+fi
+
+echo
+echo "still not connected after 20s. Collect evidence with:  sudo h96-wifi-diag"
+echo "current state:"
+$WPACLI status | grep -E "^wpa_state="
+exit 1

@@ -57,7 +57,7 @@ WINECFG=0
 
 die() { echo "h96-game-mode: $*" >&2; exit 1; }
 
-# --- arg parse -------------------------------------------------------------
+# --- arg parse ---
 ARGS=()
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -74,11 +74,8 @@ while [ $# -gt 0 ]; do
   esac
 done
 
-# --- fetch the wine/DXVK stack on first use (NOT baked into the image) -------
-# The box64 + wine(wow64) + DXVK bundle is ~206 MB. It is fetched on demand the
-# first time h96-game-mode runs, not shipped in the image. The URL comes from
-# /etc/h96/gaming-stack.url if present, else the default below. Once extracted
-# into /opt it is reused, so this download happens exactly once.
+# --- fetch wine/DXVK stack on first use (~206 MB, not baked into the image) ---
+# URL from /etc/h96/gaming-stack.url if present, else the default below; fetched once and reused from /opt.
 STACK_URL="$(cat /etc/h96/gaming-stack.url 2>/dev/null || echo 'https://github.com/Scrumpper/H96_MAX_V58_Unofficial-Armbian/releases/download/gaming-stack/h96-gaming-stack.tar.gz')"
 ensure_stack() {
   if [ -x "$WINE_DIR/bin/wine" ] || [ -x "$WINE_DIR/bin/wine64" ]; then return 0; fi
@@ -100,7 +97,7 @@ ensure_stack() {
 }
 ensure_stack
 
-# --- locate the wine binary (wow64 builds ship bin/wine; older ship wine64) --
+# --- locate wine binary (wow64 ships bin/wine, older ships wine64) ---
 WINE=""
 for w in "$WINE_DIR/bin/wine" "$WINE_DIR/bin/wine64"; do
   [ -x "$w" ] && { WINE="$w"; break; }
@@ -108,7 +105,7 @@ done
 [ -n "$WINE" ] || die "wine not found under $WINE_DIR/bin after fetch (stack URL/download problem?)"
 WINEBOOT="$WINE_DIR/bin/wineboot"
 
-# --- locate the PanVK ICD (filename varies across Mesa builds) --------------
+# --- locate PanVK ICD (filename varies across Mesa builds) ---
 ICD=""
 for f in /usr/share/vulkan/icd.d/panfrost_icd.aarch64.json \
          /usr/share/vulkan/icd.d/panfrost_icd.json; do
@@ -117,10 +114,10 @@ done
 [ -n "$ICD" ] || ICD=$(ls /usr/share/vulkan/icd.d/*panfrost*_icd*.json 2>/dev/null | head -1)
 [ -n "$ICD" ] || die "no panfrost/PanVK Vulkan ICD in /usr/share/vulkan/icd.d/ (Mesa/PanVK not installed?)"
 
-# --- source the shared env profile (box64 knobs, PULSE_LATENCY, etc.) -------
+# --- source shared env profile (box64 knobs, PULSE_LATENCY, etc.) ---
 [ -f "$ENV_FILE" ] && . "$ENV_FILE"
 
-# --- Vulkan + audio + SDL env (per-process, does not touch the desktop) -----
+# --- Vulkan/audio/SDL env, per-process only ---
 export VK_DRIVER_FILES="$ICD"
 export VK_ICD_FILENAMES="$ICD"          # legacy loader var, for older loaders
 export PULSE_LATENCY_MSEC="${PULSE_LATENCY_MSEC:-60}"
@@ -130,7 +127,7 @@ export WINEDEBUG="${WINEDEBUG:--all}"
 export WINEESYNC="${WINEESYNC:-1}"
 [ "$HUD" -eq 1 ] && export DXVK_HUD="fps,frametimes,version"
 
-# --- decide DXVK fork -------------------------------------------------------
+# --- decide DXVK fork ---
 resolve_dxvk() {
   case "$DXVK" in
     sarek)    echo "$GAMING_ROOT/dxvk-sarek";;
@@ -140,13 +137,13 @@ resolve_dxvk() {
   esac
 }
 
-# --- create the prefix on first use + install DXVK offline ------------------
+# --- create prefix on first use, install DXVK offline ---
 init_prefix() {
   mkdir -p "$PREFIX"
   if [ ! -f "$PREFIX/system.reg" ]; then
     echo "h96-game-mode: initializing wineprefix $PREFIX (first run)..."
     box64 "$WINEBOOT" -i >/dev/null 2>&1 || box64 "$WINE" wineboot -i >/dev/null 2>&1 || true
-    # gamepad fix from the Armbian thread: winebus DisableHidraw=1, Enable SDL=1
+    # Gamepad fix: winebus DisableHidraw=1, Enable SDL=1
     box64 "$WINE" reg add 'HKLM\System\CurrentControlSet\Services\winebus' \
       /v DisableHidraw /t REG_DWORD /d 1 /f >/dev/null 2>&1 || true
     box64 "$WINE" reg add 'HKLM\System\CurrentControlSet\Services\winebus' \
@@ -164,7 +161,7 @@ init_prefix() {
 
 init_prefix
 
-# --- build the inner command ------------------------------------------------
+# --- build inner command ---
 INNER=()
 if [ "$WINECFG" -eq 1 ]; then
   INNER=(box64 "$WINE" winecfg)
@@ -176,7 +173,7 @@ fi
 echo "h96-game-mode: prefix=$PREFIX dxvk=$DXVK icd=$ICD compositor=$COMPOSITOR"
 echo "h96-game-mode: running: ${INNER[*]}"
 
-# --- launch inside the nested Wayland compositor ----------------------------
+# --- launch inside nested Wayland compositor ---
 run_cage()      { exec cage -- "${INNER[@]}"; }
 run_gamescope() {
   local g=(gamescope -f)

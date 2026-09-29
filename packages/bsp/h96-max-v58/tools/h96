@@ -1,0 +1,142 @@
+#!/usr/bin/env bash
+# h96 - command index for the H96 Max V58; `h96 <command>` opens that tool's help.
+set -uo pipefail
+
+C_R=$'\033[91m'; C_G=$'\033[92m'; C_Y=$'\033[93m'; C_B=$'\033[96m'; C_P=$'\033[95m'
+C_W=$'\033[97m'; C_D=$'\033[2m'; C_BO=$'\033[1m'; C_X=$'\033[0m'
+[ -t 1 ] || { C_R=; C_G=; C_Y=; C_B=; C_P=; C_W=; C_D=; C_BO=; C_X=; }
+
+have(){ command -v "$1" >/dev/null 2>&1; }
+
+# curated category map: "command|description" per group. Only shown if the command exists.
+groups=(
+"Display & desktop:::
+h96-display|HDMI detect: display modes + audio from connected display; forced boot mode
+h96-scale|KDE Plasma global display scale (X11)
+h96-brightness|monitor brightness over DDC/CI
+h96-upscale|RAVU GPU upscaling shader in mpv"
+
+"Video:::
+h96-encode|hardware H.264/HEVC/MJPEG encode on the VPU
+h96-transcode-server|hardware transcode server
+h96-hdr|HDR10 tone-map to SDR in mpv
+h96-motion|motion smoothing / judder reduction in mpv
+h96-watch-mpv|desktop hardware-video launcher"
+
+"Audio:::
+h96-audio-eq|system-wide parametric EQ (PipeWire)
+h96-audio-passthrough|HDMI audio: layouts and passthrough detected from connected TV or receiver
+h96-bt-speaker|use the box as a Bluetooth A2DP speaker
+h96-cast|AirPlay audio, screen mirror, DLNA renderer
+h96-cec|HDMI-CEC control"
+
+"NPU & AI:::
+h96-npu|NPU status, tuning, single/3-core INT8 bench
+h96-npu-upscale|Real-ESRGAN x4 super-resolution on the NPU
+h96-subtitles|generate subtitles from an audio track"
+
+"Gaming:::
+h96-game-mode|run Windows games (box64 + wine + DXVK, gamescope)
+h96-dxvk-install|install DXVK into a wine prefix
+h96-emulators|GPU-accelerated console emulators (PanVK/Panfrost)
+h96-steam|Steam: native ARM64 client, or the x86-64 client under FEX-Emu"
+
+"Android:::
+h96-waydroid|Android in a container, in a window (Waydroid + Weston)"
+
+"Network:::
+h96-wifi-connect|join a WiFi network on wlan0
+h96-wifi-diag|one-shot WiFi diagnostics
+h96-wol|Wake-on-LAN over the wired port, opt-in
+h96-hotspot|turn wlan0 into a WiFi access point (NetworkManager), opt-in"
+
+"System & tuning:::
+h96-perf|CPU + GPU power profile (performance / balanced)
+scrumptop|live system monitor (temps, freqs, NPU bench)
+h96-bench|benchmark, thermal monitor, undervolt trials
+h96-undervolt|CPU undervolt / overclock tooling
+h96-backup|capture this box (installed features + saves) into one archive
+h96-restore|replay an h96-backup archive after a reflash
+h96-backup-gui|graphical backup and restore: pick what to include
+h96-boot-profile|capture the systemd-analyze boot report
+h96-widevine-setup|opt-in Widevine L3 browser DRM
+h96-leds|front-panel LED triggers (net/storage/heartbeat), opt-in
+h96-vm|KVM virtual machines (qemu-system-aarch64, hardware accelerated), opt-in"
+)
+
+# commands intentionally not indexed: internal helpers have no --help contract, so `h96 <name>` must not run them.
+skip_re='^(h96-feature|h96-mpv-kiosk|h96-vfd|h96-.*-setup|h96-firstboot.*|h96-glx-lax|h96-steam-arm-compatmap|h96-steam-arm-icon|h96-steam-tray|h96-display-confirm|h96-.*\.(sh|py|c|conf|bak|orig)|h96-.*\.v[0-9]+(\.[0-9]+)*)$'
+
+# description of curated command (fails silently when not curated)
+curated_desc(){
+  local g name desc
+  for g in "${groups[@]}"; do
+    while IFS='|' read -r name desc; do
+      [ "$name" = "$1" ] && { printf '%s\n' "$desc"; return 0; }
+    done <<< "${g#*:::}"
+  done
+  return 1
+}
+# compiled binaries give no --help contract: describe them instead of running them
+is_elf(){ [ "$(head -c 4 "$1" 2>/dev/null | tr -d '\0')" = $'\x7fELF' ]; }
+elf_desc(){
+  case "$1" in
+    h96-vfd) echo "front-panel VFD clock and status icons daemon (h96-vfd.service; systemctl status h96-vfd)";;
+    *) echo "compiled tool, no help text";;
+  esac
+}
+
+# ---- `h96 <command>`: open that tool's help ----
+if [ $# -gt 0 ]; then
+  cmd="$1"; [ "${cmd#h96-}" = "$cmd" ] && [ "$cmd" != scrumptop ] && cmd="h96-$cmd"
+  if have "$cmd"; then
+    path=$(command -v "$cmd")
+    if is_elf "$path"; then
+      printf "%s\n" "${C_G}${cmd}${C_X}  $(curated_desc "$cmd" || elf_desc "$cmd")"; exit 0
+    fi
+    # help only for indexed commands; internal setup/daemon scripts may act on unknown arguments
+    if curated_desc "$cmd" >/dev/null || ! [[ "$cmd" =~ $skip_re ]]; then
+      exec "$cmd" --help 2>&1
+    fi
+    echo "${C_Y}${cmd}${C_X} is internal (not indexed); no help shown. Read ${path} for details."; exit 0
+  fi
+  echo "${C_R}unknown command:${C_X} $1  (type ${C_BO}h96${C_X} for the list)"; exit 1
+fi
+
+# ---- `h96`: print the index ----
+render(){
+  printf "%s\n" "${C_BO}${C_B} H96 Max V58${C_X}${C_D}  ·  command index${C_X}"
+  printf "%s\n" "${C_D} type  h96 <command>  for that tool's help${C_X}"
+  local listed=""
+  for g in "${groups[@]}"; do
+    local title="${g%%:::*}" body="${g#*:::}" shown=""
+    while IFS='|' read -r name desc; do
+      [ -z "$name" ] && continue
+      if have "$name"; then
+        shown+=$(printf "\n   ${C_G}%-22s${C_X} ${C_D}%s${C_X}" "$name" "$desc")
+        listed+="$name "
+      fi
+    done <<< "$body"
+    [ -n "$shown" ] && printf "\n ${C_BO}${C_Y}%s${C_X}%s\n" "$title" "$shown"
+  done
+  # auto-scan: any h96-* / scrumptop on the box not already listed and not skipped
+  local extra=""
+  for f in /usr/local/bin/h96-* /usr/local/sbin/h96-*; do
+    [ -f "$f" ] || continue
+    local n; n=$(basename "$f")
+    [[ "$n" =~ $skip_re ]] && continue
+    case " $listed " in *" $n "*) continue;; esac
+    extra+=$(printf "\n   ${C_G}%-22s${C_X}" "$n")
+  done
+  [ -n "$extra" ] && printf "\n ${C_BO}${C_Y}More${C_X}${C_D} (see <command> --help)${C_X}%s\n" "$extra"
+  echo
+}
+
+out="$(render)"
+# page only if it does not fit
+lines=$(printf "%s\n" "$out" | wc -l)
+if [ -t 1 ] && [ "$lines" -gt "$(tput lines 2>/dev/null || echo 40)" ]; then
+  printf "%s\n" "$out" | less -R
+else
+  printf "%s\n" "$out"
+fi

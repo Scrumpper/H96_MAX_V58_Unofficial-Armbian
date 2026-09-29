@@ -1,0 +1,40 @@
+#!/bin/bash
+
+# shared block-letter header; stub avoids command-not-found when banner.sh is missing
+[ -r /usr/local/lib/h96/banner.sh ] && . /usr/local/lib/h96/banner.sh
+command -v h96_banner >/dev/null 2>&1 || h96_banner() { :; }
+
+h96_banner "P O W E R   P R O F I L E"
+
+GPU_GOV="/sys/class/devfreq/fb000000.gpu/governor"
+
+# NPU follow mode: off unless /etc/h96/npu-follow exists (set by `h96-npu power sync on|off`);
+# h96-npu only reads the governors set above, --quiet stays silent unless NPU governor moved
+npu_follow() {
+    [ -e /etc/h96/npu-follow ] || return 0
+    [ "$(id -u)" -eq 0 ] || return 0
+    command -v h96-npu >/dev/null 2>&1 || return 0
+    h96-npu power sync --quiet
+}
+
+case "${1:-status}" in
+    on|performance)
+        for f in /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor; do
+            echo performance > "$f" 2>/dev/null; done
+        echo performance > "$GPU_GOV" 2>/dev/null
+        echo "Performance mode ON (CPU + GPU)"
+        npu_follow;;
+    off|balanced|schedutil)
+        for f in /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor; do
+            echo schedutil > "$f" 2>/dev/null; done
+        echo simple_ondemand > "$GPU_GOV" 2>/dev/null
+        echo "Balanced mode ON (CPU + GPU)"
+        npu_follow;;
+    status|*)
+        echo "H96 Max V58 CPU governors:"
+        i=0
+        for f in /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor; do
+            echo "  cpu$i: $(cat $f 2>/dev/null)"; ((i++)); done
+        echo "H96 Max V58 GPU governor:"
+        echo "  GPU (Mali G610): $(cat $GPU_GOV 2>/dev/null || echo unknown)";;
+esac

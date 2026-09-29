@@ -1,0 +1,168 @@
+diff --git a/drivers/gpu/drm/rockchip/rockchip_drm_vop2.c b/drivers/gpu/drm/rockchip/rockchip_drm_vop2.c
+index 46cec3749..d8aae8a97 100644
+--- a/drivers/gpu/drm/rockchip/rockchip_drm_vop2.c
++++ b/drivers/gpu/drm/rockchip/rockchip_drm_vop2.c
+@@ -414,6 +414,8 @@ struct vop2_win {
+ 	uint8_t splice_win_id;
+ 
+ 	struct vop2_power_domain *pd;
++	/* @pd_held: window holds one reference on @pd */
++	bool pd_held;
+ 
+ 	/**
+ 	 * @phys_id: physical id for cluster0/1, esmart0/1, smart0/1
+@@ -2014,11 +2016,11 @@ static void vop2_power_domain_get(struct vop2_power_domain *pd)
+ 		vop2_power_domain_get(pd->parent);
+ 
+ 	spin_lock(&pd->lock);
+-	if (pd->ref_count == 0) {
+-		if (pd->vop2->data->delayed_pd)
+-			cancel_delayed_work(&pd->power_off_work);
++	if (pd->ref_count == 0 && pd->vop2->data->delayed_pd)
++		cancel_delayed_work(&pd->power_off_work);
++	/* vop2_power_off_all_pd() leaves ref_count set; power on whenever off */
++	if (pd->ref_count == 0 || !pd->on)
+ 		vop2_power_domain_on(pd);
+-	}
+ 	pd->ref_count++;
+ 	spin_unlock(&pd->lock);
+ }
+@@ -2027,6 +2029,13 @@ static void vop2_power_domain_put(struct vop2_power_domain *pd)
+ {
+ 	spin_lock(&pd->lock);
+ 
++	/* refuse underflow; also skip the parent put that pairs with the missing get */
++	if (WARN_ONCE(pd->ref_count == 0, "vop2: pd%d put without get\n",
++		      ffs(pd->data->id) - 1)) {
++		spin_unlock(&pd->lock);
++		return;
++	}
++
+ 	/*
+ 	 * For a nested power domain(PD_Cluster0 is the parent of PD_CLuster1/2/3)
+ 	 * the parent power domain must be enabled before child power domain
+@@ -2053,6 +2062,18 @@ static void vop2_power_domain_put(struct vop2_power_domain *pd)
+ 		vop2_power_domain_put(pd->parent);
+ }
+ 
++/* power on a domain that was turned off under held references */
++static void vop2_power_domain_ensure_on(struct vop2_power_domain *pd)
++{
++	if (pd->parent)
++		vop2_power_domain_ensure_on(pd->parent);
++
++	spin_lock(&pd->lock);
++	if (!pd->on)
++		vop2_power_domain_on(pd);
++	spin_unlock(&pd->lock);
++}
++
+ static void vop2_power_domain_put_sync(struct vop2_power_domain *pd)
+ {
+ 	vop2_power_domain_put(pd);
+@@ -2090,9 +2111,9 @@ static void vop2_win_enable(struct vop2_win *win)
+ 	 * take effect, but the pd is disable in progress, we should do pd_get
+ 	 * at this situation.
+ 	 *
+-	 * check the backup register for previous enable operation.
++	 * The reference is tracked in win->pd_held: register readback lags a frame.
+ 	 */
+-	if (!VOP_WIN_GET_REG_BAK(win->vop2, win, enable)) {
++	if (!win->pd_held) {
+ 		if (win->pd) {
+ 			if ((win->pd->data->id == VOP2_PD_ESMART && win->vop2->version == VOP_VERSION_RK3588) ||
+ 			    win->vop2->version == VOP_VERSION_RK3576)
+@@ -2100,10 +2121,25 @@ static void vop2_win_enable(struct vop2_win *win)
+ 
+ 			vop2_power_domain_get(win->pd);
+ 			win->pd->vp_mask |= win->vp_mask;
++			win->pd_held = true;
+ 		}
++	} else if (!win->pd->on) {
++		vop2_power_domain_ensure_on(win->pd);
++		win->pd->vp_mask |= win->vp_mask;
+ 	}
+ }
+ 
++/* drop the domain reference this window holds, if any */
++static void vop2_win_pd_release(struct vop2_win *win)
++{
++	if (!win->pd || !win->pd_held || win->pd->data->id == VOP2_PD_ESMART)
++		return;
++
++	vop2_power_domain_put(win->pd);
++	win->pd->vp_mask &= ~win->vp_mask;
++	win->pd_held = false;
++}
++
+ static void vop2_win_multi_area_disable(struct vop2_win *parent)
+ {
+ 	struct vop2 *vop2 = parent->vop2;
+@@ -2147,8 +2183,10 @@ static void vop2_win_disable(struct vop2_win *win, bool skip_splice_win)
+ 				sub_win = &vop2->win[i];
+ 
+ 				if ((sub_win->phys_id == win->phys_id) &&
+-				    (sub_win->feature & WIN_FEATURE_CLUSTER_SUB))
++				    (sub_win->feature & WIN_FEATURE_CLUSTER_SUB)) {
+ 					VOP_WIN_SET(vop2, sub_win, enable, 0);
++					vop2_win_pd_release(sub_win);
++				}
+ 			}
+ 
+ 			VOP_CLUSTER_SET(vop2, win, enable, 0);
+@@ -2170,25 +2208,22 @@ static void vop2_win_disable(struct vop2_win *win, bool skip_splice_win)
+ 		if (win->feature & WIN_FEATURE_DCI)
+ 			VOP_CLUSTER_SET(vop2, win, dci_en, 0);
+ 
+-		if (win->pd) {
+-
+-			/*
+-			 * Don't dynamic turn on/off PD_ESMART at RK3588/RK3576.
+-			 * (1) There is a design issue for PD_EMSART when attached
+-			 *     on VP1/2/3, we found it will trigger POST_BUF_EMPTY irq at vp0
+-			 *     in splice mode.
+-			 * (2) PD_ESMART will be closed at esmart layers attathed on VPs
+-			 *     config done + FS, but different VP FS time is different, this
+-			 *     maybe lead to PD_ESMART closed at wrong time and display error.
+-			 * (3) PD_ESMART power up maybe have 4 us delay, this will lead to POST_BUF_EMPTY.
+-			 */
+-			if (win->pd->data->id != VOP2_PD_ESMART) {
+-				vop2_power_domain_put(win->pd);
+-				win->pd->vp_mask &= ~win->vp_mask;
+-			}
+-		}
+ 	}
+ 
++	/*
++	 * Don't dynamic turn on/off PD_ESMART at RK3588/RK3576.
++	 * (1) There is a design issue for PD_EMSART when attached
++	 *     on VP1/2/3, we found it will trigger POST_BUF_EMPTY irq at vp0
++	 *     in splice mode.
++	 * (2) PD_ESMART will be closed at esmart layers attathed on VPs
++	 *     config done + FS, but different VP FS time is different, this
++	 *     maybe lead to PD_ESMART closed at wrong time and display error.
++	 * (3) PD_ESMART power up maybe have 4 us delay, this will lead to POST_BUF_EMPTY.
++	 *
++	 * Put only a held reference, independent of the lagging enable readback.
++	 */
++	vop2_win_pd_release(win);
++
+ 	if (win->left_win && win->splice_mode_right) {
+ 		win->left_win = NULL;
+ 		win->splice_mode_right = false;
+@@ -7733,6 +7768,7 @@ static int vop2_crtc_loader_protect(struct drm_crtc *crtc, bool on, void *data)
+ 				if (win->pd) {
+ 					win->pd->ref_count++;
+ 					win->pd->vp_mask |= BIT(vp->id);
++					win->pd_held = true;
+ 				}
+ 
+ 				vp->enabled_win_mask |= BIT(win->phys_id);
+@@ -7754,6 +7790,7 @@ static int vop2_crtc_loader_protect(struct drm_crtc *crtc, bool on, void *data)
+ 					    VOP_WIN_GET(vop2, splice_win, enable)) {
+ 						splice_win->pd->ref_count++;
+ 						splice_win->pd->vp_mask |= BIT(splice_vp->id);
++						splice_win->pd_held = true;
+ 					}
+ 				}
+ 			}

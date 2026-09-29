@@ -99,6 +99,17 @@ taint flag and bus works.
   from **`status = "disabled"`** to **`status = "okay"`**, so `/dev/watchdog0` exists. systemd
   opens it and pets it for hang-recovery feature described in CHANGELOG.md under v6.1.
 
+## 9. HDMI CEC, HDMI I2S path and DDC bus in device tree (v6.2)
+- **`hdmi@fde80000`** gains **`cec-enable`**: HDMI0 CEC adapter registers, `/dev/cec0` exists.
+- **`i2s@fddf0000`** gains **`rockchip,hdmi-path`**: I2S driver sends one zero frame before DMA
+  start on HDMI audio path.
+- New node **`/i2c-ddc`** (`compatible = "i2c-gpio"`, SDA GPIO4 pin 16, SCL GPIO4 pin 15,
+  `i2c-gpio,delay-us = <5>`), alias **`i2c10`** so bus number stays 10. HDMI node gets
+  **`ddc-i2c-bus`** pointing at it, and its **`pinctrl-0`** drops two DDC pin groups so gpiod owns
+  those pins. On-chip DDC controller never completes transfer on this board; with this node
+  kernel reads EDID and drives HDMI 2.0 SCDC over GPIO bus. Overlay in section 7 is no longer
+  loaded on v6.2 (kept for stock-DTB fallback), so its two pinctrl warnings are gone.
+
 ## Building DTB
 ```
 # base board DTB (from .dts in patch/kernel/)

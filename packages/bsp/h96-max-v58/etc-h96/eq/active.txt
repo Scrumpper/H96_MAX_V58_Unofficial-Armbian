@@ -1,0 +1,4 @@
+# Flat / EQ off (0 dB). param_eq needs this file present: PipeWire 1.6 stops
+# filter chain when it is missing, which stalls WirePlumber device setup.
+Preamp: 0 dB
+Filter 1: ON PK Fc 1000 Hz Gain 0.0 dB Q 1.00

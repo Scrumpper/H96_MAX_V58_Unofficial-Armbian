@@ -1,18 +1,18 @@
 #!/usr/bin/env bash
-# h96-cast : AirPlay + Cast RECEIVER control for H96 Max V58 (RK3588, Armbian)
-# Opt-in. Installs packages on first enable, writes + enables systemd units,
-# routes receiver audio to the PipeWire/Pulse HDMI sink.
+# h96-cast: AirPlay + Cast receiver control for H96 Max V58 (RK3588, Armbian), opt-in.
+# installs packages on first enable, writes + enables systemd units, routes receiver
+# audio to PipeWire/Pulse HDMI sink
 #
-# Receivers:
+# receivers:
 #   airplay  -> shairport-sync    (AirPlay 2 audio; AirPlay 1 fallback w/o nqptp)
 #   mirror   -> uxplay            (AirPlay screen/video mirroring, GStreamer)
 #   dlna     -> gmediarender      (UPnP/DLNA renderer = open Cast substitute)
 #
-# There is NO open Google Cast receiver (Cast receiver SDK is proprietary).
-# DLNA/UPnP (gmediarender) is the open "send media to the box" equivalent.
+# no open Google Cast receiver exists, Cast receiver SDK is proprietary; DLNA/UPnP
+# (gmediarender) is the open equivalent
 set -u
 
-# ---- Scrumpper's shared banner (TTY-gated) --------------------------------
+# --- banner ---
 [ -r /usr/local/lib/h96/banner.sh ] && . /usr/local/lib/h96/banner.sh
 command -v h96_banner >/dev/null 2>&1 || h96_banner() { :; }
 
@@ -30,7 +30,7 @@ die() { printf '%s: %s\n' "$PROG" "$*" >&2; exit 1; }
 info() { printf '  %s\n' "$*"; }
 need_root() { [ "$(id -u)" -eq 0 ] || die "must run as root (try: sudo $PROG $*)"; }
 
-# ---- desktop user / session detection (never hardcode username) -----------
+# desktop user / session detection, never hardcode username
 detect_user() {
   local u
   u=$(loginctl list-users --no-legend 2>/dev/null \
@@ -45,10 +45,10 @@ user_home() { getent passwd "$1" | cut -d: -f6; }
 RCV_NAME="$NAME_DEFAULT"
 [ -r "$DEFAULTS" ] && . "$DEFAULTS" 2>/dev/null || true
 # /etc/default/h96-cast may set: RCV_NAME, UXPLAY_EXTRA, SHAIRPORT_EXTRA,
-#   GMEDIA_EXTRA, AUDIOSINK (default pulsesink)
+#   GMEDIA_EXTRA, AUDIOSINK (default: pulsesink)
 AUDIOSINK="${AUDIOSINK:-pulsesink}"
 
-# ---- package sets ---------------------------------------------------------
+# --- package sets ---
 PKGS_AIRPLAY="shairport-sync"
 PKGS_AIRPLAY_OPT="nqptp"                       # AirPlay 2 timing; may be unpackaged
 PKGS_GST="gstreamer1.0-plugins-base gstreamer1.0-plugins-good gstreamer1.0-plugins-bad gstreamer1.0-libav gstreamer1.0-pipewire gstreamer1.0-alsa"
@@ -70,9 +70,9 @@ apt_try() {
   DEBIAN_FRONTEND=noninteractive apt-get install -y $list >/dev/null 2>&1
 }
 
-# ---- unit writers (author = single source of truth) -----------------------
-# Base [Service] env shared by every receiver so it reaches the desktop
-# user's PipeWire (pipewire-pulse) session and X11 display.
+# --- unit writers ---
+# base [Service] env shared by every receiver, reaches desktop user's PipeWire
+# (pipewire-pulse) session and X11 display
 common_env() {
   local user="$1" uid="$2" home="$3"
   cat <<EOF
@@ -84,7 +84,7 @@ Environment=DISPLAY=:0
 Environment=XAUTHORITY=$home/.Xauthority
 EOF
 }
-# Wait (non-fatal) for the per-user pulse socket to appear (boot-time enable).
+# wait (non-fatal) for per-user pulse socket to appear, boot-time enable
 wait_pulse() {
   local uid="$1"
   printf 'ExecStartPre=/bin/sh -c '\''for i in $(seq 1 30); do [ -S /run/user/%s/pulse/native ] && exit 0; sleep 1; done; exit 0'\''\n' "$uid"
@@ -153,7 +153,7 @@ WantedBy=multi-user.target
 EOF
 }
 
-# ---- HDMI sink routing (run inside the desktop user's session) ------------
+# HDMI sink routing, runs inside desktop user's session
 route_hdmi() {
   local user uid; user=$(detect_user); uid=$(user_uid "$user")
   local sink
@@ -170,11 +170,10 @@ route_hdmi() {
 }
 
 ensure_avahi() {
-  # The H96 image MASKS avahi (both .socket and .service) to trim boot. A masked
-  # unit cannot be enabled, so a plain `enable --now` silently no-ops and there is
-  # no DNS-SD: shairport/gmediarender are undiscoverable and uxplay dies with
-  # "No DNS-SD Server found". Unmask BOTH first (verified on box: the .socket was
-  # masked separately and blocked the service), then start it.
+  # image masks avahi (.socket and .service) to trim boot; masked unit cannot be
+  # enabled, so plain enable --now no-ops silently, no DNS-SD: shairport/gmediarender
+  # undiscoverable and uxplay dies with "No DNS-SD Server found". unmask both first,
+  # then start
   systemctl unmask avahi-daemon.socket avahi-daemon.service >/dev/null 2>&1 || true
   systemctl enable --now avahi-daemon.service >/dev/null 2>&1 || true
 }
@@ -182,7 +181,7 @@ ensure_avahi() {
 svc_up() { systemctl daemon-reload; systemctl enable --now "$1"; }
 svc_down() { systemctl disable --now "$1" 2>/dev/null || true; }
 
-# ---- actions --------------------------------------------------------------
+# --- actions ---
 enable_airplay() {
   apt_install "$PKGS_AIRPLAY" || die "shairport-sync install failed (need internet)"
   if apt_try "$PKGS_AIRPLAY_OPT"; then

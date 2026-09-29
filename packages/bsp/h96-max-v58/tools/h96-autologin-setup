@@ -1,12 +1,5 @@
 #!/bin/bash
-# h96-autologin-setup — enable lightdm autologin for the desktop user.
-#
-# Runs at boot. It is a no-op until armbian-firstlogin has created the human
-# user, then it points lightdm autologin at that user. This removes the manual
-# password each boot and, importantly, makes a logout re-apply a display-scale
-# change automatically (on X11, scale only takes effect at login). To require a
-# login each boot again: delete /etc/lightdm/lightdm.conf.d/70-h96-autologin.conf
-# and `systemctl disable h96-autologin.service`.
+# h96-autologin-setup: enable lightdm autologin for the desktop user once armbian-firstlogin creates it; also makes logout re-apply display-scale (X11 scale only takes effect at login). Disable: delete 70-h96-autologin.conf and the h96-autologin.service.
 set -uo pipefail
 
 CONF=/etc/lightdm/lightdm.conf.d/70-h96-autologin.conf

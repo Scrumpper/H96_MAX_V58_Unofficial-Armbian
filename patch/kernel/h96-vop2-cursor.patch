@@ -1,0 +1,152 @@
+diff --git a/drivers/gpu/drm/rockchip/rockchip_drm_vop2.c b/drivers/gpu/drm/rockchip/rockchip_drm_vop2.c
+index 10a6df400..46cec3749 100644
+--- a/drivers/gpu/drm/rockchip/rockchip_drm_vop2.c
++++ b/drivers/gpu/drm/rockchip/rockchip_drm_vop2.c
+@@ -630,6 +630,15 @@ struct vop2_video_port {
+ 	 *
+ 	 */
+ 	bool has_dci_enabled_win;
++	/**
++	 * @cursor_mst: yrgb_mst last programmed into this VP's cursor window by
++	 * the cursor plane's own atomic_update; re-asserted on every other flush
++	 * by vop2_crtc_relatch_cursor(). @cursor_armed says whether it is valid
++	 * (set by the cursor update, cleared by cursor/crtc disable).
++	 * Both protected by vop2->reg_lock.
++	 */
++	dma_addr_t cursor_mst;
++	bool cursor_armed;
+ 
+ 	/**
+ 	 * @bg_ovl_dly: The timing delay from background layer
+@@ -5709,6 +5718,7 @@ static void vop2_crtc_atomic_disable(struct drm_crtc *crtc,
+ 	vp->splice_mode_right = false;
+ 	vp->loader_protect = false;
+ 	vp->enabled_win_mask = 0;
++	vp->cursor_armed = false;
+ 	splice_vp->splice_mode_right = false;
+ 	memset(&vp->active_tv_state, 0, sizeof(vp->active_tv_state));
+ 	vop2_unlock(vop2);
+@@ -6290,6 +6300,8 @@ static void vop2_plane_atomic_disable(struct drm_plane *plane, struct drm_atomic
+ 
+ 	vop2_win_disable(win, false);
+ 	vp->enabled_win_mask &= ~BIT(win->phys_id);
++	if (crtc->cursor && plane == crtc->cursor)
++		vp->cursor_armed = false;
+ 	if (win->splice_win) {
+ 		vop2_win_disable(win->splice_win, false);
+ 		vp->enabled_win_mask &= ~BIT(win->splice_win->phys_id);
+@@ -6832,6 +6844,11 @@ static void vop2_win_atomic_update(struct vop2_win *win, struct drm_rect *src, s
+ 		VOP_CTRL_SET(vop2, win_alpha_map[win->phys_id], 0x8000ff00);
+ 
+ 	VOP_WIN_SET(vop2, win, yrgb_mst, yrgb_mst);
++	/* snapshot for vop2_crtc_relatch_cursor(); see there */
++	if (crtc->cursor && win == to_vop2_win(crtc->cursor)) {
++		vp->cursor_mst = yrgb_mst;
++		vp->cursor_armed = true;
++	}
+ 
+ 	rb_swap = vop2_win_rb_swap(fb->format->format);
+ 	uv_swap = vop2_win_uv_swap(fb->format->format);
+@@ -7067,7 +7084,16 @@ rockchip_atomic_helper_update_plane(struct drm_plane *plane,
+ 	pstate->src_w = src_w;
+ 	pstate->src_h = src_h;
+ 
+-	if (plane == crtc->cursor || vpstate->async_commit)
++	/*
++	 * H96 v6.0 cursor fix, part 1: take the legacy (unsynced) cursor path only for
++	 * position-only updates. A cursor IMAGE change (new fb) goes through a normal
++	 * blocking commit, which waits for the vblank in which the new yrgb_mst/enable
++	 * shadow registers latch, so a following same-VP commit cannot supersede them.
++	 * The cost is one vblank wait per cursor image change (about 17 ms at 60 Hz),
++	 * paid on the X server thread; position moves are never delayed. Part 2 is
++	 * vop2_crtc_relatch_cursor(), which keeps the cursor latched afterwards.
++	 */
++	if ((plane == crtc->cursor && plane->state->fb == fb) || vpstate->async_commit)
+ 		state->legacy_cursor_update = true;
+ 
+ 	ret = drm_atomic_commit(state);
+@@ -12674,6 +12700,69 @@ static void vop2_wait_for_scan_timing_from_the_assigned_line(struct vop2_video_p
+ 			      wait_line, vcnt, ret);
+ }
+ 
++/*
++ * H96 v6.0 cursor fix, part 2: sticky HW-cursor re-latch.
++ *
++ * Part 1 (rockchip_atomic_helper_update_plane) only guarantees that a cursor IMAGE
++ * commit's own shadow write reaches the active register bank. It does not cover the
++ * steady state where the cursor is stationary (no cursor commit running) while
++ * another plane on the same video port commits continuously (mpv Xv fullscreen, a
++ * Chromium animated page, a Plasma splash). Every such flush arms this VP's cfg_done
++ * and latches the VP shadow bank at frame-start without re-writing the cursor
++ * window; observed on RK3588, that can drop the cursor window's content so the
++ * cursor stays on its previous (transparent/hidden) image until the next cursor
++ * commit.
++ *
++ * Re-assert the cursor window's content-latching registers (yrgb_mst + win and
++ * cluster enable) on every non-cursor flush while the cursor is up, so the cursor
++ * rides along with each video-port latch. The address comes from vp->cursor_mst,
++ * a snapshot written under reg_lock by the cursor window's own atomic_update
++ * (and cleared by its disable), not from cursor->state: plane state is swapped
++ * before the commit tail takes ovl_lock, so reading it here could program a cursor
++ * fb whose geometry has not been written yet. The snapshot always matches what the
++ * hardware was last programmed with, so the write is idempotent in the common case
++ * and self-healing when the content had been dropped.
++ */
++static void vop2_crtc_relatch_cursor(struct drm_crtc *crtc, struct drm_atomic_state *state)
++{
++	struct vop2_video_port *vp = to_vop2_video_port(crtc);
++	struct rockchip_crtc_state *vcstate = to_rockchip_crtc_state(crtc->state);
++	struct vop2 *vop2 = vp->vop2;
++	struct drm_plane *cursor = crtc->cursor;
++	struct vop2_win *cwin;
++
++	/* no cursor plane bound to this crtc, or crtc is off */
++	if (!cursor || !crtc->state->active)
++		return;
++
++	/* leave splice (two VPs driving one output) paths alone */
++	if (vcstate->splice_mode)
++		return;
++
++	/*
++	 * If the cursor plane is part of THIS commit, its own win update already
++	 * (re)programs and latches it; don't double-program or race its newer write.
++	 */
++	if (drm_atomic_get_new_plane_state(state, cursor))
++		return;
++
++	cwin = to_vop2_win(cursor);
++
++	/*
++	 * Re-assert content + visibility only. Do NOT call vop2_win_enable(): the cursor
++	 * is already up so its power domain is already held; a per-frame pd_get would
++	 * imbalance the refcount. These writes are armed by the vop2_cfg_done() that this
++	 * flush issues right after, exactly like every other shadow write here.
++	 */
++	spin_lock(&vop2->reg_lock);
++	if (vp->cursor_armed) {
++		VOP_WIN_SET(vop2, cwin, yrgb_mst, vp->cursor_mst);
++		VOP_WIN_SET(vop2, cwin, enable, 1);
++		VOP_CLUSTER_SET(vop2, cwin, enable, 1);
++	}
++	spin_unlock(&vop2->reg_lock);
++}
++
+ static void vop2_crtc_atomic_flush(struct drm_crtc *crtc, struct drm_atomic_state *state)
+ {
+ 	struct rockchip_crtc_state *vcstate = to_rockchip_crtc_state(crtc->state);
+@@ -12730,6 +12819,14 @@ static void vop2_crtc_atomic_flush(struct drm_crtc *crtc, struct drm_atomic_stat
+ 
+ 	vop2_cfg_update(crtc, old_cstate);
+ 
++	/*
++	 * H96 v6.0: keep the HW cursor latched against continuous same-VP
++	 * video/overlay commits. Runs in the shadow-write phase, before the
++	 * vop2_cfg_done() below arms this VP, so the re-asserted cursor content
++	 * latches together with this commit at the next frame-start.
++	 */
++	vop2_crtc_relatch_cursor(crtc, state);
++
+ 	if (!vop2->is_iommu_enabled && vop2->is_iommu_needed) {
+ 		enum rockchip_drm_vop_aclk_mode aclk_mode = vop2->aclk_mode;
+ 		bool enter_vop_aclk_reset_mode = false;

@@ -1,0 +1,389 @@
+diff --git a/drivers/input/joystick/xpad.c b/drivers/input/joystick/xpad.c
+index 13c36f51b..fe934d839 100644
+--- a/drivers/input/joystick/xpad.c
++++ b/drivers/input/joystick/xpad.c
+@@ -369,6 +369,7 @@ static const struct xpad_device {
+ 	{ 0x31e3, 0x1300, "Wooting 60HE (AVR)", 0, XTYPE_XBOX360 },
+ 	{ 0x31e3, 0x1310, "Wooting 60HE (ARM)", 0, XTYPE_XBOX360 },
+ 	{ 0x3285, 0x0607, "Nacon GC-100", 0, XTYPE_XBOX360 },
++	{ 0x2dc8, 0x310a, "8BitDo Ultimate 2C Wireless", 0, XTYPE_XBOX360 },
+ 	{ 0x3767, 0x0101, "Fanatec Speedster 3 Forceshock Wheel", 0, XTYPE_XBOX },
+ 	{ 0xffff, 0xffff, "Chinese-made Xbox Controller", 0, XTYPE_XBOX },
+ 	{ 0x0000, 0x0000, "Generic X-Box pad", 0, XTYPE_UNKNOWN }
+@@ -504,6 +505,7 @@ static const struct usb_device_id xpad_table[] = {
+ 	XPAD_XBOX360_VENDOR(0x2f24),		/* GameSir Controllers */
+ 	XPAD_XBOX360_VENDOR(0x31e3),		/* Wooting Keyboards */
+ 	XPAD_XBOX360_VENDOR(0x3285),		/* Nacon GC-100 */
++	XPAD_XBOX360_VENDOR(0x2dc8),		/* 8BitDo controllers + 2.4G dongles (X-input) */
+ 	{ }
+ };
+ 
+diff --git a/drivers/mmc/host/dw_mmc.c b/drivers/mmc/host/dw_mmc.c
+index ab5679870..e2ed8fbdb 100644
+--- a/drivers/mmc/host/dw_mmc.c
++++ b/drivers/mmc/host/dw_mmc.c
+@@ -31,6 +31,7 @@
+ #include <linux/mmc/card.h>
+ #include <linux/mmc/host.h>
+ #include <linux/mmc/mmc.h>
++#include <linux/rfkill-wlan.h>
+ #include <linux/mmc/sd.h>
+ #include <linux/mmc/sdio.h>
+ #include <linux/bitops.h>
+@@ -3120,6 +3121,12 @@ static int dw_mci_init_slot(struct dw_mci *host)
+ 	if (ret)
+ 		goto err_host_allocated;
+ 
++	/* H96 patch: among dw_mmc hosts only the WiFi SDIO slot is non-removable
++	 * (the SD card is removable; eMMC is on sdhci). Register it so
++	 * rockchip_wifi_set_carddetect() can rescan when bcmdhd powers the chip. */
++	if (mmc->caps & MMC_CAP_NONREMOVABLE)
++		rockchip_wifi_set_sdio_host(mmc);
++
+ #if defined(CONFIG_DEBUG_FS)
+ 	dw_mci_init_debugfs(slot);
+ #endif
+@@ -3133,6 +3140,10 @@ static int dw_mci_init_slot(struct dw_mci *host)
+ 
+ static void dw_mci_cleanup_slot(struct dw_mci_slot *slot)
+ {
++	/* H96 patch: drop the WiFi rescan reference before the host goes away */
++	if (slot->mmc->caps & MMC_CAP_NONREMOVABLE)
++		rockchip_wifi_set_sdio_host(NULL);
++
+ 	/* Debugfs stuff is cleaned up by mmc core */
+ 	mmc_remove_host(slot->mmc);
+ 	slot->host->slot = NULL;
+diff --git a/drivers/net/wireless/broadcom/brcm80211/brcmfmac/pcie.c b/drivers/net/wireless/broadcom/brcm80211/brcmfmac/pcie.c
+index 99cc41135..5240d1f5d 100644
+--- a/drivers/net/wireless/broadcom/brcm80211/brcmfmac/pcie.c
++++ b/drivers/net/wireless/broadcom/brcm80211/brcmfmac/pcie.c
+@@ -61,6 +61,7 @@ BRCMF_FW_DEF(4366B, "brcmfmac4366b-pcie");
+ BRCMF_FW_DEF(4366C, "brcmfmac4366c-pcie");
+ BRCMF_FW_DEF(4371, "brcmfmac4371-pcie");
+ BRCMF_FW_CLM_DEF(4378B1, "brcmfmac4378b1-pcie");
++BRCMF_FW_CLM_DEF(43752, "brcmfmac43752-pcie");
+ BRCMF_FW_DEF(4355, "brcmfmac89459-pcie");
+ 
+ /* firmware config files */
+@@ -92,6 +93,7 @@ static const struct brcmf_firmware_mapping brcmf_pcie_fwnames[] = {
+ 	BRCMF_FW_ENTRY(BRCM_CC_43666_CHIP_ID, 0xFFFFFFF0, 4366C),
+ 	BRCMF_FW_ENTRY(BRCM_CC_4371_CHIP_ID, 0xFFFFFFFF, 4371),
+ 	BRCMF_FW_ENTRY(BRCM_CC_4378_CHIP_ID, 0xFFFFFFFF, 4378B1), /* revision ID 3 */
++	BRCMF_FW_ENTRY(CY_CC_43752_CHIP_ID, 0xFFFFFFFF, 43752),
+ 	BRCMF_FW_ENTRY(CY_CC_89459_CHIP_ID, 0xFFFFFFFF, 4355),
+ };
+ 
+@@ -1685,7 +1687,8 @@ static int brcmf_pcie_download_fw_nvram(struct brcmf_pciedev_info *devinfo,
+ 		memcpy_toio(devinfo->tcm + address, nvram, nvram_len);
+ 		brcmf_fw_nvram_free(nvram);
+ 
+-		if (devinfo->otp.valid) {
++		if (devinfo->otp.valid ||
++		    devinfo->ci->chip == CY_CC_43752_CHIP_ID) {
+ 			size_t rand_len = BRCMF_RANDOM_SEED_LENGTH;
+ 			struct brcmf_random_seed_footer footer = {
+ 				.length = cpu_to_le32(rand_len),
+@@ -2508,6 +2511,7 @@ static const struct pci_device_id brcmf_pcie_devid_table[] = {
+ 	BRCMF_PCIE_DEVICE(BRCM_PCIE_4366_5G_DEVICE_ID),
+ 	BRCMF_PCIE_DEVICE(BRCM_PCIE_4371_DEVICE_ID),
+ 	BRCMF_PCIE_DEVICE(BRCM_PCIE_4378_DEVICE_ID),
++	BRCMF_PCIE_DEVICE(BRCM_PCIE_43752_DEVICE_ID),
+ 	BRCMF_PCIE_DEVICE(CY_PCIE_89459_DEVICE_ID),
+ 	BRCMF_PCIE_DEVICE(CY_PCIE_89459_RAW_DEVICE_ID),
+ 	{ /* end: all zeroes */ }
+diff --git a/drivers/net/wireless/broadcom/brcm80211/include/brcm_hw_ids.h b/drivers/net/wireless/broadcom/brcm80211/include/brcm_hw_ids.h
+index f4939cf62..e60e6ce16 100644
+--- a/drivers/net/wireless/broadcom/brcm80211/include/brcm_hw_ids.h
++++ b/drivers/net/wireless/broadcom/brcm80211/include/brcm_hw_ids.h
+@@ -91,6 +91,7 @@
+ #define BRCM_PCIE_4366_5G_DEVICE_ID	0x43c5
+ #define BRCM_PCIE_4371_DEVICE_ID	0x440d
+ #define BRCM_PCIE_4378_DEVICE_ID	0x4425
++#define BRCM_PCIE_43752_DEVICE_ID	0x449d
+ #define CY_PCIE_89459_DEVICE_ID         0x4415
+ #define CY_PCIE_89459_RAW_DEVICE_ID     0x4355
+ 
+diff --git a/drivers/net/wireless/rockchip_wlan/rkwifi/bcmdhd/dhd_linux.c b/drivers/net/wireless/rockchip_wlan/rkwifi/bcmdhd/dhd_linux.c
+index 7891fa22f..b9ff841d0 100755
+--- a/drivers/net/wireless/rockchip_wlan/rkwifi/bcmdhd/dhd_linux.c
++++ b/drivers/net/wireless/rockchip_wlan/rkwifi/bcmdhd/dhd_linux.c
+@@ -14797,7 +14797,7 @@ _dhd_module_init(void)
+ 	int err;
+ 	int retry = POWERUP_MAX_RETRY;
+ 
+-	printk(KERN_ERR PERCENT_S DHD_LOG_PREFIXS "%s: in %s\n",
++	printk(KERN_INFO PERCENT_S DHD_LOG_PREFIXS "%s: in %s\n",
+ 		PRINTF_SYSTEM_TIME, __FUNCTION__, dhd_version);
+ 	if (ANDROID_VERSION > 0)
+ 		printf("ANDROID_VERSION = %d\n", ANDROID_VERSION);
+diff --git a/drivers/net/wireless/rockchip_wlan/rkwifi/bcmdhd/dhd_static_buf.c b/drivers/net/wireless/rockchip_wlan/rkwifi/bcmdhd/dhd_static_buf.c
+index 91c68e996..bb9a809df 100755
+--- a/drivers/net/wireless/rockchip_wlan/rkwifi/bcmdhd/dhd_static_buf.c
++++ b/drivers/net/wireless/rockchip_wlan/rkwifi/bcmdhd/dhd_static_buf.c
+@@ -15,7 +15,7 @@ uint static_msg_level = STATIC_ERROR_LEVEL | STATIC_MSG_LEVEL;
+ #define DHD_STATIC_MSG(x, args...) \
+ do { \
+ 	if (static_msg_level & STATIC_MSG_LEVEL) { \
+-		pr_err("[dhd] STATIC-MSG) %s : " x, __func__, ## args); \
++		pr_info("[dhd] STATIC-MSG) %s : " x, __func__, ## args); \
+ 	} \
+ } while (0)
+ #define DHD_STATIC_ERROR(x, args...) \
+diff --git a/drivers/phy/rockchip/phy-rockchip-samsung-hdptx-hdmi.c b/drivers/phy/rockchip/phy-rockchip-samsung-hdptx-hdmi.c
+index e27381a19..7196a869e 100644
+--- a/drivers/phy/rockchip/phy-rockchip-samsung-hdptx-hdmi.c
++++ b/drivers/phy/rockchip/phy-rockchip-samsung-hdptx-hdmi.c
+@@ -2259,6 +2259,7 @@ static int rockchip_hdptx_phy_clk_register(struct rockchip_hdptx_phy *hdptx)
+ 	struct clk_init_data init = {};
+ 	struct clk *refclk;
+ 	const char *parent_name;
++	char clk_name[32];
+ 	int ret;
+ 
+ 	refclk = devm_clk_get(dev, "ref");
+@@ -2274,7 +2275,13 @@ static int rockchip_hdptx_phy_clk_register(struct rockchip_hdptx_phy *hdptx)
+ 	init.flags = CLK_GET_RATE_NOCACHE;
+ 	init.ops = &hdptx_phy_clk_ops;
+ 
+-	/* optional override of the clock name */
++	/*
++	 * H96: the H96 Max V58 device tree gives this node no clock-output-names,
++	 * and the clk core rejects a NULL name, which left the PHY (and HDMI)
++	 * unprobed. Default to a per-instance name; the DT property still wins.
++	 */
++	snprintf(clk_name, sizeof(clk_name), "clk_hdmiphy_pixel%d", hdptx->id);
++	init.name = clk_name;
+ 	of_property_read_string(np, "clock-output-names", &init.name);
+ 
+ 	hdptx->hw.init = &init;
+diff --git a/include/linux/rfkill-wlan.h b/include/linux/rfkill-wlan.h
+index c1987c316..5bf2b76a6 100644
+--- a/include/linux/rfkill-wlan.h
++++ b/include/linux/rfkill-wlan.h
+@@ -58,6 +58,14 @@ void *rockchip_mem_prealloc(int section, unsigned long size);
+ int rfkill_set_wifi_bt_power(int on);
+ int rockchip_wifi_power(int on);
+ int rockchip_wifi_set_carddetect(int val);
++struct mmc_host;
++#if IS_REACHABLE(CONFIG_RFKILL_RK)
++void rockchip_wifi_set_sdio_host(struct mmc_host *host);
++#else
++static inline void rockchip_wifi_set_sdio_host(struct mmc_host *host)
++{
++}
++#endif
+ int rockchip_wifi_get_oob_irq(void);
+ int rockchip_wifi_get_oob_irq_flag(void);
+ int rockchip_wifi_reset(int on);
+diff --git a/net/rfkill/rfkill-wlan.c b/net/rfkill/rfkill-wlan.c
+index 6e0f16271..d936991e7 100644
+--- a/net/rfkill/rfkill-wlan.c
++++ b/net/rfkill/rfkill-wlan.c
+@@ -345,8 +345,41 @@ EXPORT_SYMBOL(rockchip_wifi_power);
+  * Wifi Sdio Detect Func
+  *
+  *************************************************************************/
++/* H96 patch: the BSP left this a no-op stub, so nothing ever rescanned the SDIO
++ * bus after the WiFi driver powered the chip. Register the WiFi SDIO mmc_host
++ * (done from dw_mmc for the non-removable host) and trigger a rescan here. */
++static struct mmc_host *rockchip_wifi_sdio_host;
++static DEFINE_SPINLOCK(rockchip_wifi_sdio_host_lock);
++
++/* host == NULL unregisters (called from the dw_mmc slot cleanup path) */
++void rockchip_wifi_set_sdio_host(struct mmc_host *host)
++{
++	unsigned long flags;
++
++	spin_lock_irqsave(&rockchip_wifi_sdio_host_lock, flags);
++	rockchip_wifi_sdio_host = host;
++	spin_unlock_irqrestore(&rockchip_wifi_sdio_host_lock, flags);
++}
++EXPORT_SYMBOL(rockchip_wifi_set_sdio_host);
++
+ int rockchip_wifi_set_carddetect(int val)
+ {
++	struct mmc_host *host;
++	unsigned long flags;
++
++	spin_lock_irqsave(&rockchip_wifi_sdio_host_lock, flags);
++	host = rockchip_wifi_sdio_host;
++	spin_unlock_irqrestore(&rockchip_wifi_sdio_host_lock, flags);
++
++	if (host) {
++		LOG("%s: %s SDIO host (val=%d)\n", __func__,
++		    val ? "rescan" : "remove", val);
++		/* mmc_rescan() skips non-removable hosts after their first scan
++		 * (rescan_entered). The WiFi chip is only powered now, after that
++		 * boot scan, so clear the flag to force a real re-scan. */
++		host->rescan_entered = 0;
++		mmc_detect_change(host, 0);
++	}
+ 	return 0;
+ }
+ EXPORT_SYMBOL(rockchip_wifi_set_carddetect);
+diff --git a/drivers/net/ethernet/stmicro/stmmac/stmmac_main.c b/drivers/net/ethernet/stmicro/stmmac/stmmac_main.c
+index 38afdd011..27669323a 100644
+--- a/drivers/net/ethernet/stmicro/stmmac/stmmac_main.c
++++ b/drivers/net/ethernet/stmicro/stmmac/stmmac_main.c
+@@ -3681,6 +3681,7 @@ static int stmmac_request_irq_single(struct net_device *dev)
+ 	/* Request the Wake IRQ in case of another line
+ 	 * is used for WoL
+ 	 */
++	priv->wol_irq_disabled = true; /* keep disable_irq_wake balanced until first enable */
+ 	if (priv->wol_irq > 0 && priv->wol_irq != dev->irq) {
+ 		ret = request_irq(priv->wol_irq, stmmac_interrupt,
+ 				  IRQF_SHARED, dev->name, dev);
+diff --git a/drivers/video/rockchip/rga3/rga_drv.c b/drivers/video/rockchip/rga3/rga_drv.c
+index fc96dc198..2aa984df8 100644
+--- a/drivers/video/rockchip/rga3/rga_drv.c
++++ b/drivers/video/rockchip/rga3/rga_drv.c
+@@ -18,6 +18,9 @@
+ #include "rga_debugger.h"
+ #include "rga_common.h"
+ 
++static bool rga_bound;
++static int rga_try_bind(bool force);
++
+ struct rga_drvdata_t *rga_drvdata;
+ 
+ /* set hrtimer */
+@@ -1118,6 +1121,14 @@ static int rga_debugger_remove(struct rga_debugger **debugger_p)
+ static int rga_open(struct inode *inode, struct file *file)
+ {
+ 	struct rga_session *session = NULL;
++	int ret;
++
++	/* a node that never probed must not block the ones that did */
++	if (!rga_bound) {
++		ret = rga_try_bind(true);
++		if (ret < 0)
++			return ret;
++	}
+ 
+ 	session = rga_session_init();
+ 	if (IS_ERR(session))
+@@ -1245,6 +1256,74 @@ static const struct of_device_id rga2_dt_ids[] = {
+ 	{},
+ };
+ 
++/* iommu bind runs once, after the last available rga node has probed */
++static DEFINE_MUTEX(rga_bind_lock);
++static unsigned int rga_expected_nodes;
++
++static unsigned int rga_count_available_nodes(void)
++{
++	const struct of_device_id *tables[] = { rga3_dt_ids, rga2_dt_ids };
++	struct device_node *np;
++	unsigned int n = 0;
++	int i;
++
++	for (i = 0; i < ARRAY_SIZE(tables); i++)
++		for_each_matching_node(np, tables[i])
++			if (of_device_is_available(np))
++				n++;
++
++	return n;
++}
++
++/* force: bind with whatever has probed (first open fallback) */
++static int rga_try_bind(bool force)
++{
++	int ret = 0;
++
++	mutex_lock(&rga_bind_lock);
++	if (rga_bound)
++		goto out;
++	if (!force && rga_drvdata->num_of_scheduler < rga_expected_nodes)
++		goto out;
++	if (rga_drvdata->num_of_scheduler == 0) {
++		ret = -ENODEV;
++		goto out;
++	}
++
++	ret = rga_iommu_bind();
++	if (ret < 0)
++		pr_err("rga iommu bind failed!\n");
++	else
++		rga_bound = true;
++out:
++	mutex_unlock(&rga_bind_lock);
++
++	return ret;
++}
++
++/* scheduler probed after a forced bind: share the default mapping domain */
++static void rga_attach_late_scheduler(struct rga_scheduler_t *scheduler)
++{
++	struct rga_iommu_info *main_iommu;
++	int idx;
++
++	mutex_lock(&rga_bind_lock);
++	idx = rga_drvdata->map_scheduler_index;
++	if (!rga_bound || idx < 0 || !scheduler->iommu_info ||
++	    scheduler->data->mmu != RGA_IOMMU)
++		goto out;
++
++	main_iommu = rga_drvdata->scheduler[idx]->iommu_info;
++	if (!main_iommu || main_iommu == scheduler->iommu_info)
++		goto out;
++
++	scheduler->iommu_info->domain = main_iommu->domain;
++	scheduler->iommu_info->default_dev = main_iommu->default_dev;
++	rga_iommu_attach(scheduler->iommu_info);
++out:
++	mutex_unlock(&rga_bind_lock);
++}
++
+ static int init_scheduler(struct rga_scheduler_t *scheduler,
+ 			  struct device *dev,
+ 			  const struct rga_match_data_t *match_data,
+@@ -1447,6 +1526,11 @@ static int rga_drv_probe(struct platform_device *pdev)
+ 	dev_info(dev, "probe successfully, irq = %d, hw_version:%s\n",
+ 		 scheduler->irq, scheduler->version.str);
+ 
++	if (rga_bound)
++		rga_attach_late_scheduler(scheduler);
++	else
++		rga_try_bind(false);
++
+ 	return 0;
+ 
+ #ifndef RGA_DISABLE_PM
+@@ -1521,6 +1605,10 @@ static int __init rga_init(void)
+ 	mutex_init(&rga_drvdata->lock);
+ 	init_rwsem(&rga_drvdata->rwsem);
+ 	rga_drvdata->shutdown = false;
++	rga_drvdata->map_scheduler_index = -1;
++
++	/* must precede driver registration: probes may bind from inside it */
++	rga_expected_nodes = rga_count_available_nodes();
+ 
+ 	ret = platform_driver_register(&rga3_driver);
+ 	if (ret != 0) {
+@@ -1533,11 +1621,11 @@ static int __init rga_init(void)
+ 		goto err_unregister_rga3;
+ 	}
+ 
+-	ret = rga_iommu_bind();
+-	if (ret < 0) {
+-		pr_err("rga iommu bind failed!\n");
+-		goto err_unregister_rga2;
+-	}
++	/* deferred probes bind later from probe or first open; keep drivers registered */
++	rga_try_bind(false);
++	if (!rga_bound)
++		pr_info("%d of %u rga node(s) probed, iommu bind deferred\n",
++			rga_drvdata->num_of_scheduler, rga_expected_nodes);
+ 
+ 	ret = misc_register(&rga_dev);
+ 	if (ret) {
+@@ -1567,8 +1655,6 @@ static int __init rga_init(void)
+ 
+ err_unbind_iommu:
+ 	rga_iommu_unbind();
+-
+-err_unregister_rga2:
+ 	platform_driver_unregister(&rga2_driver);
+ 
+ err_unregister_rga3:

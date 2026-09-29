@@ -1,0 +1,1293 @@
+#!/usr/bin/env python3
+# =============================================================================
+# h96-restore - replay an h96-backup archive onto a freshly reflashed H96 Max V58.
+#
+# Reflashing wipes the eMMC back to the console base. h96-restore reads the
+# archive's manifest.json, re-runs the on-demand installers for the features
+# that were present, then restores the passive data (configs, WiFi, Waydroid
+# /data, emulator saves, wine prefix) to the right paths and owners.
+#
+#   h96-restore                        list the archives found and ask which one
+#   h96-restore <archive>              auto: run each installer, then restore data
+#   h96-restore <folder>               use the newest archive in that folder
+#   h96-restore --list                 print the archives found, change nothing
+#   h96-restore <archive> --open       do NOT auto-run: print/launch the installer
+#                                       commands for you to confirm, then restore
+#                                       the passive data (configs/wifi/saves)
+#   h96-restore <archive> --dry-run    print the plan only, change nothing
+#   h96-restore <archive> --force      overwrite files that are newer on disk
+#   h96-restore <archive> --only a,b   restore only these categories
+#   h96-restore <archive> --skip a,b   restore everything except these categories
+#   h96-restore <archive> --emulators x,y   limit which emulators are reinstalled
+#   h96-restore <archive> --plan-json  print what the archive holds as JSON (no root)
+#
+# Categories: desktop configs emulators waydroid waydroid-images widevine gaming
+# npu wifi autologin system vm. h96-backup-gui is the graphical front end.
+#
+# Idempotent and safe: a config file already present and NEWER than the archived
+# copy is kept (and noted), not clobbered, unless --force is given. On a fresh
+# image a desktop session writes default configs before the restore runs, so
+# those defaults count as newer; --force (with the session stopped) is the way
+# to get the archived desktop configuration back in that case. WiFi confs
+# restore as root:root 0600.
+# User files restore owned by the DYNAMICALLY detected desktop user. Any feature
+# whose installer is missing is skipped cleanly. Auto-elevates via sudo.
+#
+# Reads an archive made on v5.0.1 or any later release (schema 1 or 2); a
+# schema-1 archive simply has no display/services/wol/vm state, so those steps
+# are skipped. Opt-in features (h96-leds, h96-cec, WoL) are only ever turned ON
+# when the archive recorded them on; a feature this box never had is never
+# enabled just because the archive is missing the field. Pinhole loader mode
+# does not ship (tested, doesn't work); an older archive that recorded it on
+# is noted and skipped, never fails.
+# h96-edid-adapt is retired on v6.2: its service/udev rule are never restored,
+# from any archive. /boot is never touched by this tool, on any archive.
+# Autologin never restores the archived lightdm.conf/lightdm.conf.d files
+# (distro- and h96-image-owned; an old copy can regress a newer install) --
+# only the autologin-user (and autologin-session/user-session) setting is
+# read out of them and applied through one h96-owned drop-in.
+# =============================================================================
+import os, sys, io, json, pwd, re, time, shutil, subprocess, tarfile
+
+TOOL_VERSION = "2.1"   # h96-backup/h96-restore/h96-backup-gui release version
+
+HELP = f"""h96-restore v{TOOL_VERSION} - replay an h96-backup archive after a reflash.
+
+  h96-restore                        list the archives found and ask which one
+  h96-restore <archive>              auto: run each installer, then restore data
+  h96-restore <folder>               use the newest archive in that folder
+  h96-restore --list                 print the archives found, change nothing
+  h96-restore <archive> --open       do NOT auto-run; print/launch the installer
+                                      commands to confirm, then restore the
+                                      passive data (configs/wifi/saves)
+  h96-restore <archive> --dry-run    print the plan only, change nothing
+  h96-restore <archive> --force      overwrite files that are newer on disk
+  h96-restore <archive> --only a,b   restore only these categories
+  h96-restore <archive> --skip a,b   restore everything except these categories
+  h96-restore <archive> --emulators x,y   limit which emulators are reinstalled
+  h96-restore <archive> --plan-json  print what the archive holds as JSON (no root)
+
+Categories: desktop configs emulators waydroid waydroid-images widevine gaming
+npu wifi autologin system vm. h96-backup-gui is the graphical front end.
+
+The archive can be a file or a folder: given a folder, the newest archive in it
+is used. Given nothing at all on a terminal, the archives found on mounted media
+and in home folders are listed to choose from.
+
+Reads manifest.json, reinstalls the recorded features (desktop, emulators,
+Waydroid, Widevine, gaming, NPU runtime), then restores configs, WiFi confs,
+Waydroid /data, emulator saves and the wine prefix to the right paths/owners.
+Newer existing configs are kept, not clobbered, unless --force is given: a
+desktop session on a fresh image writes default configs before the restore
+runs, so stop the session (sudo systemctl stop lightdm) and use --force to get
+the archived desktop configuration back. WiFi restores root:root 0600.
+User files chown to the dynamically detected desktop user. Auto-elevates.
+"""
+FORCE = False   # set by --force: overwrite files that are newer on disk
+
+CATEGORIES = ("desktop", "configs", "emulators", "waydroid", "waydroid-images",
+              "widevine", "gaming", "npu", "wifi", "autologin", "system", "vm")
+
+# -- v6.2 system state (schema 2; absent fields on a schema-1 archive are a
+# no-op, never a reason to change something this box did not already have) --
+STEAM_ARM_CONF    = "/etc/h96/steam-arm.conf"
+HOTSPOT_CONF      = "/etc/h96/hotspot.conf"
+VM_CONF           = "/etc/h96/vm.conf"
+LEDS_CONF         = "/etc/h96/leds.conf"
+VM_VAR_ROOT       = "/var/lib/h96-vm"
+DISPLAY_COLOR     = "/etc/h96/display-color"
+DISPLAY_RANGE     = "/etc/h96/display-range"
+DISPLAY_FRL_OFF   = "/etc/h96/display-frl.off"
+DISPLAY_HDMI20_OFF = "/etc/h96/display-hdmi20.off"
+DISPLAY_NOLOCK    = "/etc/h96/display-nolock"   # stale SCDC record; never carried forward
+CEC_WAKE_OFF      = "/etc/h96/cec-wake.off"
+CEC_STANDBY_BLANK = "/etc/h96/cec-standby-on-blank"
+# presence-only flags: member must be a 0-byte regular file
+EMPTY_FLAGS = {"system/etc-h96/cec-wake.off": CEC_WAKE_OFF,
+               "system/etc-h96/cec-standby-on-blank": CEC_STANDBY_BLANK}
+DISPLAY_COLOR_VALUES = ("ycbcr", "auto")
+DISPLAY_RANGE_VALUES = ("limited", "auto")
+DISPLAY_DIR       = "/etc/h96/display"          # per-sink color/range confs, <key>.conf
+PER_DISPLAY_COLOR_VALUES = ("ycbcr", "auto", "rgb")
+PER_DISPLAY_RANGE_VALUES = ("full", "limited", "auto")
+HDMI_SINK_MIGRATE = "/usr/local/lib/h96/h96-hdmi-sink-migrate.sh"
+# Native ARM64 client binary, per h96-steam-arm-install.sh's own definition of
+# the "client program folder" (the only dir that installer ever replaces).
+STEAM_CLIENT_BIN  = ".local/share/Steam/steamrtarm64/steam"
+# Archived lightdm.conf / lightdm.conf.d files are distro- and h96-image-owned
+# (01_debian.conf, 02_ubuntu.conf, 10-slick-greeter.conf, 11-armbian.conf,
+# 60-h96-greeter.conf, ...); an old copy of any of them can regress a newer
+# v6.2 install. Restore never writes them back -- it reads just the autologin
+# setting out of them and applies it through this one h96-owned drop-in.
+LIGHTDM_DIR       = "/etc/lightdm"
+H96_AUTOLOGIN_CONF = "/etc/lightdm/lightdm.conf.d/70-h96-autologin.conf"
+# Opt-in services this tool may `systemctl enable` (never disable, never touch
+# a unit the archive is silent about). h96-scdc is governed by the
+# display-hdmi20.off flag file instead (ConditionPathExists in its unit), not
+# by enable/disable, so it is not in this list.
+OPT_IN_SERVICES  = ("h96-leds.service", "h96-cec.service")
+# Retired on v6.2: never recreated/re-enabled, regardless of what an older
+# archive claims or contains. Matched against the archive member name, so a
+# hand-edited or pre-v6.2 archive cannot smuggle either one back in.
+RETIRED_MARKERS = ("edid-adapt",)
+# Pinhole loader mode: tested, doesn't work, does not ship. An archive from a
+# release that had it may still record it on; noted and skipped, never enabled.
+RETIRED_SERVICES = ("h96-pinhole-loader.service",)
+
+def is_retired(arcname):
+    low = arcname.lower()
+    return any(m in low for m in RETIRED_MARKERS)
+
+def parse_categories(spec, flag):
+    out = []
+    for c in spec.split(","):
+        c = c.strip()
+        if not c or c == "none": continue
+        if c not in CATEGORIES:
+            die(f"{flag}: unknown category '{c}' (choose from {', '.join(CATEGORIES)})")
+        out.append(c)
+    return out
+
+EMU_APP_IDS = {   # mirrors h96-backup: flatpak app id -> emulator name
+    "org.libretro.RetroArch": "retroarch", "org.DolphinEmu.dolphin-emu": "dolphin",
+    "org.ppsspp.PPSSPP": "ppsspp", "org.flycast.Flycast": "flycast",
+    "net.kuribo64.melonDS": "melonds", "com.github.Rosalie241.RMG": "rmg",
+    "org.azahar_emu.Azahar": "azahar",
+}
+CEMU_SUBDIR = ".local/share/h96-emulators/cemu"
+GAMING_PREFIX_SUB = ".local/share/h96-gaming"
+
+def member_category(arcname):
+    """(category, emulator-name-or-None) for an archive member."""
+    if arcname == "manifest.json":              return None, None
+    if is_retired(arcname):                     return None, None  # e.g. edid-adapt: never restored
+    if arcname.startswith("userhome/.config/"):  return "configs", None
+    if arcname.startswith("userhome/.local/share/kscreen") or \
+       arcname.startswith("userhome/.local/state/wireplumber"): return "configs", None
+    if arcname.startswith("userhome/.var/app/"):
+        app = arcname.split("/", 3)[3].split("/", 1)[0] if arcname.count("/") >= 3 else ""
+        return "emulators", EMU_APP_IDS.get(app, app)
+    if arcname.startswith("userhome/" + CEMU_SUBDIR): return "emulators", "cemu"
+    if arcname.startswith("userhome/" + GAMING_PREFIX_SUB): return "gaming", None
+    if arcname.startswith("steamhome/"):         return "gaming", None
+    if arcname.startswith("wifi/"):              return "wifi", None
+    if arcname.startswith("system/lightdm/"):    return "autologin", None
+    if arcname == "system/etc-h96/vm.conf":      return "vm", None
+    if arcname.startswith("system/etc-h96/"):    return "system", None
+    if arcname.startswith("vm/"):                return "vm", None
+    if arcname.startswith("waydroid-data/"):     return "waydroid", None
+    if arcname.startswith("waydroid-stash/"):    return "waydroid-images", None
+    return None, None
+
+def plan_json(archive):
+    """Stream the archive once and describe it: manifest fields plus per-category
+    presence, file counts and bytes. No root needed."""
+    tf, proc = open_read(archive)
+    manifest = None
+    cats = {c: {"present": False, "files": 0, "bytes": 0, "detail": ""} for c in CATEGORIES}
+    emu_files = {}
+    for member in tf:
+        if member.name == "manifest.json":
+            manifest = json.loads(tf.extractfile(member).read().decode()); continue
+        cat, emu = member_category(member.name)
+        if not cat: continue
+        c = cats[cat]; c["present"] = True
+        if member.isreg(): c["files"] += 1; c["bytes"] += member.size
+        if emu: emu_files[emu] = emu_files.get(emu, 0) + (member.size if member.isreg() else 0)
+    tf.close()
+    if proc: proc.stdout.close(); proc.wait()
+    if manifest is None:
+        die("not an h96-backup archive (no manifest.json)")
+    f = manifest.get("features", {}); w = f.get("waydroid", {})
+    if manifest.get("desktop", "none") != "none":
+        cats["desktop"].update(present=True, detail=f"{manifest['desktop']} ({manifest.get('desktop_package')})")
+    if f.get("emulators"):
+        cats["emulators"].update(present=True, detail=", ".join(f["emulators"]))
+    if w.get("profile") or cats["waydroid"]["present"]:
+        cats["waydroid"].update(present=True, detail=f"profile {w.get('profile') or 'none'}, /data {'yes' if w.get('data') else 'no'}")
+    if cats["waydroid-images"]["present"]:
+        cats["waydroid-images"]["detail"] = ", ".join(w.get("stashes", []))
+    if f.get("widevine"):   cats["widevine"].update(present=True, detail="L3 CDM (re-downloaded)")
+    steam = f.get("steam_arm", {})
+    if f.get("gaming"):
+        cats["gaming"].update(present=True, detail="wine prefixes + stack fetch"
+                              + (f" + Steam ARM ({steam.get('user')}"
+                                 + (", Proton prefixes bundled" if steam.get("proton_prefixes_included") else "")
+                                 + (", client runtime bundled" if steam.get("runtime_included") else "")
+                                 + ")" if steam.get("home_included") else ""))
+    if f.get("npu_runtime"): cats["npu"].update(present=True, detail="RKNN runtime")
+    if cats["wifi"]["present"]:      cats["wifi"]["detail"] = f"{cats['wifi']['files']} conf(s)"
+    if cats["autologin"]["present"]:
+        cats["autologin"]["detail"] = "autologin-user setting (one h96 drop-in, not the raw lightdm files)"
+    if cats["configs"]["present"]:   cats["configs"]["detail"] = "~/.config subset, display+audio state"
+    display = f.get("display", {}); services = f.get("services", {}); wol = f.get("wol")
+    on_svcs = [s for s, v in services.items() if v]
+    if cats["system"]["present"] or display or services or wol:
+        cats["system"].update(present=True,
+            detail=f"hdmi20_off={display.get('hdmi20_off', False)} frl_off={display.get('frl_off', False)} "
+                   f"color={display.get('color') or 'rgb'} range={display.get('range') or 'full'} "
+                   f"per_display={len(display.get('per_display', {}))} "
+                   f"wol={wol} services_on={','.join(on_svcs) or 'none'}")
+    vm = f.get("vm", {})
+    if cats["vm"]["present"] or vm.get("names"):
+        cats["vm"].update(present=True,
+            detail=f"{len(vm.get('names', []))} VM(s): {', '.join(vm.get('names', [])) or '(none)'}"
+                   + ("; disks bundled" if vm.get("disks_included") else "; disks not bundled"))
+    cats["emulators"]["items"] = emu_files
+    retired_note = ("h96-edid-adapt from this archive will NOT be restored (retired on v6.2)"
+                    if manifest.get("source_version", "unknown").startswith(("v5", "v6.0", "v6.1"))
+                    else None)
+    return {"archive": archive, "created": manifest.get("created"), "schema": manifest.get("schema"),
+            "source_version": manifest.get("source_version", "unknown"),
+            "tool_version": manifest.get("tool_version", "unknown"),
+            "desktop": manifest.get("desktop"), "desktop_package": manifest.get("desktop_package"),
+            "emulators": f.get("emulators", []), "waydroid": w,
+            "widevine": f.get("widevine"), "gaming": f.get("gaming"), "npu_runtime": f.get("npu_runtime"),
+            "wifi": f.get("wifi"), "backup_categories": manifest.get("categories"),
+            "display": display, "services": services, "wol": wol, "vm": vm,
+            "retired_note": retired_note,
+            "categories": cats}
+
+def apply_selection(manifest, sel, emu_filter):
+    """Trim the manifest so the installer steps only see selected features."""
+    f = manifest["features"]
+    if "desktop" not in sel:
+        manifest["desktop"], manifest["desktop_package"] = "none", None
+    if "emulators" not in sel:
+        f["emulators"] = []
+    elif emu_filter is not None:
+        f["emulators"] = [e for e in f.get("emulators", []) if e in emu_filter]
+    if "waydroid" not in sel:
+        f.setdefault("waydroid", {})["profile"] = None
+        f["waydroid"]["data"] = False
+    if "waydroid-images" not in sel:
+        f.setdefault("waydroid", {})["images_included"] = False
+    if "widevine" not in sel: f["widevine"] = False
+    if "gaming" not in sel:
+        f["gaming"] = False
+        f.setdefault("steam_arm", {})["home_included"] = False
+        f["steam_arm"]["proton_prefixes_included"] = False
+        f["steam_arm"]["runtime_included"] = False
+    if "npu" not in sel:      f["npu_runtime"] = False
+    if "wifi" not in sel:     f["wifi"] = 0
+    if "system" not in sel:
+        f["display"], f["services"], f["wol"] = {}, {}, None
+    if "vm" not in sel:
+        f.setdefault("vm", {})["names"], f["vm"]["disks_included"] = [], False
+
+# Installer tools invoked in auto mode. Absent tools are skipped (warned).
+EMU_TOOL      = "h96-emulators"
+WAYDROID_TOOL = "h96-waydroid"
+WIDEVINE_TOOL = "h96-widevine-setup"
+GAMEMODE_TOOL = "h96-game-mode"
+NPU_TOOL      = "h96-npu-setup"
+
+WAYDROID_STASHES = {
+    "gpu":    "/etc/waydroid-extra/gpu-images",
+    "los":    "/etc/waydroid-extra/los-images",
+    "custom": "/etc/waydroid-extra/custom-images",
+}
+
+# Map a recorded Waydroid profile tag to the `h96-waydroid init` argument.
+# "sw" (LineageOS) is ambiguous between gapps/vanilla; vanilla is the tool's
+# recommended path and restores an equivalent image (or the stash if bundled).
+PROFILE_TO_INIT = {"gpu": "gpu", "custom": "custom", "sw": "vanilla"}
+
+# --------------------------------------------------------------- output ------
+def c(s, code): return f"\033[{code}m{s}\033[0m" if sys.stdout.isatty() else s
+def info(m): print(">> " + m)
+def warn(m): print(c("!! " + m, "93"), file=sys.stderr)
+def ok(m):   print(c(m, "92"))
+def die(m):  print(c("ERROR: " + m, "91"), file=sys.stderr); sys.exit(1)
+def step(m): print(c("== " + m, "96"))
+
+_ART = r"""
+   ██╗  ██╗ █████╗  ██████╗    ██╗   ██╗███████╗ █████╗
+   ██║  ██║██╔══██╗██╔════╝    ██║   ██║██╔════╝██╔══██╗
+   ███████║╚██████║███████╗    ██║   ██║███████╗╚█████╔╝
+   ██╔══██║ ╚═══██║██╔═══██╗    ╚██╗ ██╔╝╚════██║██╔══██╗
+   ██║  ██║ █████╔╝╚██████╔╝     ╚████╔╝ ███████║╚█████╔╝
+   ╚═╝  ╚═╝ ╚════╝  ╚═════╝       ╚═══╝  ╚══════╝ ╚════╝"""
+
+_BANNER_DONE = []
+
+def banner(title):
+    if not sys.stdout.isatty() or os.environ.get("NO_COLOR"):
+        return
+    if _BANNER_DONE:          # the picker draws it before main() gets there
+        return
+    _BANNER_DONE.append(True)
+    B, P, D, BOLD, X = "\033[96m", "\033[95m", "\033[2m", "\033[1m", "\033[0m"
+    def ctr(s): return s.rjust((64 + len(s)) // 2)
+    print(B + BOLD + _ART + X)
+    print(P + BOLD + ctr("  S C R U M P P E R ' S  ") + X)
+    print(P + BOLD + ctr("  " + "   ".join(title) + "  ") + X)
+    print(D + ctr("H96 Max V58  ·  Rockchip RK3588") + X)
+    print(D + "  " + "─" * 60 + X)
+
+# --------------------------------------------------------------- helpers -----
+def have(cmd): return shutil.which(cmd) is not None
+
+def desktop_user():
+    """Detect the desktop user dynamically. NEVER hardcode a name."""
+    v = os.environ.get("SUDO_USER")
+    if v and v != "root": return v
+    u = os.environ.get("USER")
+    if u and u != "root": return u
+    for p in pwd.getpwall():
+        if 1000 <= p.pw_uid < 65000 and os.path.isdir(p.pw_dir): return p.pw_name
+    die("cannot determine the desktop user")
+
+def user_home(user):
+    try: return pwd.getpwnam(user).pw_dir
+    except KeyError: return f"/home/{user}"
+
+def elevate():
+    if os.geteuid() == 0: return
+    if not have("sudo"):
+        die("needs root to restore system files (sudo not available); run as root")
+    os.execvp("sudo", ["sudo", "-E", sys.executable, os.path.abspath(__file__)] + sys.argv[1:])
+
+def human(n):
+    x = float(n)
+    for u in ("B", "KB", "MB", "GB", "TB"):
+        if x < 1024 or u == "TB":
+            return f"{x:.0f}{u}" if u == "B" else f"{x:.1f}{u}"
+        x /= 1024.0
+
+ARCHIVE_GLOBS = ("h96-backup-*.tar.zst", "h96-backup-*.tar.gz")
+
+
+def archives_in(directory):
+    """Archives directly in `directory` and one level below it, newest first."""
+    import glob as _glob
+    found = set()
+    for pat in list(ARCHIVE_GLOBS) + [os.path.join("*", g) for g in ARCHIVE_GLOBS]:
+        for f in _glob.glob(os.path.join(directory, pat)):
+            if os.path.isfile(f):
+                found.add(f)
+    return sorted(found, key=lambda f: os.path.getmtime(f), reverse=True)
+
+
+def search_dirs():
+    """Where an archive is likely to be: mounted media first, then home folders."""
+    import glob as _glob
+    out = []
+    for pat in ("/media/*/*", "/run/media/*/*", "/mnt/*", "/media/*"):
+        for p in sorted(_glob.glob(pat)):
+            if os.path.ismount(p) and os.access(p, os.R_OK) and p not in out:
+                out.append(p)
+    for p in pwd.getpwall():
+        if 1000 <= p.pw_uid < 65000 and os.path.isdir(p.pw_dir) and p.pw_dir not in out:
+            out.append(p.pw_dir)
+    if os.path.isdir("/root"):
+        out.append("/root")
+    return out
+
+
+def find_archives():
+    found = set()
+    for d in search_dirs():
+        found.update(archives_in(d))
+    return sorted(found, key=lambda f: os.path.getmtime(f), reverse=True)
+
+
+def describe(path):
+    try:
+        st = os.stat(path)
+    except OSError:
+        return path
+    return (f"{human(st.st_size):>9}  {time.strftime('%Y-%m-%d %H:%M', time.localtime(st.st_mtime))}"
+            f"  {path}")
+
+
+def list_archives(found):
+    if not found:
+        print("No archive found on mounted media or in the home folders.")
+        print("Plug the stick in, or give the path: h96-restore /path/to/archive")
+        return
+    print(f"{len(found)} archive(s), newest first:\n")
+    for i, f in enumerate(found, 1):
+        print(f"  {i:>2})  {describe(f)}")
+
+
+def choose_archive():
+    """List what was found and ask. Returns a path, or None to stop."""
+    found = find_archives()
+    banner("R E S T O R E")
+    print()
+    list_archives(found)
+    if not found:
+        return None
+    print()
+    print("  Type a number, or the path to an archive or a folder. Enter alone stops.")
+    try:
+        answer = input("  archive > ").strip()
+    except (EOFError, KeyboardInterrupt):
+        print()
+        return None
+    if not answer:
+        return None
+    if answer.isdigit() and 1 <= int(answer) <= len(found):
+        return found[int(answer) - 1]
+    return resolve_archive(os.path.expanduser(answer))
+
+
+def resolve_archive(path):
+    """Accept a file or a folder. A folder gives up its newest archive."""
+    if os.path.isdir(path):
+        found = archives_in(path)
+        if not found:
+            die(f"no h96-backup archive in {path}")
+        if len(found) > 1:
+            info(f"{len(found)} archives in {path}; using the newest")
+        return found[0]
+    return path
+
+
+def run(argv, dry):
+    """Run an installer; in dry/open mode only print the command line."""
+    line = " ".join(argv)
+    if dry:
+        print("    would run: " + line); return True
+    info("run: " + line)
+    try:
+        return subprocess.run(argv).returncode == 0
+    except FileNotFoundError:
+        warn(f"tool not found: {argv[0]} (skipped)")
+        return False
+
+# ------------------------------------------------------------ archive io -----
+def open_read(path):
+    """Open the archive for streaming read. .tar.zst needs the zstd CLI."""
+    if not os.path.exists(path):
+        die(f"archive not found: {path}")
+    if path.endswith(".zst"):
+        if not have("zstd"):
+            die("archive is zstd-compressed but 'zstd' is not installed "
+                "(apt install zstd)")
+        proc = subprocess.Popen(["zstd", "-dc", path], stdout=subprocess.PIPE)
+        return tarfile.open(fileobj=proc.stdout, mode="r|"), proc
+    if path.endswith((".gz", ".tgz")):
+        return tarfile.open(path, "r|gz"), None
+    return tarfile.open(path, "r|"), None
+
+# ------------------------------------------------------- member routing ------
+def map_dest(arcname, home, wdata_base, steam_home=None):
+    """Map an archive member to (dest_path, owner_kind) or (None, None) to skip.
+    owner_kind: 'user' chown to desktop user, 'steamuser' chown to the Steam ARM
+    account, 'root' 0600 root, 'root_dir' root dir/file, 'numeric' keep the
+    tar-recorded uid/gid (Waydroid /data)."""
+    if arcname == "manifest.json":
+        return None, None
+    if is_retired(arcname):
+        return None, None
+    if arcname.startswith("userhome/"):
+        return os.path.join(home, arcname[len("userhome/"):]), "user"
+    if arcname.startswith("steamhome/"):
+        base = steam_home or home
+        rel = arcname[len("steamhome/"):]
+        return (os.path.join(base, rel) if rel else base), "steamuser"
+    # Safe to write back verbatim: this file holds only the box's own SSID/PSK,
+    # generated by h96-wifi-connect; no package ships a per-interface template
+    # here, so there is nothing distro-owned to overwrite.
+    if arcname.startswith("wifi/"):
+        return os.path.join("/etc/wpa_supplicant", os.path.basename(arcname)), "root"
+    # system/lightdm/* is never written back verbatim (distro/h96-image-owned
+    # files); scan_autologin_settings()/apply_autologin() handle it instead.
+    if arcname.startswith("system/lightdm/"):
+        return None, None
+    if arcname == "system/etc-h96/hotspot.conf":
+        return HOTSPOT_CONF, "root"          # 0600: SSID/password
+    if arcname == "system/etc-h96/vm.conf":
+        return VM_CONF, "root_dir"
+    if arcname == "system/etc-h96/leds.conf":
+        return LEDS_CONF, "root_flag"        # h96-leds ignores bad content, falls back to steady
+    if arcname == "system/etc-h96/steam-arm.conf":
+        return STEAM_ARM_CONF, "steam_arm_conf"   # GAMEUSER= rewritten to the mapped target user
+    if arcname == "system/etc-h96/display-nolock":
+        return None, None          # stale SCDC record; restore clears the target's own instead
+    if arcname == "system/etc-h96/display-color":
+        return DISPLAY_COLOR, "flag_color"
+    if arcname == "system/etc-h96/display-range":
+        return DISPLAY_RANGE, "flag_range"
+    if arcname == "system/etc-h96/display-frl.off":
+        return DISPLAY_FRL_OFF, "root_flag"
+    if arcname == "system/etc-h96/display-hdmi20.off":
+        return DISPLAY_HDMI20_OFF, "root_flag"
+    if arcname in EMPTY_FLAGS:
+        return EMPTY_FLAGS[arcname], "root_flag"
+    if arcname.startswith("system/etc-h96/display/"):
+        name = arcname[len("system/etc-h96/display/"):]
+        if not name or "/" in name or not is_display_conf_name(name):
+            return None, None
+        return os.path.join(DISPLAY_DIR, name), "display_conf"
+    if arcname.startswith("system/etc-h96/"):
+        return os.path.join("/etc/h96", arcname[len("system/etc-h96/"):]), "root_dir"
+    if arcname.startswith("vm/"):
+        return os.path.join(VM_VAR_ROOT, arcname[len("vm/"):]), "root_dir"
+    if arcname.startswith("waydroid-data/"):
+        rel = arcname[len("waydroid-data/"):]
+        return (os.path.join(wdata_base, rel) if rel else wdata_base), "numeric"
+    if arcname.startswith("waydroid-stash/"):
+        parts = arcname.split("/", 2)          # waydroid-stash/<k>/<rest>
+        if len(parts) < 2 or parts[1] not in WAYDROID_STASHES: return None, None
+        base = WAYDROID_STASHES[parts[1]]
+        return (os.path.join(base, parts[2]) if len(parts) == 3 else base), "root_dir"
+    return None, None
+
+def makedirs_as(path, owner_kind, uid, gid):
+    """makedirs; directories it creates for user members belong to the desktop user."""
+    missing = []
+    p = path
+    while p and p != "/" and not os.path.isdir(p):
+        missing.append(p)
+        p = os.path.dirname(p)
+    os.makedirs(path, exist_ok=True)
+    if owner_kind == "user":
+        for d in missing:
+            try:
+                os.chown(d, uid, gid)
+            except OSError:
+                pass
+
+def extract_member(tf, member, dest, owner_kind, uid, gid):
+    """Stream one member to dest with the right owner/mode. Newer existing files
+    are kept, not clobbered."""
+    if member.isdir():
+        makedirs_as(dest, owner_kind, uid, gid)
+    elif member.issym() or member.islnk():
+        # recreate symlinks; hardlinks fall back to symlink of the target name
+        try:
+            makedirs_as(os.path.dirname(dest) or "/", owner_kind, uid, gid)
+            if os.path.lexists(dest): os.unlink(dest)
+            os.symlink(member.linkname, dest)
+            if owner_kind == "user": os.lchown(dest, uid, gid)
+        except OSError:
+            return
+        return  # ownership of the link target is handled by its own member
+    elif member.isreg():
+        if os.path.exists(dest) and not os.path.islink(dest) and not FORCE:
+            try:
+                if os.path.getmtime(dest) > member.mtime + 1:
+                    warn(f"kept newer {dest} (archive copy not restored)")
+                    return
+            except OSError:
+                pass
+        makedirs_as(os.path.dirname(dest) or "/", owner_kind, uid, gid)
+        src = tf.extractfile(member)
+        if src is None: return
+        with open(dest, "wb") as out:
+            shutil.copyfileobj(src, out)
+    else:
+        return
+
+    # ---- ownership + mode ----
+    try:
+        if owner_kind == "user":
+            os.chown(dest, uid, gid)
+            if member.isreg(): os.chmod(dest, member.mode or 0o644)
+        elif owner_kind == "root":
+            os.chown(dest, 0, 0); os.chmod(dest, 0o600)
+        elif owner_kind == "root_dir":
+            os.chown(dest, 0, 0)
+        elif owner_kind == "root_flag":
+            os.chown(dest, 0, 0); os.chmod(dest, 0o644)
+        elif owner_kind == "numeric":
+            os.chown(dest, member.uid, member.gid)
+            if member.isreg(): os.chmod(dest, member.mode or 0o600)
+    except OSError:
+        pass
+
+def read_flag_value(tf, member):
+    """First stripped line of a small text member, or '' if unreadable."""
+    src = tf.extractfile(member)
+    if src is None: return ""
+    return src.read().decode(errors="replace").strip()
+
+def read_member_text(tf, member):
+    """Full decoded text of a small archive member, or '' if unreadable."""
+    src = tf.extractfile(member)
+    if src is None: return ""
+    return src.read().decode(errors="replace")
+
+# A backup never bundles game content (steamapps/common/*); an appmanifest
+# restored without it makes Steam show a game as installed when it is not.
+# Only restore an appmanifest when the archive also holds real content for
+# its installdir -- checked via a separate prescan since tar order can list
+# the appmanifest before the common/<installdir>/ content it describes.
+APPMANIFEST_RE = re.compile(r"(.*/steamapps/)appmanifest_(\d+)\.acf$")
+COMMON_CONTENT_RE = re.compile(r"(.*/steamapps/)common/([^/]+)/")
+
+def scan_steam_common(archive):
+    """{(steamapps_prefix, installdir)} with real content under common/ in the archive."""
+    tf, proc = open_read(archive)
+    have = set()
+    for member in tf:
+        m = COMMON_CONTENT_RE.match(member.name)
+        if m and member.isreg():
+            have.add((m.group(1), m.group(2)))
+    tf.close()
+    if proc: proc.stdout.close(); proc.wait()
+    return have
+
+def appmanifest_installdir(tf, member):
+    """installdir value out of a Steam .acf manifest member, or None."""
+    m = re.search(r'"installdir"\s*"([^"]*)"', read_member_text(tf, member))
+    return m.group(1) if m else None
+
+def rewrite_gameuser(text, target_user):
+    """Rewrite a GAMEUSER= line to target_user; other lines untouched. No
+    GAMEUSER line -> text returned as-is. Returns (new_text, old_value_or_None)."""
+    old = None
+    out = []
+    for ln in text.splitlines(keepends=True):
+        if ln.strip().startswith("GAMEUSER="):
+            old = ln.strip().split("=", 1)[1]
+            out.append(f"GAMEUSER={target_user}" + ("\n" if ln.endswith("\n") else ""))
+        else:
+            out.append(ln)
+    return "".join(out), old
+
+def write_text_file(dest, content, member):
+    """Write validated text content to dest, 0644 root:root; keeps a newer copy."""
+    if os.path.exists(dest) and not FORCE:
+        try:
+            if os.path.getmtime(dest) > member.mtime + 1:
+                warn(f"kept newer {dest} (archive copy not restored)")
+                return False
+        except OSError:
+            pass
+    os.makedirs(os.path.dirname(dest), exist_ok=True)
+    with open(dest, "w") as fh:
+        fh.write(content)
+    try:
+        os.chown(dest, 0, 0)
+        os.chmod(dest, 0o644)
+    except OSError:
+        pass
+    return True
+
+def write_flag_file(dest, content, member):
+    """Write a validated one-line flag file via write_text_file."""
+    return write_text_file(dest, content + "\n", member)
+
+def is_display_conf_name(name):
+    """True for <key>.conf, key in [A-Za-z0-9_-]+."""
+    if not name.endswith(".conf"): return False
+    stem = name[:-5]
+    return bool(stem) and all(c.isalnum() or c in "_-" for c in stem)
+
+def parse_display_conf(text):
+    """Parse a per-display conf (color=/range= lines only); None if invalid."""
+    out = {}
+    for ln in text.splitlines():
+        s = ln.strip()
+        if not s: continue
+        if "=" not in s: return None
+        k, v = (p.strip() for p in s.split("=", 1))
+        if k == "color" and v in PER_DISPLAY_COLOR_VALUES: out["color"] = v
+        elif k == "range" and v in PER_DISPLAY_RANGE_VALUES: out["range"] = v
+        else: return None
+    return out
+
+def extract_stash_prepass(archive, home, wdata_base):
+    """Lay the Waydroid image stashes onto /etc/waydroid-extra BEFORE init runs,
+    so `h96-waydroid init` reuses them offline instead of downloading. Separate
+    streaming pass (a streamed tar cannot rewind); only used in auto mode when
+    the archive actually bundled the images."""
+    tf, proc = open_read(archive)
+    n = 0
+    for member in tf:
+        if not member.name.startswith("waydroid-stash/"):
+            continue
+        dest, kind = map_dest(member.name, home, wdata_base)
+        if dest:
+            extract_member(tf, member, dest, kind, 0, 0)
+            n += 1
+    tf.close()
+    if proc: proc.stdout.close(); proc.wait()
+    info(f"pre-restored {n} Waydroid image file(s) for offline init")
+
+
+# ------------------------------------------------------- installer plan ------
+def do_desktop(manifest, mode):
+    de = manifest.get("desktop", "none")
+    pkg = manifest.get("desktop_package")
+    if de == "none" or not pkg:
+        return
+    # Already present? Skip a reinstall.
+    try:
+        r = subprocess.run(["dpkg-query", "-W", "-f=${Status}", pkg],
+                           capture_output=True, text=True)
+        present = r.returncode == 0 and "install ok installed" in r.stdout
+    except FileNotFoundError:
+        present = False   # no dpkg on this host (not the target box)
+    if present:
+        info(f"desktop {pkg} already installed; skipping")
+        return
+    step(f"desktop: {de} ({pkg})")
+    run(["apt-get", "install", "-y", pkg], dry=(mode != "auto"))
+
+def do_emulators(manifest, mode):
+    emus = manifest["features"].get("emulators", [])
+    if not emus:
+        return
+    step(f"emulators: {', '.join(emus)}")
+    if not have(EMU_TOOL) and mode == "auto":
+        warn(f"{EMU_TOOL} not found; skipping emulator install")
+        return
+    run([EMU_TOOL, "install"] + emus, dry=(mode != "auto"))
+
+def do_waydroid(manifest, mode, have_stash):
+    w = manifest["features"].get("waydroid", {})
+    prof = w.get("profile")
+    if not prof:
+        return
+    initarg = PROFILE_TO_INIT.get(prof, "vanilla")
+    step(f"waydroid: init {initarg}"
+         + ("  (stashed images restored from archive)" if have_stash else
+            "  (images re-downloaded)"))
+    if not have(WAYDROID_TOOL) and mode == "auto":
+        warn(f"{WAYDROID_TOOL} not found; skipping waydroid init")
+        return
+    # A fresh flash ships the h96-waydroid tool but not the waydroid package
+    # itself; `init` refuses until `install` has run. Install first when the
+    # waydroid binary is absent (the install step is idempotent otherwise).
+    if not have("waydroid"):
+        run([WAYDROID_TOOL, "install"], dry=(mode != "auto"))
+    # Stash images (if bundled) are laid down BEFORE init so init reuses them
+    # offline instead of downloading; that extraction happens in the data pass.
+    run([WAYDROID_TOOL, "init", initarg], dry=(mode != "auto"))
+
+def do_widevine(manifest, mode):
+    if not manifest["features"].get("widevine"):
+        return
+    step("widevine: L3 CDM")
+    if not have(WIDEVINE_TOOL) and mode == "auto":
+        warn(f"{WIDEVINE_TOOL} not found; skipping widevine")
+        return
+    # h96-widevine-setup has no accept flag; it prompts on a tty, else runs
+    # non-interactively. Nothing else to pass.
+    run([WIDEVINE_TOOL], dry=(mode != "auto"))
+
+def do_gaming(manifest, mode):
+    if not manifest["features"].get("gaming"):
+        return
+    step("gaming: wine/DXVK stack")
+    # h96-game-mode fetches the ~206 MB stack on first use. --winecfg triggers
+    # the fetch + prefix init without needing a game exe.
+    if not have(GAMEMODE_TOOL) and mode == "auto":
+        warn(f"{GAMEMODE_TOOL} not found; skipping gaming stack fetch")
+        return
+    run([GAMEMODE_TOOL, "--winecfg"], dry=(mode != "auto"))
+
+def do_npu(manifest, mode):
+    if not manifest["features"].get("npu_runtime"):
+        return
+    step("npu: RKNN runtime")
+    if not have(NPU_TOOL) and mode == "auto":
+        warn(f"{NPU_TOOL} not found; skipping npu runtime")
+        return
+    run([NPU_TOOL, "--accept-license"], dry=(mode != "auto"))
+
+def scan_autologin_settings(text, settings):
+    """Extract autologin-user/-session/user-session from an archived lightdm [Seat:*] block."""
+    in_seat = False
+    for ln in text.splitlines():
+        s = ln.strip()
+        if not s or s.startswith("#"):
+            continue
+        if s.startswith("["):
+            in_seat = s.lower().startswith("[seat")
+            continue
+        if not in_seat or "=" not in s:
+            continue
+        k, v = s.split("=", 1)
+        k = k.strip().lower()
+        if k in ("autologin-user", "autologin-session", "user-session"):
+            settings[k] = v.strip()
+
+def apply_autologin(settings, user, mode):
+    """Apply autologin-user via one h96-owned lightdm drop-in; never write back the archived lightdm files."""
+    if not settings.get("autologin-user"):
+        return
+    if not os.path.isdir(LIGHTDM_DIR):
+        warn("lightdm not installed on this box; autologin setting skipped")
+        return
+    existing = {}
+    try:
+        with open(H96_AUTOLOGIN_CONF) as fh:
+            scan_autologin_settings(fh.read(), existing)
+    except OSError:
+        pass
+    lines = ["[Seat:*]", f"autologin-user={user}"]
+    for k in ("autologin-session", "user-session"):
+        v = existing.get(k) or settings.get(k)
+        if v:
+            lines.append(f"{k}={v}")
+    content = "\n".join(lines) + "\n"
+    if mode != "auto":
+        print(f"    would write: {H96_AUTOLOGIN_CONF}")
+        for ln in lines:
+            print(f"        {ln}")
+        return
+    try:
+        os.makedirs(os.path.dirname(H96_AUTOLOGIN_CONF), exist_ok=True)
+        with open(H96_AUTOLOGIN_CONF, "w") as fh:
+            fh.write(content)
+        os.chown(H96_AUTOLOGIN_CONF, 0, 0)
+        os.chmod(H96_AUTOLOGIN_CONF, 0o644)
+        info(f"lightdm: autologin-user={user} via {H96_AUTOLOGIN_CONF}")
+    except OSError as e:
+        warn(f"could not write {H96_AUTOLOGIN_CONF}: {e}")
+
+def steam_client_present(steam_home):
+    """The native ARM64 client binary, resolved under the account's
+    ACTUAL home on this box (before or after restore, whichever is asked)."""
+    return bool(steam_home) and os.path.exists(os.path.join(steam_home, STEAM_CLIENT_BIN))
+
+def resolve_steam_user(manifest, fallback_user, fallback_home, fallback_uid, fallback_gid):
+    """(name, home, uid, gid) for the Steam ARM account, nested under its recorded ARMHOME_DIR; falls back to the desktop user if that account is missing."""
+    steam = manifest.get("features", {}).get("steam_arm", {})
+    name = steam.get("user")
+    armhome_dir = steam.get("armhome_dir") or ".local/share/steam-arm"
+    if name:
+        try:
+            pw = pwd.getpwnam(name)
+            return name, os.path.join(pw.pw_dir, armhome_dir), pw.pw_uid, pw.pw_gid
+        except KeyError:
+            warn(f"Steam ARM account '{name}' not found on this box yet; "
+                 f"restoring its home under '{fallback_user}' instead")
+    return fallback_user, os.path.join(fallback_home, armhome_dir), fallback_uid, fallback_gid
+
+def apply_services(manifest, mode):
+    """Enable each opt-in service the archive recorded as on; never disables or touches an unmentioned unit."""
+    services = manifest.get("features", {}).get("services", {})
+    for s in RETIRED_SERVICES:
+        if services.get(s) is True:
+            info(f"{s}: archive has it on, but pinhole loader mode does not ship; skipped")
+    on = [s for s in OPT_IN_SERVICES if services.get(s) is True]
+    if not on:
+        return
+    step(f"opt-in services: {', '.join(on)}")
+    for unit in on:
+        if mode != "auto":
+            print(f"    would run: systemctl enable {unit}"); continue
+        r = subprocess.run(["systemctl", "list-unit-files", unit],
+                           capture_output=True, text=True)
+        if unit not in r.stdout:
+            warn(f"{unit} not installed on this box; skipped"); continue
+        subprocess.run(["systemctl", "enable", unit], stdout=subprocess.DEVNULL)
+        info(f"enabled {unit}")
+
+def apply_wol(manifest, mode):
+    """Set WoL to match the archive's recorded state; no-op when the archive has none."""
+    state = manifest.get("features", {}).get("wol")
+    if state not in ("on", "off"):
+        return
+    step(f"wake-on-LAN: {state}")
+    if mode != "auto":
+        print(f"    would run: h96-wol {state}"); return
+    if not have("h96-wol"):
+        warn("h96-wol not installed on this box; skipped"); return
+    subprocess.run(["h96-wol", state], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+def apply_hdmi20(manifest, mode):
+    """Stop h96-scdc and re-detect when the archive recorded hdmi20 scrambling off; never re-enables it."""
+    if not manifest.get("features", {}).get("display", {}).get("hdmi20_off"):
+        return
+    step("hdmi 2.0 scrambling: off (applying live)")
+    if mode != "auto":
+        print("    would run: systemctl stop h96-scdc.service; h96-display detect --quiet")
+        return
+    subprocess.run(["systemctl", "stop", "h96-scdc.service"],
+                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    if have("h96-display"):
+        subprocess.run(["h96-display", "detect", "--quiet"],
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        info("h96-scdc stopped; display re-detected")
+    else:
+        warn("h96-display not installed on this box; mode list not re-detected")
+
+def clear_nolock(mode):
+    """Clear the target's own stale SCDC lock-failed record; never carried forward from the archive."""
+    if not os.path.exists(DISPLAY_NOLOCK):
+        return
+    step("clearing stale SCDC lock-failed record")
+    if mode != "auto":
+        print(f"    would remove: {DISPLAY_NOLOCK}")
+        return
+    try:
+        os.remove(DISPLAY_NOLOCK)
+        info(f"removed {DISPLAY_NOLOCK}")
+    except OSError as e:
+        warn(f"could not remove {DISPLAY_NOLOCK}: {e}")
+
+def migrate_hdmi_sink(home, mode):
+    """Rewrite a v6.1-era HDMI sink node name in the restored WirePlumber
+    state, if h96-hdmi-sink-migrate.sh is installed on this box."""
+    if mode != "auto" or not os.path.exists(HDMI_SINK_MIGRATE):
+        if mode != "auto":
+            print(f"    would run: {HDMI_SINK_MIGRATE} {home}")
+        return
+    subprocess.run(["bash", HDMI_SINK_MIGRATE, home],
+                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+# --------------------------------------------------------------- main --------
+def main():
+    args = sys.argv[1:]
+    if any(a in ("-h", "--help", "help") for a in args):
+        print(HELP); return
+    if any(a in ("-v", "--version") for a in args):
+        print(f"h96-restore v{TOOL_VERSION}"); return
+    if "--list" in args:
+        list_archives(find_archives()); return
+
+    global FORCE
+    mode = "auto"     # auto | open
+    dry = False
+    archive = None
+    only, skip, emu_filter, want_plan = None, [], None, False
+    it_args = iter(args)
+    for a in it_args:
+        if a == "--open":     mode = "open"
+        elif a == "--dry-run": dry = True
+        elif a == "--force":   FORCE = True
+        elif a == "--plan-json": want_plan = True
+        elif a == "--list":      pass
+        elif a.startswith("--only="):      only = parse_categories(a[7:], "--only")
+        elif a == "--only":                only = parse_categories(next(it_args, ""), "--only")
+        elif a.startswith("--skip="):      skip = parse_categories(a[7:], "--skip")
+        elif a == "--skip":                skip = parse_categories(next(it_args, ""), "--skip")
+        elif a.startswith("--emulators="): emu_filter = [x.strip() for x in a[12:].split(",") if x.strip()]
+        elif a == "--emulators":           emu_filter = [x.strip() for x in next(it_args, "").split(",") if x.strip()]
+        elif a.startswith("-"): die(f"unknown option '{a}' (see --help)")
+        elif archive is None:  archive = a
+        else:                  die("only one archive may be given")
+    if not archive:
+        # Nothing named. On a terminal, offer what is on the box rather than
+        # making the path a guessing game; anywhere else, print the usage.
+        if sys.stdin.isatty() and sys.stdout.isatty() and not want_plan:
+            archive = choose_archive()
+            if not archive:
+                print("nothing chosen; nothing was changed.")
+                return
+            # elevate() re-runs this tool with sys.argv[1:]; without the choice
+            # in there, the prompt would come back a second time under sudo.
+            sys.argv.insert(1, archive)
+        else:
+            die("usage: h96-restore <archive|folder> [--open] [--dry-run] [--force] "
+                "[--only a,b] [--skip a,b] [--emulators x,y] [--plan-json] [--list]")
+    archive = resolve_archive(archive)
+    sel = set(c for c in CATEGORIES if (only is None or c in only) and c not in skip)
+
+    if want_plan:
+        print(json.dumps(plan_json(archive), indent=2)); return
+
+    # dry-run needs no privilege; a real restore does.
+    if not dry:
+        elevate()
+    banner("R E S T O R E")
+
+    # after elevate() (which re-execs the process): computed once, not twice.
+    steam_common = scan_steam_common(archive) if "gaming" in sel else set()
+
+    user = desktop_user()
+    home = user_home(user)
+    try:
+        pw = pwd.getpwnam(user)
+        uid, gid = pw.pw_uid, pw.pw_gid
+    except KeyError:
+        uid = gid = None
+    wdata_base = os.path.join(home, ".local/share/waydroid/data")
+
+    # ---- read manifest (first member of the stream) ------------------------
+    tf, proc = open_read(archive)
+    it = iter(tf)
+    try:
+        first = next(it)
+    except StopIteration:
+        die("archive is empty")
+    if first.name != "manifest.json":
+        die(f"not an h96-backup archive (first member is '{first.name}', "
+            "expected manifest.json)")
+    manifest = json.loads(tf.extractfile(first).read().decode())
+    if manifest.get("schema") not in (1, 2):
+        warn(f"archive schema {manifest.get('schema')} not recognised (attempting anyway)")
+
+    apply_selection(manifest, sel, emu_filter)
+    feats = manifest["features"]
+    w = feats.get("waydroid", {})
+    have_stash = w.get("images_included") and bool(w.get("stashes"))
+    steam = feats.get("steam_arm", {})
+    # Resolved unconditionally: steam-arm.conf's GAMEUSER= is remapped to this
+    # user even on a run that excludes the "gaming" category (no home copied).
+    steam_name, steam_home, steam_uid, steam_gid = resolve_steam_user(manifest, user, home, uid, gid)
+    # true once the client program will actually be there: already on this box
+    # (independently installed, or a previous restore), or bundled this time
+    steam_client_ready = bool(steam.get("home_included")) and (
+        steam.get("runtime_included") or steam_client_present(steam_home))
+    src_version = manifest.get("source_version", "unknown")
+    src_tool_version = manifest.get("tool_version", "unknown")
+
+    # ---- report the plan ---------------------------------------------------
+    info(f"archive : {archive}   (h96-backup v{src_tool_version} on this restore v{TOOL_VERSION})")
+    info(f"created : {manifest.get('created', '?')}   source version: {src_version}")
+    info(f"target user : {user}   (HOME {home})")
+    info(f"mode    : {'DRY-RUN' if dry else mode.upper()}"
+         + (" + FORCE" if FORCE else ""))
+    if sel != set(CATEGORIES):
+        info(f"categories : {', '.join(c for c in CATEGORIES if c in sel) or '(none)'}")
+    if emu_filter is not None:
+        info(f"emulators  : limited to {', '.join(emu_filter) or '(none)'}")
+    print()
+    step("plan")
+    print(f"  desktop     : {manifest.get('desktop')} ({manifest.get('desktop_package')})")
+    print(f"  emulators   : {', '.join(feats.get('emulators', [])) or '(none)'}")
+    print(f"  waydroid    : profile={w.get('profile') or '(none)'} "
+          f"data={'yes' if w.get('data') else 'no'} "
+          f"images={'bundled' if have_stash else 'redownload'}")
+    print(f"  widevine    : {feats.get('widevine')}")
+    print(f"  gaming      : {feats.get('gaming')}"
+          + (f"  (+ Steam ARM home under {steam_name}"
+             + (", Proton prefixes bundled" if steam.get("proton_prefixes_included") else "")
+             + (", client runtime bundled" if steam.get("runtime_included") else "")
+             + ")" if steam.get("home_included") else ""))
+    if steam.get("home_included") and not steam_client_ready:
+        print("  note: Steam ARM client program will NOT be on this box after this restore "
+              "(it was excluded from the archive to save space). After restoring, run:")
+        print("          sudo h96-steam install --keep")
+        print("        (or: sudo h96-steam install emulated --keep, for the x86/FEX route)")
+        print("        This tool never launches Steam itself.")
+    print(f"  npu runtime : {feats.get('npu_runtime')}")
+    print(f"  wifi confs  : {feats.get('wifi')}")
+    display = feats.get("display", {}); services = feats.get("services", {}); wol = feats.get("wol")
+    on_svcs = [s for s in OPT_IN_SERVICES if services.get(s) is True]
+    print(f"  display     : hdmi20_off={display.get('hdmi20_off', False)} frl_off={display.get('frl_off', False)} "
+          f"color={display.get('color') or 'rgb'} range={display.get('range') or 'full'} "
+          f"per_display={len(display.get('per_display', {}))} "
+          f"nolock={display.get('nolock', False)} (cleared on target, not restored)"
+          + ("  (hdmi-sink.json is never restored; run 'h96-display detect' after)" if "system" in sel else ""))
+    print(f"  services on : {', '.join(on_svcs) or '(none)'}   wol : {wol or '(unset)'}")
+    vm = feats.get("vm", {})
+    print(f"  h96-vm      : {', '.join(vm.get('names', [])) or '(none)'}"
+          + ("  (disk images bundled)" if vm.get("disks_included") else "  (definitions only)" if vm.get("names") else ""))
+    if w.get("profile") and not have_stash:
+        print("  note: Waydroid images not in archive; init will re-download "
+              f"(~{'5 GB' if w.get('profile') == 'gpu' else '900 MB'}).")
+    if src_version.startswith(("v5", "v6.0", "v6.1")):
+        print(f"  note: h96-edid-adapt from {src_version} is retired on v6.2; not restored.")
+
+    # ---- installers --------------------------------------------------------
+    print()
+    if mode == "open" and not dry:
+        step("OPEN MODE: run these installer commands yourself, then this tool "
+             "restores your data")
+    do_desktop(manifest, "open" if mode == "open" else ("dry" if dry else "auto"))
+    inst_mode = "dry" if dry else mode
+    do_emulators(manifest, inst_mode)
+    # Auto mode runs init itself, so images must be on disk first. Open mode
+    # leaves init to the user; its stash is restored in the data pass below,
+    # before the user runs init manually.
+    stash_prepassed = False
+    if mode == "auto" and not dry and have_stash and have(WAYDROID_TOOL):
+        extract_stash_prepass(archive, home, wdata_base)
+        stash_prepassed = True
+    do_waydroid(manifest, inst_mode, have_stash)
+    do_widevine(manifest, inst_mode)
+    do_gaming(manifest, inst_mode)
+    do_npu(manifest, inst_mode)
+    if "system" in sel:
+        apply_services(manifest, inst_mode)
+        apply_wol(manifest, inst_mode)
+        apply_hdmi20(manifest, inst_mode)
+        clear_nolock(inst_mode)
+
+    if dry:
+        # Consume nothing more; the stream is closed below.
+        step("data restore (dry-run: nothing written)")
+        # Summarised by category. Listing every path put thousands of lines on
+        # the terminal and buried the part worth reading.
+        SAMPLE = 6
+        skipped = 0
+        appmanifests_total = appmanifests_skipped = 0
+        counts = {c: [0, 0, []] for c in CATEGORIES}   # files, bytes, samples
+        autologin_settings = {}
+        for member in it:
+            cat, emu = member_category(member.name)
+            if cat not in sel or (emu and emu_filter is not None and emu not in emu_filter):
+                skipped += 1; continue
+            if cat == "gaming":
+                m = APPMANIFEST_RE.match(member.name)
+                if m and member.isreg():
+                    appmanifests_total += 1
+                    installdir = appmanifest_installdir(tf, member)
+                    if not installdir or (m.group(1), installdir) not in steam_common:
+                        appmanifests_skipped += 1
+                        continue
+            if member.name.startswith("system/lightdm/"):
+                if member.isreg():
+                    src = tf.extractfile(member)
+                    if src is not None:
+                        scan_autologin_settings(src.read().decode(errors="replace"), autologin_settings)
+                continue
+            dest, kind = map_dest(member.name, home, wdata_base, steam_home)
+            if not dest or not member.isreg():
+                if not dest and not member.isdir() and member.name.startswith("system/etc-h96/display/"):
+                    warn(f"{member.name}: unexpected name in archive display/ folder; would be skipped")
+                continue
+            if kind in ("flag_color", "flag_range"):
+                valid = DISPLAY_COLOR_VALUES if kind == "flag_color" else DISPLAY_RANGE_VALUES
+                val = read_flag_value(tf, member)
+                if val not in valid:
+                    warn(f"{dest}: invalid value '{val}' in archive (want {'/'.join(valid)}); would be skipped")
+                    continue
+            if kind == "display_conf":
+                if parse_display_conf(read_flag_value(tf, member)) is None:
+                    warn(f"{dest}: invalid content in archive; would be skipped")
+                    continue
+            if member.name in EMPTY_FLAGS and member.size != 0:
+                warn(f"{dest}: flag file not empty in archive; would be skipped")
+                continue
+            if kind == "steam_arm_conf":
+                _, old = rewrite_gameuser(read_member_text(tf, member), steam_name)
+                if old and old != steam_name:
+                    print(f"    would rewrite {dest}: GAMEUSER={old} -> GAMEUSER={steam_name}")
+            row = counts[cat]
+            row[0] += 1
+            row[1] += member.size
+            if len(row[2]) < SAMPLE:
+                row[2].append(dest)
+        total = sum(r[0] for r in counts.values())
+        for cat in CATEGORIES:
+            files, size, samples = counts[cat]
+            if not files:
+                continue
+            print(f"    {cat:<16} {files:>6} file(s)  {human(size):>9}")
+            for d in samples:
+                print(f"        {d}")
+            if files > len(samples):
+                print(f"        ... and {files - len(samples)} more")
+        if autologin_settings.get("autologin-user"):
+            print(f"    {'autologin':<16} {'1 setting':>6}  (via one h96 drop-in, not raw file copy)")
+            apply_autologin(autologin_settings, user, "dry")
+        total_incl_autologin = total + (1 if autologin_settings.get("autologin-user") else 0)
+        if not total_incl_autologin:
+            print("    (no data members in the selected categories)")
+        else:
+            print(f"    {total_incl_autologin} file(s) would be written in total")
+        if skipped:
+            print(f"    ({skipped} member(s) outside the selected categories skipped)")
+        if appmanifests_total:
+            print(f"    {appmanifests_skipped} game install record(s) skipped "
+                  "(game files not in archive; reinstall from Steam)")
+        if "configs" in sel:
+            migrate_hdmi_sink(home, "dry")
+        tf.close()
+        if proc: proc.stdout.close(); proc.wait()
+        ok("\ndry-run complete: nothing was changed.")
+        return
+
+    # ---- passive data restore (auto AND open) ------------------------------
+    print()
+    step("restoring passive data (configs, wifi, saves, /data)")
+    if uid is None:
+        warn(f"desktop user '{user}' has no passwd entry; user files left root-owned")
+    restored = 0
+    autologin_settings = {}
+    appmanifests_total = appmanifests_skipped = 0
+    for member in it:
+        # stash already laid down in the auto-mode pre-pass; do not redo it
+        if stash_prepassed and member.name.startswith("waydroid-stash/"):
+            continue
+        cat, emu = member_category(member.name)
+        if cat not in sel or (emu and emu_filter is not None and emu not in emu_filter):
+            continue
+        if cat == "gaming":
+            m = APPMANIFEST_RE.match(member.name)
+            if m and member.isreg():
+                appmanifests_total += 1
+                installdir = appmanifest_installdir(tf, member)
+                if not installdir or (m.group(1), installdir) not in steam_common:
+                    appmanifests_skipped += 1
+                    continue
+        if member.name.startswith("system/lightdm/"):
+            if member.isreg():
+                src = tf.extractfile(member)
+                if src is not None:
+                    scan_autologin_settings(src.read().decode(errors="replace"), autologin_settings)
+            continue
+        dest, kind = map_dest(member.name, home, wdata_base, steam_home)
+        if not dest:
+            if not member.isdir() and member.name.startswith("system/etc-h96/display/"):
+                warn(f"{member.name}: unexpected name in archive display/ folder; skipped")
+            continue
+        if kind in ("flag_color", "flag_range") and member.isreg():
+            valid = DISPLAY_COLOR_VALUES if kind == "flag_color" else DISPLAY_RANGE_VALUES
+            val = read_flag_value(tf, member)
+            if val not in valid:
+                warn(f"{dest}: invalid value '{val}' in archive (want {'/'.join(valid)}); skipped")
+                continue
+        if member.name in EMPTY_FLAGS and member.isreg() and member.size != 0:
+            warn(f"{dest}: flag file not empty in archive; skipped")
+            continue
+            if write_flag_file(dest, val, member):
+                restored += 1
+            continue
+        if kind == "display_conf" and member.isreg():
+            parsed = parse_display_conf(read_flag_value(tf, member))
+            if parsed is None:
+                warn(f"{dest}: invalid content in archive; skipped")
+                continue
+            lines = []
+            if "color" in parsed: lines.append(f"color={parsed['color']}")
+            if "range" in parsed: lines.append(f"range={parsed['range']}")
+            content = ("\n".join(lines) + "\n") if lines else ""
+            if write_text_file(dest, content, member):
+                restored += 1
+            continue
+        if kind == "steam_arm_conf" and member.isreg():
+            new_text, old = rewrite_gameuser(read_member_text(tf, member), steam_name)
+            if old and old != steam_name:
+                info(f"steam-arm.conf: GAMEUSER {old} -> {steam_name}")
+            if write_text_file(dest, new_text, member):
+                restored += 1
+            continue
+        if kind == "steamuser":
+            extract_member(tf, member, dest, "user", steam_uid or 0, steam_gid or 0)
+        else:
+            if kind == "user" and uid is None:
+                kind = "root_dir"
+            extract_member(tf, member, dest, kind, uid or 0, gid or 0)
+        restored += 1
+    tf.close()
+    if proc: proc.stdout.close(); proc.wait()
+    apply_autologin(autologin_settings, user, "auto")
+
+    # v6.1-era HDMI sink name -> current ACP name, in the restored WirePlumber state
+    if "configs" in sel:
+        migrate_hdmi_sink(home, "auto")
+
+    print()
+    ok(f"restore complete: {restored} item(s) written.")
+    if appmanifests_total:
+        print(f"  {appmanifests_skipped} game install record(s) skipped "
+              "(game files not in archive; reinstall from Steam)")
+    if w.get("profile"):
+        print("  Waydroid: start a session to finish first boot "
+              "(h96-waydroid, then launch it).")
+    if mode == "open":
+        print("  OPEN MODE: run the installer commands listed above to reinstall "
+              "the features; your data is already in place for them.")
+    if "system" in sel:
+        print("  Run 'h96-display detect' to rebuild the HDMI sink cache (never restored).")
+        if os.path.exists(HOTSPOT_CONF):
+            print("  hotspot.conf restored; the hotspot itself stays off (h96-hotspot on to start it).")
+    if vm.get("names") and not vm.get("disks_included"):
+        print(f"  h96-vm: {len(vm['names'])} definition(s) restored without disk images; "
+              "recreate disks with h96-vm create, or re-run backup --with-vm-disks.")
+    print("  Log out / back in for desktop config and autologin to take effect.")
+
+if __name__ == "__main__":
+    main()

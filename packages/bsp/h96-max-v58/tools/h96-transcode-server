@@ -1,31 +1,11 @@
 #!/bin/bash
-# =============================================================================
-# h96-transcode-server - network hardware transcode node for the H96 Max V58.
-#
-# Drop a video file into the IN dir (over SFTP/SSH, or a Samba/NFS share of it);
-# the daemon hardware-transcodes it on the RK3588 VPU (rkmpp: hw decode + hw
-# encode, ~7x realtime for 1080p) and writes the result to the OUT dir. The CPU
-# stays almost idle. NOT an AI upscaler - this is the codec engine, which is the
-# one part of this box that is genuinely fast.
-#
-# OPT-IN: nothing runs until you enable it. Ships disabled; no extra packages (uses
-# the image's rkmpp ffmpeg + /dev/mpp_service), so it adds no weight until turned on.
-#   sudo h96-transcode-server enable    create the folders + start the watch service
-#   sudo h96-transcode-server disable   stop it (kept files under /srv stay)
-#   h96-transcode-server status     dirs, config, service state, recent jobs
-#   h96-transcode-server logs       tail the job log
-#   h96-transcode-server once IN OUT   transcode a single file now (no service)
-#   h96-transcode-server daemon     the watch loop itself (systemd runs this)
-#
-# Config: /etc/h96/transcode.conf  (codec, bitrate, container, scale, dirs).
-# Folders default under /srv/h96-transcode so they are easy to Samba/NFS export.
-# =============================================================================
+# h96-transcode-server: opt-in network hardware transcode node (rkmpp hw decode/encode, ~7x realtime 1080p); watches IN dir, writes OUT dir; config at /etc/h96/transcode.conf.
 set -uo pipefail
 
 CONF=/etc/h96/transcode.conf
 LOG=/var/log/h96-transcode.log
 
-# ---- defaults (overridden by CONF) -----------------------------------------
+# --- defaults (overridden by CONF) ---
 ROOT=/srv/h96-transcode
 IN_DIR=""; OUT_DIR=""; DONE_DIR=""; FAIL_DIR=""
 CODEC=hevc            # hevc | h264 | mjpeg
@@ -58,7 +38,7 @@ is_video() {
     esac
 }
 
-# a file is "ready" when its size has not changed across one poll (upload done)
+# File is "ready" once its size stops changing across one poll (upload done).
 stable() {
     local f="$1" a b
     a=$(stat -c%s "$f" 2>/dev/null) || return 1
@@ -67,12 +47,10 @@ stable() {
     [ "$a" = "$b" ] && [ "$a" -gt 0 ]
 }
 
-# transcode $1 -> $2 with layered fallback (hw dec+enc -> sw dec+hw enc; audio
-# copy -> aac). Prints nothing; returns 0 on success.
+# Transcode $1 -> $2 with layered fallback (hw dec+enc -> sw dec+hw enc; copy audio -> aac); returns 0 on success.
 transcode() {
-    # Temp file keeps the OUTPUT extension (e.g. foo.part.mp4): ffmpeg picks the
-    # muxer from the extension, so a bare "foo.mp4.part" makes it fail with
-    # "Unable to find a suitable output format". Rename to the final name on success.
+    # Temp file keeps the output extension (foo.part.mp4): ffmpeg picks the muxer
+    # from the extension; renamed to the final name on success.
     local src="$1" out="$2" tmp="${2%.*}.part.${2##*.}" vf=()
     [ -n "$SCALE" ] && vf=(-vf "scale=${SCALE/x/:}")
     local base=(-hide_banner -nostdin -loglevel error -y)

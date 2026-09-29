@@ -1,0 +1,39 @@
+diff --git a/sound/soc/codecs/hdmi-codec.c b/sound/soc/codecs/hdmi-codec.c
+index f3b9a7de3..09139ffc8 100644
+--- a/sound/soc/codecs/hdmi-codec.c
++++ b/sound/soc/codecs/hdmi-codec.c
+@@ -349,8 +349,19 @@ static int hdmi_codec_get_ch_alloc_table_idx(struct hdmi_codec_priv *hcp,
+ 	unsigned long spk_mask;
+ 	const struct hdmi_codec_cea_spk_alloc *cap = hdmi_codec_channel_alloc;
+ 
+-	if (hcp->eld_bypass)
+-		return 0;
++	if (hcp->eld_bypass) {
++		/* no ELD: default CEA allocation for the requested channel count */
++		u8 ca = channels == 8 ? 0x13 : channels == 6 ? 0x0b : 0x00;
++
++		for (i = 0; i < ARRAY_SIZE(hdmi_codec_channel_alloc); i++)
++			if (hdmi_codec_channel_alloc[i].ca_id == ca &&
++			    hdmi_codec_channel_alloc[i].n_ch == channels)
++				return i;
++		for (i = 0; i < ARRAY_SIZE(hdmi_codec_channel_alloc); i++)
++			if (hdmi_codec_channel_alloc[i].n_ch == channels)
++				return i;
++		return -EINVAL;
++	}
+ 
+ 	spk_alloc = drm_eld_get_spk_alloc(hcp->eld);
+ 	spk_mask = hdmi_codec_spk_mask_from_alloc(spk_alloc);
+@@ -489,6 +500,12 @@ static int hdmi_codec_startup(struct snd_pcm_substream *substream,
+ 
+ 		/* Select chmap supported */
+ 		hdmi_codec_eld_chmap(hcp);
++	} else if (tx && hcp->eld_bypass) {
++		/* chmap_idx is a CA id: the 8ch table is indexed by CA id */
++		if (hcp->chmap_info->max_channels > 2)
++			hcp->chmap_info->chmap = hdmi_codec_8ch_chmaps;
++		else
++			hcp->chmap_info->chmap = hdmi_codec_stereo_chmaps;
+ 	}
+ 
+ 	hcp->busy = true;

@@ -1,0 +1,14 @@
+diff --git a/drivers/gpu/drm/drm_edid.c b/drivers/gpu/drm/drm_edid.c
+index 5ed77e336..80502d91d 100644
+--- a/drivers/gpu/drm/drm_edid.c
++++ b/drivers/gpu/drm/drm_edid.c
+@@ -2188,7 +2188,8 @@ static struct edid *drm_get_override_edid(struct drm_connector *connector,
+ {
+ 	struct edid *override = NULL;
+ 
+-	if (connector->override_edid)
++	/* the blob is cleared on disconnect while override_edid stays set */
++	if (connector->override_edid && connector->edid_blob_ptr)
+ 		override = drm_edid_duplicate(connector->edid_blob_ptr->data);
+ 
+ 	if (!override)

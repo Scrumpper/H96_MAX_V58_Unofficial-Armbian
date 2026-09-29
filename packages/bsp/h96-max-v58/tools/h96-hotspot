@@ -1,0 +1,380 @@
+#!/usr/bin/env bash
+# h96-hotspot: turns wlan0 into a WiFi access point via NetworkManager (on/off/status/qr/forget).
+# wlan0 is normally handed to a standalone wpa_supplicant + dhcpcd pair (see h96-wifi-connect) and
+# marked unmanaged in NetworkManager; this tool manages it just for the AP, then hands it back.
+# Config (SSID/password, root-only): /etc/h96/hotspot.conf. Runtime marker: /run/h96-hotspot/.
+# Undo-state (survives reboot, unlike /run): /var/lib/h96/hotspot/. AP itself is
+# autoconnect=no, so a reboot while 'on' never brings it back; 'status'/'off' notice
+# leftover undo-state with no active AP and self-heal the client WiFi path; the
+# 'repair' subcommand does the same, non-interactively, from h96-hotspot-repair.service
+# at boot (Wi-Fi-only boxes may have no other way to reach client WiFi to run this by hand).
+
+set -uo pipefail
+
+[ -r /usr/local/lib/h96/banner.sh ] && . /usr/local/lib/h96/banner.sh
+command -v h96_banner >/dev/null 2>&1 || h96_banner() { :; }
+
+IFACE="${H96_WIFI_IFACE:-wlan0}"
+CON="h96-hotspot"
+CONF="/etc/h96/hotspot.conf"
+RUNDIR="/run/h96-hotspot"
+ON_MARK="$RUNDIR/on"
+# undo-state: must survive a reboot that happens while the hotspot is on (the
+# masked units and edited conf.d file are themselves disk-backed), so this is
+# NOT under /run.
+STATEDIR="/var/lib/h96/hotspot"
+STATE="$STATEDIR/state"
+UNITS_STATE="$STATEDIR/units-state"
+UNMANAGED_CONF="/etc/NetworkManager/conf.d/99-h96-wlan0-unmanaged.conf"
+CLIENT_UNITS=(h96-wpa-supplicant-wlan0.service h96-dhcpcd-wlan0.service)
+
+err()  { printf '%s\n' "$*" >&2; }
+info() { printf '%s\n' "$*"; }
+have() { command -v "$1" >/dev/null 2>&1; }
+
+need_root() {
+  if [ "$(id -u)" -ne 0 ]; then
+    err "This action changes system + network state; re-run as root (sudo $0 $*)."
+    exit 1
+  fi
+}
+
+# --- config -------------------------------------------------------------
+default_ssid() {
+  local mac; mac="$(cat "/sys/class/net/$IFACE/address" 2>/dev/null)"
+  local last4; last4="$(printf '%s' "$mac" | tr -d ':' | tail -c4 | tr 'a-f' 'A-F')"
+  printf 'H96-%s\n' "${last4:-0000}"
+}
+gen_password() { tr -dc 'A-HJ-NP-Za-km-z2-9' </dev/urandom | head -c 12; }
+
+CFG_SSID=""; CFG_PASSWORD=""; CFG_BAND="bg"; CFG_CHANNEL="6"
+load_conf() {
+  [ -r "$CONF" ] || return 1
+  # shellcheck disable=SC1090
+  . "$CONF"
+  CFG_SSID="${SSID:-}"; CFG_PASSWORD="${PASSWORD:-}"
+  CFG_BAND="${BAND:-bg}"; CFG_CHANNEL="${CHANNEL:-6}"
+}
+save_conf() {
+  mkdir -p "$(dirname "$CONF")"
+  { echo "# h96-hotspot config -- managed file, root-only"
+    echo "SSID=\"$1\""; echo "PASSWORD=\"$2\""; echo "BAND=\"$3\""; echo "CHANNEL=\"$4\""
+  } > "$CONF.new"
+  chmod 0600 "$CONF.new"
+  mv -f "$CONF.new" "$CONF"
+}
+
+# --- wlan0 management handoff --------------------------------------------
+wlan0_unmanaged() { nmcli -g GENERAL.STATE dev show "$IFACE" 2>/dev/null | grep -q unmanaged; }
+
+# hand wlan0 to NetworkManager for the duration of the hotspot; records how, so
+# 'off' can undo exactly that (never touches eth0).
+take_wlan0() {
+  mkdir -p "$STATEDIR"
+  local radio_prior; radio_prior="$(nmcli radio wifi 2>/dev/null)"
+  { echo "RADIO_PRIOR=${radio_prior:-enabled}"; } > "$STATE"
+  if [ "$radio_prior" = disabled ]; then
+    nmcli radio wifi on   # NM's own software radio switch; separate from rfkill
+    sleep 1
+  fi
+  if ! wlan0_unmanaged; then
+    echo "METHOD=already-managed" >> "$STATE"
+    return 0
+  fi
+  nmcli device set "$IFACE" managed yes 2>/dev/null
+  sleep 2
+  if ! wlan0_unmanaged; then
+    echo "METHOD=device-set" >> "$STATE"
+    return 0
+  fi
+  # transient override didn't take: fall back to editing the conf.d rule itself
+  # (backup lives next to the original; 'off' un-comments the line back in place)
+  [ -f "$UNMANAGED_CONF.h96-orig" ] || cp -p "$UNMANAGED_CONF" "$UNMANAGED_CONF.h96-orig"
+  sed -i 's/^unmanaged-devices=/#unmanaged-devices=/' "$UNMANAGED_CONF"
+  nmcli general reload conf
+  sleep 2
+  if wlan0_unmanaged; then
+    err "could not bring $IFACE under NetworkManager management; aborting."
+    sed -i 's/^#unmanaged-devices=/unmanaged-devices=/' "$UNMANAGED_CONF"
+    nmcli general reload conf
+    return 1
+  fi
+  echo "METHOD=conf-reload" >> "$STATE"
+}
+
+give_back_wlan0() {
+  [ -r "$STATE" ] || return 0
+  local METHOD="" RADIO_PRIOR=""; . "$STATE" 2>/dev/null
+  case "$METHOD" in
+    device-set) nmcli device set "$IFACE" managed no 2>/dev/null ;;
+    conf-reload)
+      # the sed is what matters when this runs before NetworkManager.service
+      # (boot repair): NM reads the conf.d file fresh on its own startup, so
+      # the reload call below is a no-op there, not a failure.
+      sed -i 's/^#unmanaged-devices=/unmanaged-devices=/' "$UNMANAGED_CONF"
+      nmcli general reload conf 2>/dev/null
+      ;;
+    already-managed|*) : ;;
+  esac
+  [ "$RADIO_PRIOR" = disabled ] && nmcli radio wifi off 2>/dev/null
+}
+
+# device must leave 'unavailable' (driver/radio settling) before a connection
+# can bind to it; poll rather than a fixed sleep.
+wait_wlan0_ready() {
+  local i state
+  for i in $(seq 1 10); do
+    state="$(nmcli -g GENERAL.STATE dev show "$IFACE" 2>/dev/null | cut -d' ' -f1)"
+    case "$state" in unavailable|unmanaged) sleep 1 ;; *) return 0 ;; esac
+  done
+  return 1
+}
+
+stop_client_units() {
+  mkdir -p "$STATEDIR"
+  : > "$UNITS_STATE"
+  local u active
+  for u in "${CLIENT_UNITS[@]}"; do
+    active="$(systemctl is-active "$u" 2>/dev/null || true)"
+    printf '%s %s\n' "$u" "$active" >> "$UNITS_STATE"
+    systemctl stop "$u" 2>/dev/null || true
+    systemctl mask "$u" 2>/dev/null || true
+  done
+}
+
+restore_client_units() {
+  [ -r "$UNITS_STATE" ] || return 0
+  local u active
+  while read -r u active; do
+    [ -n "$u" ] || continue
+    systemctl unmask "$u" 2>/dev/null || true
+    # --no-block: h96-hotspot-repair.service is ordered Before= these units,
+    # so a blocking start from inside it would deadlock on its own job.
+    [ "$active" = active ] && systemctl start --no-block "$u" 2>/dev/null || true
+  done < "$UNITS_STATE"
+  rm -f "$UNITS_STATE"
+}
+
+# a reboot/crash during 'on' loses the tmpfs ON_MARK, but NM's autoconnect=no
+# means the AP never comes back on its own; if the persisted undo-state is
+# still here and the AP isn't actually active, the client path was left
+# masked/handed-away for nothing -- self-heal it.
+hotspot_needs_repair() {
+  { [ -r "$STATE" ] || [ -r "$UNITS_STATE" ]; } || return 1
+  nmcli -t -f NAME,STATE con show --active 2>/dev/null | grep -qF "$CON:" && return 1
+  return 0
+}
+
+repair_client_path() {
+  info "found hotspot state left over from a previous boot (AP not active); restoring the WiFi client path..."
+  give_back_wlan0
+  restore_client_units
+  rm -f "$ON_MARK" "$STATE" "$UNITS_STATE"
+}
+
+# non-interactive, for h96-hotspot-repair.service (runs Before= the client
+# units and NetworkManager.service): silent, exit 0 if nothing is broken; one
+# log line (via repair_client_path's info) if it actually fixed something.
+cmd_repair() {
+  hotspot_needs_repair || exit 0
+  need_root repair "$@"
+  repair_client_path
+}
+
+# --- commands -------------------------------------------------------------
+cmd_on() {
+  need_root on "$@"
+  local ssid="" password="" band="" channel=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --ssid)     ssid="${2:?--ssid needs a value}"; shift 2 ;;
+      --password) password="${2:?--password needs a value}"; shift 2 ;;
+      --band)     band="${2:?--band needs a value}"; shift 2 ;;
+      --channel)  channel="${2:?--channel needs a value}"; shift 2 ;;
+      -h|--help)  usage_on; return 0 ;;
+      *) err "on: unknown option '$1'"; usage_on; return 2 ;;
+    esac
+  done
+  case "${band:-bg}" in a|bg) ;; *) err "--band must be 'a' or 'bg'"; return 2 ;; esac
+
+  h96_banner "W I F I   H O T S P O T"
+  have nmcli || { err "NetworkManager (nmcli) not found."; exit 1; }
+  [ -e "/sys/class/net/$IFACE" ] || { err "$IFACE not present."; exit 1; }
+  if ! iw list 2>/dev/null | grep -A8 "Supported interface modes" | grep -q "AP$"; then
+    err "$IFACE's driver does not advertise AP mode support (iw list)."
+    err "NetworkManager builds APs with wpa_supplicant, not hostapd; if this fails,"
+    err "a vendor-driver-specific hostapd build may be the only path (not installed by this tool)."
+  fi
+  # NM's ipv4.method=shared (the only IPv4 mode this image's netplan-backed NM will
+  # actually apply to an AP connection -- it rewrites any other ipv4.method back to
+  # shared on an AP profile) hands out client leases through its own dnsmasq child
+  # process. Fail before touching wlan0 if that binary is not there.
+  if ! have dnsmasq; then
+    err "dnsmasq is not installed on this image; NetworkManager cannot bring up an"
+    err "access point's IPv4 side without it (confirmed: 'could not start dnsmasq:"
+    err "Could not find \"dnsmasq\" binary', and this box's netplan-backed NM always"
+    err "forces ipv4.method=shared on an AP profile -- a manual/static address is"
+    err "silently reverted back to shared by netplan's own connection renderer)."
+    err "This tool does not install packages: 'sudo apt-get install dnsmasq-base'"
+    err "(a few hundred KB, no other services) unlocks 'h96-hotspot on'."
+    exit 1
+  fi
+
+  load_conf
+  ssid="${ssid:-${CFG_SSID:-$(default_ssid)}}"
+  password="${password:-${CFG_PASSWORD:-$(gen_password)}}"
+  band="${band:-${CFG_BAND:-bg}}"
+  channel="${channel:-${CFG_CHANNEL:-$([ "$band" = a ] && echo 36 || echo 6)}}"
+  [ "${#password}" -ge 8 ] || { err "password must be at least 8 characters (WPA2 minimum)."; return 2; }
+  save_conf "$ssid" "$password" "$band" "$channel"
+
+  # leftover state from a reboot mid-'on': repair to the true client-mode
+  # baseline first, so units-state below records the real prior status.
+  hotspot_needs_repair && repair_client_path
+
+  info "stopping the standalone WiFi client path (h96-wifi-connect) while the hotspot is up..."
+  stop_client_units
+  info "handing $IFACE to NetworkManager..."
+  take_wlan0 || { restore_client_units; exit 1; }
+  wait_wlan0_ready || err "note: $IFACE still not 'ready' by nmcli; continuing anyway."
+
+  nmcli con delete "$CON" >/dev/null 2>&1 || true
+  nmcli con add type wifi ifname "$IFACE" con-name "$CON" autoconnect no ssid "$ssid" \
+    802-11-wireless.mode ap 802-11-wireless.band "$band" 802-11-wireless.channel "$channel" \
+    ipv4.method shared ipv6.method ignore >/dev/null \
+    || { err "nmcli con add failed."; give_back_wlan0; restore_client_units; exit 1; }
+
+  info "trying WPA3-SAE (falls back to WPA2-PSK if the driver refuses)..."
+  nmcli con modify "$CON" wifi-sec.key-mgmt sae wifi-sec.psk "$password" wifi-sec.pmf required >/dev/null
+  if ! nmcli con up "$CON" >/dev/null 2>&1; then
+    info "SAE did not come up; falling back to WPA2-PSK."
+    nmcli con modify "$CON" wifi-sec.key-mgmt wpa-psk wifi-sec.psk "$password" wifi-sec.pmf disable >/dev/null
+    if ! nmcli con up "$CON" >/dev/null 2>&1; then
+      err "hotspot failed to come up (both SAE and WPA2-PSK). See: journalctl -u NetworkManager -n 60"
+      give_back_wlan0; restore_client_units
+      nmcli con delete "$CON" >/dev/null 2>&1
+      exit 1
+    fi
+  fi
+
+  mkdir -p "$RUNDIR"; : > "$ON_MARK"
+  info ""
+  info "Hotspot is up."
+  info "  SSID:     $ssid"
+  info "  Password: $password"
+  info "  Band:     $band  (channel $channel)"
+  info "See it:  h96-hotspot qr        (or 'h96-hotspot status')"
+  info "Turn off: sudo h96-hotspot off"
+}
+
+usage_on() {
+  cat <<EOF
+h96-hotspot on [--ssid NAME] [--password PW] [--band a|bg] [--channel N]
+  Defaults: SSID H96-<last 4 of MAC>, random 12-char password, band bg channel 6.
+  Repeats prior settings from $CONF unless overridden. Password: 8+ characters.
+EOF
+}
+
+cmd_off() {
+  need_root off "$@"
+  h96_banner "W I F I   H O T S P O T"
+  nmcli con down "$CON" >/dev/null 2>&1 || true
+  give_back_wlan0
+  restore_client_units
+  rm -f "$ON_MARK" "$STATE" "$UNITS_STATE"
+  info "hotspot off. $IFACE handed back to the standalone WiFi client path."
+  info "(saved config kept: $CONF -- 'h96-hotspot forget' removes it and the saved connection.)"
+}
+
+cmd_status() {
+  h96_banner "W I F I   H O T S P O T"
+  if hotspot_needs_repair; then
+    if [ "$(id -u)" -eq 0 ]; then
+      repair_client_path
+    else
+      info "note: hotspot state left over from a previous boot; run 'sudo h96-hotspot off' to restore the WiFi client path."
+    fi
+  fi
+  local mode; mode="off"; [ -f "$ON_MARK" ] && mode="ON"
+  info "Hotspot:       $mode"
+  if [ "$mode" = "ON" ]; then
+    load_conf
+    info "SSID:          ${CFG_SSID:-?}"
+    info "Band/channel:  ${CFG_BAND:-?} / ${CFG_CHANNEL:-?}"
+    have iw && iw dev "$IFACE" info 2>/dev/null | sed 's/^/  /'
+    info "NM connection:"
+    nmcli -f NAME,DEVICE,STATE con show --active 2>/dev/null | grep -E "^NAME|$CON" | sed 's/^/  /'
+    info "Clients:"
+    if have iw && iw dev "$IFACE" station dump >/dev/null 2>&1; then
+      local n; n="$(iw dev "$IFACE" station dump 2>/dev/null | grep -c '^Station')"
+      info "  $n associated (iw station dump)"
+      iw dev "$IFACE" station dump 2>/dev/null | grep '^Station' | sed 's/^/  /'
+    else
+      info "  (driver does not support 'iw station dump'; check the router lease table instead)"
+    fi
+  else
+    info "wlan0 driver AP support: $(iw list 2>/dev/null | grep -A8 'Supported interface modes' | grep -q 'AP$' && echo yes || echo unknown)"
+  fi
+  info ""
+  info "eth0 (unaffected by this tool):"
+  ip -br a show eth0 2>/dev/null | sed 's/^/  /'
+}
+
+cmd_qr() {
+  load_conf || { err "no saved hotspot config yet (run 'h96-hotspot on' first)."; return 1; }
+  [ -n "$CFG_SSID" ] || { err "no saved SSID."; return 1; }
+  local esc_ssid esc_pw wifi_str
+  esc_ssid="$(printf '%s' "$CFG_SSID" | sed -e 's/\\/\\\\/g' -e 's/;/\\;/g' -e 's/,/\\,/g' -e 's/:/\\:/g')"
+  esc_pw="$(printf '%s' "$CFG_PASSWORD" | sed -e 's/\\/\\\\/g' -e 's/;/\\;/g' -e 's/,/\\,/g' -e 's/:/\\:/g')"
+  wifi_str="WIFI:T:WPA;S:${esc_ssid};P:${esc_pw};;"
+  if have qrencode; then
+    qrencode -t ANSIUTF8 -m2 "$wifi_str"
+  else
+    info "qrencode not installed; scan this manually:"
+  fi
+  info "$wifi_str"
+}
+
+cmd_forget() {
+  need_root forget "$@"
+  { [ -f "$ON_MARK" ] || hotspot_needs_repair; } && cmd_off
+  nmcli con delete "$CON" >/dev/null 2>&1
+  rm -f "$CONF"
+  info "removed the saved hotspot connection and config."
+}
+
+usage() {
+  cat <<EOF
+h96-hotspot -- turn wlan0 into a WiFi access point (NetworkManager, no new packages)
+
+  on [OPTS]      start the hotspot (see 'h96-hotspot on --help' for options)
+  off            stop it, hand wlan0 back to the standalone WiFi client path
+  status         (default) SSID, band/channel, connected clients
+  qr             print a WiFi QR code for the saved SSID/password (qrencode, else raw WIFI: string)
+  forget         stop it and delete the saved connection + config
+  repair         non-interactive boot check (h96-hotspot-repair.service); silent no-op
+                 unless a reboot happened while the hotspot was on
+
+Config (root-only): $CONF
+Client WiFi (h96-wifi-connect) is paused while the hotspot is on, resumed on 'off'.
+eth0 / SSH are never touched.
+Needs dnsmasq on the box (NetworkManager's own DHCP helper for a shared connection);
+'on' checks for it first and explains if it is missing, rather than install it.
+EOF
+}
+
+main() {
+  local cmd="${1:-status}"; shift || true
+  case "$cmd" in
+    on)      cmd_on "$@" ;;
+    off)     cmd_off "$@" ;;
+    status)  cmd_status "$@" ;;
+    qr)      cmd_qr "$@" ;;
+    forget)  cmd_forget "$@" ;;
+    repair)  cmd_repair "$@" ;;
+    -h|--help|help) usage ;;
+    *) err "unknown command: $cmd"; usage; exit 2 ;;
+  esac
+}
+
+main "$@"

@@ -1,28 +1,16 @@
 #!/bin/bash
-# h96-hdr -- HDR10 video handling for mpv on the H96 Max V58.
-#
-# WHAT THIS IS: a switch for how mpv treats HDR10 (BT.2020 PQ) video, driven by
-# vo=gpu-next / libplacebo. It manages a small drop-in at /etc/mpv/hdr.conf and a
-# single marked include line in /etc/mpv/mpv.conf. The base mpv.conf is otherwise
-# left untouched.
+# h96-hdr: switch for mpv HDR10 (BT.2020 PQ) handling via vo=gpu-next/libplacebo; manages /etc/mpv/hdr.conf and a marked include in mpv.conf.
 #
 #   tonemap       HDR10 -> SDR BT.709 (the safe, default mode on this box)
 #   passthrough   send BT.2020 PQ + HDR metadata to the display (EXPERIMENTAL)
 #   off           remove the include line; mpv falls back to its base config
 #
-# WHY tonemap IS THE DEFAULT: this image runs KDE Plasma on X11 (Wayland breaks
-# the GPU/mpv stack on this RK3588 BSP). mpv's HDR passthrough switch,
-# target-colorspace-hint, is honoured ONLY on Wayland, DRM-KMS and D3D11 output
-# contexts -- NOT on X11. So inside the desktop session the only correct thing to
-# do with HDR is tone-map it to SDR. Passthrough is reachable only by driving KMS
-# directly from a text console, and only if the ophub 6.1 vop2/HDMI-QP driver
-# exposes the HDR_OUTPUT_METADATA connector property (mainline gained RK3588 HDMI
-# output around 6.11; the 6.1 BSP is unconfirmed -- this is a box-test).
+# tonemap is the default because target-colorspace-hint is honoured only on Wayland/DRM-KMS/D3D11,
+# not X11 (this image runs KDE on X11); passthrough needs KMS from a text console and an
+# HDR_OUTPUT_METADATA-capable HDMI driver, unconfirmed on the 6.1 BSP.
 #
 # vo=gpu-next itself must be confirmed working on this Panfrost/PanVK stack:
 #     h96-hdr test
-#
-# Deployed to /usr/local/bin/h96-hdr.
 
 set -uo pipefail
 
@@ -39,7 +27,7 @@ need_root() { [ "$(id -u)" -eq 0 ] || die "that needs root (try: sudo h96-hdr $*
 
 is_on()  { [ -f "$CONF" ] && grep -qF "$BEGIN" "$CONF"; }
 
-# which mode the drop-in currently holds (tonemap / passthrough / unknown)
+# Mode the drop-in currently holds (tonemap / passthrough / unknown)
 current_mode() {
     [ -f "$DROPIN" ] || { echo "absent"; return; }
     if grep -q '^# MODE: tonemap' "$DROPIN"; then echo "tonemap"
@@ -58,10 +46,8 @@ have_gpu_next() {
     mpv --vo=help 2>/dev/null | grep -qw 'gpu-next'
 }
 
-# Detect the active graphical session type (x11 / wayland / unknown). Runs as root,
-# so it inspects the first non-root login session, then falls back to the running
-# compositor. This box was verified running KDE Plasma on WAYLAND (lightdm), where
-# vo=gpu-next renders fine, so passthrough messaging must not hardcode X11.
+# Detect the active graphical session type (x11 / wayland / unknown): runs as root, so
+# inspect the first non-root login session, then fall back to the running compositor.
 detect_session_type() {
     local sid ty
     sid="$(loginctl list-sessions --no-legend 2>/dev/null | awk '$3!="root"{print $1; exit}')"
@@ -74,7 +60,7 @@ detect_session_type() {
     echo unknown
 }
 
-# ---- drop-in writers -------------------------------------------------------
+# --- drop-in writers ---
 
 write_tonemap() {
     cat > "$DROPIN" <<'EOF'
@@ -132,7 +118,7 @@ remove_include() {
     sed -i "/$b/,/$e/d" "$CONF"
 }
 
-# ---- actions ---------------------------------------------------------------
+# --- actions ---
 
 do_tonemap() {
     need_root tonemap

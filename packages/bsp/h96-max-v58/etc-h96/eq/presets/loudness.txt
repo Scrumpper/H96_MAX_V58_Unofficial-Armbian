@@ -1,5 +1,4 @@
-# Equal-loudness style contour for quiet late-night listening: lift the
-# frequency extremes the ear loses at low SPL.
+# Equal-loudness contour for quiet late-night listening: lifts the frequency extremes the ear loses at low SPL.
 Preamp: -5.0 dB
 Filter 1: ON LSC Fc 120 Hz Gain 5.0 dB Q 0.707
 Filter 2: ON HSC Fc 8000 Hz Gain 4.0 dB Q 0.707

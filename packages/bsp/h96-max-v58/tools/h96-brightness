@@ -5,9 +5,9 @@ h96-brightness - control a connected monitor's REAL backlight over DDC/CI.
 HOW THIS WORKS ON THIS BOX
 --------------------------
 The SoC's HDMI DDC i2c controller never completes a transaction on this kernel
-(root-caused, closed), so the pins' native function is dead. The h96-ddc-i2c-gpio
-device-tree overlay instead exposes those two pins (SCL=GPIO4_B7, SDA=GPIO4_C0) as
-a kernel i2c-gpio bus named "i2c-ddc" at ~100 kHz. ddcutil drives DDC/CI over it,
+(root-caused, closed), so the pins' native function is dead. The v6.2 device tree
+instead exposes those two pins (SCL=GPIO4_B7, SDA=GPIO4_C0) as a built-in kernel
+i2c-gpio bus named "i2c-ddc" (i2c-10) at ~100 kHz. ddcutil drives DDC/CI over it,
 which is genuine monitor brightness (VCP 0x10), not a software gamma dim.
 
 Validated 2026-08-25: a Dell P2419H tracks setvcp 30/75/15/60 exactly with visible
@@ -30,7 +30,7 @@ import sys
 
 sys.path.insert(0, "/usr/local/lib/h96")
 
-BUS_NAME = "i2c-ddc"   # the adapter name our overlay gives the DDC i2c-gpio bus
+BUS_NAME = "i2c-ddc"   # adapter name of the built-in DDC i2c-gpio bus
 VCP_BRIGHTNESS = "10"
 
 
@@ -108,8 +108,9 @@ def main():
     bus = find_bus()
     if bus is None:
         die("the DDC i2c bus is not present.\n"
-            "  The h96-ddc-i2c-gpio overlay must be enabled "
-            "(user_overlays=h96-ddc-i2c-gpio in /boot/armbianEnv.txt), then reboot.", code=2)
+            "  v6.2 builds it into the device tree (i2c-ddc, i2c-10); check 'i2cdetect -l'.\n"
+            "  On the stock kernel (after panthor-revert.sh) it needs "
+            "user_overlays=h96-ddc-i2c-gpio in /boot/armbianEnv.txt, then reboot.", code=2)
 
     p = argparse.ArgumentParser(prog="h96-brightness", add_help=True,
                                 description="control a monitor's real backlight over DDC/CI")

@@ -1,0 +1,97 @@
+#!/bin/bash
+# h96-steam: install Steam on demand (like h96-waydroid); native (ARM64, Big Picture) or
+# emulated (x86-64 under FEX-Emu, KDE desktop) route, each with its own library; run one at a time.
+#
+# This project is not affiliated with, endorsed by or sponsored by Valve Corporation.
+# Steam, Proton and Steam Deck are trademarks of Valve Corporation.
+set -uo pipefail
+[ -r /usr/local/lib/h96/banner.sh ] && . /usr/local/lib/h96/banner.sh
+command -v h96_banner >/dev/null 2>&1 || h96_banner() { :; }
+
+LIB=/usr/local/lib/h96/steam
+NATIVE="$LIB/h96-steam-arm-install.sh"
+EMULATED="$LIB/h96-steam-fex-install.sh"
+
+die() { echo "h96-steam: $*" >&2; exit 1; }
+
+usage() {
+  cat <<'EOF'
+
+  h96-steam install [OPTIONS]            install the native ARM64 client (default)
+  h96-steam install emulated [OPTIONS]   install the x86-64 client under FEX-Emu
+  h96-steam status                       what is installed and what is running
+  h96-steam --help
+
+  --defaults          no checklist, install the default selection
+  --keep              no checklist, components and account of last run (native)
+  --select a,b,c      install exactly these optional components
+  --skip a,b          defaults minus these
+  --list              print the optional components and exit
+
+Examples
+
+  sudo h96-steam install                 native client, component checklist
+  sudo h96-steam install --defaults      native client, no questions
+  sudo h96-steam install emulated --list what the emulated route can install
+
+After installing, start the client from the application menu ("Steam" for the emulated
+route, "Steam ARM" for the native one) or from a terminal with steam-fex / steam-arm.
+
+This project is not affiliated with, endorsed by or sponsored by Valve Corporation.
+Steam, Proton and Steam Deck are trademarks of Valve Corporation.
+EOF
+}
+
+status() {
+  local u pad
+  u=$(ls -d /home/*/ 2>/dev/null | head -1)
+  echo "Native ARM64 client:"
+  if [ -x /usr/local/bin/steam-arm ]; then
+    local home
+    home=$(. /etc/h96/steam-arm.conf 2>/dev/null; echo "${ARMHOME_DIR:-.local/share/h96-steam-arm}")
+    echo "  installed          launcher /usr/local/bin/steam-arm, client home $home"
+    echo "  running            $(pgrep -f 'steam -deckard' >/dev/null 2>&1 && echo yes || echo no)"
+  else
+    echo "  not installed      sudo h96-steam install"
+  fi
+  echo "Emulated x86-64 client:"
+  if [ -x /usr/local/bin/steam-fex ]; then
+    echo "  installed          launcher /usr/local/bin/steam-fex, RootFS /opt/fex-rootfs/Ubuntu_24_04"
+    echo "  running            $(pgrep -f 'ubuntu12_32/steam ' >/dev/null 2>&1 && echo yes || echo no)"
+  else
+    echo "  not installed      sudo h96-steam install emulated"
+  fi
+  echo "Shared components:"
+  printf '  %-18s %s\n' "GL context copy" "$([ -f /usr/lib/aarch64-linux-gnu/libGLX_h96lax.so.0 ] && echo present || echo absent)"
+  printf '  %-18s %s\n' "Vulkan layer" "$([ -f /usr/lib/aarch64-linux-gnu/libVkLayer_h96_spoof.so ] && echo present || echo absent)"
+  printf '  %-18s %s\n' "map count" "$(sysctl -n vm.max_map_count 2>/dev/null)"
+  # is-enabled prints its state (not-found included) and exits non-zero for anything but enabled
+  pad=$(systemctl is-enabled h96-pad-xbox 2>/dev/null)
+  case "$pad" in ""|not-found) pad="not installed";; esac
+  printf '  %-18s %s\n' "pad as Xbox pad" "$pad"
+}
+
+ROUTE=""; ACTION="${1:-}"
+case "$ACTION" in
+  ""|-h|--help|help) usage; exit 0;;
+  status)            status; exit 0;;
+  install)           shift;;
+  *)                 die "unknown command: $ACTION (see --help)";;
+esac
+
+case "${1:-}" in
+  native)   ROUTE=native; shift;;
+  emulated) ROUTE=emulated; shift;;
+  "")       ROUTE=native;;
+  -*)       ROUTE=native;;
+  *)        die "unknown route: $1 (native or emulated)";;
+esac
+
+SCRIPT=$([ "$ROUTE" = native ] && echo "$NATIVE" || echo "$EMULATED")
+[ -f "$SCRIPT" ] || die "$SCRIPT is missing; reinstall the image or restore it from the suite"
+[ "$(id -u)" = 0 ] || die "run as root: sudo h96-steam install ${ROUTE}"
+
+h96_banner "S T E A M"
+echo "h96-steam: route $ROUTE ($SCRIPT)"
+echo "h96-steam: not affiliated with Valve Corporation; Steam is a trademark of Valve Corporation."
+exec bash "$SCRIPT" "$@"

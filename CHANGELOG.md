@@ -2,6 +2,127 @@
 
 
 
+## v6.2 (2026-09-26)
+
+v6.2 over v6.1. Kernel: HDMI-CEC, HDMI 2.0 modes through GPIO DDC bus, colour-format switch without green cast, extended cursor power-domain fix, RGA 2D accelerator. Display: mode list from connected display, per-display colour and range with confirm-or-revert. Native Steam route update: `h96-steam install` carries Steam ARM 1.2. Audio: flat EQ file restores device setup on PipeWire 1.6, and Bluetooth headset microphone, codecs and reconnect behaviour are reworked.
+
+### Kernel
+
+Kernel release string moves to `6.1.115-h96v58v2`. Image, modules and device tree are rebuilt and arrive only by reflash; v6.1.1 hotfix cannot deliver these changes.
+
+- VOP2 window power-domain tracking, extended from v6.1: cursor no longer vanishes after mode change and cursor hide in one frame.
+- HDMI-CEC on HDMI0: `/dev/cec0` exists. TV remote controls box; box puts TV in standby and wakes it. Verified on Sony TV. `h96-cec` ships off.
+- HDMI0 DDC on GPIO I2C bus, since on-chip DDC controller never completes transfers. Kernel reads EDID natively and drives HDMI 2.0 SCDC scrambling. Verified: 2560x1440 at 120 and 144 Hz, 3840x2160 at 60 Hz.
+- Plane colour conversion re-applied on colour-format switch without modeset: switching between RGB and YCbCr no longer leaves green cast.
+- HDMI audio channel allocation derived while ELD bypass is on: groundwork for multichannel output. Multichannel is not verified; no AV receiver tested.
+- EDID override: guard against NULL dereference. HDMI audio infoframe: pack error checked.
+- RGA 2D accelerator binds after deferred probes; `/dev/rga` works.
+- stmmac Wake-on-LAN: wake IRQ enable and disable balanced; toggling WoL logs no kernel warning.
+- SARADC volume key: driver for pinhole recovery button.
+- Kernel build banner carries no build user or host.
+- HDMI output stays muted 1 s when colour format changes between RGB and YCbCr: no green flash at boot handover from loader. `dw_hdmi_qp.fmt_switch_mute_ms` sets hold (0 = off).
+
+Two ways to get it:
+
+- **Box already on v6.1:** unzip `h96-v6.1.1-HOTfix.zip` on box and run `sudo bash apply-fix.sh`. No reflash; brings userland changes below, display and backup tools included, not kernel changes above. Colour-format switch without green cast and fullscreen compositor bypass in mpv need v6.2 kernel. Installed games, sign-in and settings are kept.
+- **New flash:** `H96-MAX-V58_Unofficial-Armbian_v6.2.img.xz`, flashed as in `FLASHING.md`. Carries kernel changes above that hotfix cannot deliver.
+
+### Added
+
+- `h96-bt-a2dp-heal.service`: when connected Bluetooth headset loses its stereo (A2DP) link, for example after audio session manager restarts, service reconnects it within about 10 s. Checks BlueZ every 5 s; acts only when device advertises A2DP and has no A2DP endpoint for two checks.
+- EQ file self-repair: `/etc/tmpfiles.d/h96-eq.conf` restores flat `/etc/h96/eq/active.txt` at every boot if it is missing.
+- Wideband Bluetooth microphone (mSBC, 16 kHz) for headsets that support it; CVSD (8 kHz) remains fallback. Measured on box: mSBC link active, voice packets flowing, test signal picked up.
+- Classic Bluetooth codec allow-list removed: every A2DP and HFP codec PipeWire has installed is offered; each headset uses best one it supports. Playback: LDAC, aptX HD, aptX, aptX LL, AAC, AAC-ELD, SBC-XQ, SBC, FastStream, Opus. Microphone: LC3-SWB, mSBC, CVSD. AAC and AAC-ELD need package `libspa-0.2-modules-extra`, which `h96-online-extras` installs once box reaches network; it is not in offline repo. LE Audio (BAP) is not offered.
+- Launch handler, `/usr/local/lib/h96-steam-handler.py`. Valve's FEX compatibility tool runs it in place of its removal of `LD_PRELOAD`, before runtime container starts. It decides per title, with no launch options:
+  - Steam overlay: x86 overlay core for Linux x86 titles by default. Title profile `overlay=vulkan` adds arm64 overlay core and arm64 overlay Vulkan layer, for Vulkan titles; `overlay=off` removes overlay.
+  - MangoHud: `mangohud %command%` and `MANGOHUD=1 %command%` both work in Linux x86 titles, OpenGL and Vulkan.
+  - Godot 4 titles: OpenGL renderer and GL 3.3 report, found from game's `.pck` header. Godot's Vulkan renderer freezes on splash on PanVK; Panfrost reports GL 3.1.
+  - Unity titles, found from player next to game: 64-bit players that carry Vulkan renderer start with `-force-vulkan` and overlay for Vulkan titles; other Unity 5 and later players get GL 4.5 report, since their OpenGL core context asks for more than Panfrost's 3.1 and title stops with `GLXBadFBConfig`; 32-bit Unity players start with Steam overlay off, as title stops when overlay attaches. Profile key `unity=vulkan|gl`.
+  - If handler fails, tool behaves as Valve wrote it.
+- Title profiles, one Steam app id per line: `/usr/local/share/h96/titles.conf` (shipped), `/etc/h96/titles.conf` (local), and `~/.config/steam-arm/titles.conf` in client home. Keys: `overlay`, `mangohud`, `godot`, `unity`, `env`, `args`, `gl32`, `vk32`. Launch options `STEAM_ARM_OVERLAY=x86|vulkan|off` and `STEAM_ARM_PRELOAD_KEEP=a,b` override profiles.
+- Steam ARM 1.2 handler rules: 32-bit titles lose `-vulkan` and `-force-vulkan`, since FEX forwards Vulkan for 64-bit code only (profile key `vk32=keep` keeps them); titles started through start script (Source engine style) are detected by binary script starts; profile key `gl32=off` runs title not detected as 64-bit on emulated x86 Mesa instead of forwarded host Mesa; profile `args` count for Unity and Godot renderer rules; Source 2 titles logged. Component checklist appears as desktop dialog when installer starts with no controlling terminal.
+- arm64 Steam overlay Vulkan layer, which client ships but does not register, registered behind `STEAM_ARM_VK_OVERLAY`; handler sets it only for titles profiled `overlay=vulkan`.
+- Direct3D 8 titles under Proton run through DXVK's `d3d8`: launcher sets `PROTON_DXVK_D3D8=1`. Proton's default for Direct3D 8, wined3d on OpenGL, draws them wrong on Mali driver. Launch option `PROTON_DXVK_D3D8=0 %command%` restores default.
+- Launcher removes shared-memory segments no process maps from `/dev/shm`, at start and every minute. Steam overlay's 26 MB frame buffers stay mapped by `steamwebhelper` after game ends; with no game running, sweep frees their pages within about 2 minutes (hole punched, files and mappings kept).
+- `desktop-mode` component: menu entry "Steam ARM (Desktop mode)", opens client in its desktop interface, for signing in.
+- `icon-bigpicture`, `icon-desktop` and `tray` components: each desktop icon and tray icon chosen on its own, or none.
+- Power menu's Switch to Desktop: `steamos-session-select` restarts client in desktop interface.
+- `steam-arm --desktop` and `--bigpicture` switch running client: it closes through its own shutdown and starts again in that interface.
+- Right-click actions on main menu entry open either interface.
+- `h96-steam install --help` prints usage: options, components with defaults marked, examples, environment variables.
+- Page size check before anything installs; emulation needs 4K pages. This box runs 4K pages, so check passes. `page-size` component has no effect on this box.
+- Installer states that installed games, sign-in and settings are kept on install, re-run and component changes.
+- Display mode list from connected display: `h96-display detect` reads display's EDID and lists its modes, up to 8K. Modes wider than 4096 px and FRL tier (above 600 MHz) are listed but untested and experimental; `sudo h96-display frl off` removes them. Mode is picked in KDE System Settings → Display; choice persists per display across replug and reboot.
+- HDMI 2.0 tier (340 to 600 MHz, SCDC scrambling), on by default: 2560x1440 at 120 and 144 Hz, 3840x2160 at 60 Hz. `sudo h96-display hdmi20 off` opts out.
+- Colour format and range, command line only: `sudo h96-display color rgb|ycbcr|auto` and `sudo h96-display range full|limited|auto`; `color status` and `range status` report setting and signal. New value applies live, then asks "Keep this ...? Reverting in 15 s [y/N]". Only y keeps it; timeout, other keys, Ctrl-C or closed terminal revert. `--yes` keeps without asking. Kept values are stored per display, keyed by display's manufacturer, product and serial, and re-applied at boot and login (`/etc/xdg/autostart/h96-display-session.desktop`). Display with no stored value starts at RGB full range, default. YCbCr always uses limited range (display engine limit); range setting applies to RGB only. Screen may blank for about 2 s during switch.
+- mpv: VPU decode through `rkmpp-copy`; `hwdec=rkmpp,rkmpp-copy` falls back to it automatically, since zero-copy path is unavailable under X11. YouTube in mpv prefers 8-bit VP9; 10-bit HDR streams decode in software; AV1 is excluded. Fullscreen video bypasses KWin compositing (`x11-bypass-compositor=fs-only`). Measured: 1440p60 VP9 plays without dropped frames; 4K60 VP9 drops frames, limited by frame copy-back. On 4K display pick 1440p or lower in YouTube playback.
+- `h96-leds`: front-panel LEDs lit and steady by default. `sudo h96-leds blink` adds activity blinking (Ethernet traffic, eMMC access, heartbeat); `sudo h96-leds off` darkens them. Order after `armbian-led-state` keeps saved state from overwriting it at boot.
+- Opt-in tools, installed and off until enabled: `h96-wol` (Wake-on-LAN; netplan-aware, so setting persists), `h96-cec` (TV remote and TV power over HDMI-CEC), `h96-vm` (KVM/QEMU virtual machines; slim installer can remove it), `h96-hotspot` (Wi-Fi access point). Enable commands: README, "New in v6.2".
+- HDMI-CEC display wake, on whenever `h96-cec.service` runs: when key or mouse wakes display from DPMS off, box sends TV Image View On and Active Source, so TV powers on and switches to box. Keypress after 10 min idle does same, for TV put in standby with its own remote while display stayed on. At most once per 10 s. `sudo h96-cec wake off` turns it off. `sudo h96-cec standby-on-blank on` (off by default) sends TV to standby when display goes DPMS off. Verified on Sony TV.
+- `h96-hotspot-repair.service`, enabled: restores Wi-Fi client mode when box rebooted with hotspot on.
+- Pinhole button ignored by desktop (`70-h96-pinhole.rules`).
+- HDMI audio auto-detect, on: channel layouts follow display's EDID and show as card profiles in KDE audio applet and System Settings. Compressed passthrough (AC3/DTS) not supported yet: HDMI path sends it as PCM noise; stereo PCM works; multichannel PCM (5.1, 7.1) untested.
+- `h96-backup` / `h96-restore` v2.1. Restores backups from v5.0.1 and newer; backward compatibility is kept for every future release. Archive adds display and CEC flags, per-display colour and range files, KDE display configuration (kscreen) and WirePlumber state. Autologin is restored as setting through one drop-in, never raw LightDM files. Steam client runtime is left out by default (`--with-steam-runtime` includes it). `h96-migrate-kit.zip` is updated.
+
+### Fixed
+
+- Native Steam installer stopped at RootFS step when earlier RootFS download was left behind (FEX's fetcher asked to overwrite it and aborted). Leftover download is removed before fetch. Shipped title profile list is empty; handler's engine rules cover Unity titles on Vulkan.
+- `h96-restore` created missing folders in desktop account's home owned by root, and restored symlinks as root: Steam and other programs then failed to write there. Folders and symlinks restore owned by desktop account.
+- Console text green on displays whose EDID lists YCbCr: loader left HDMI in YCbCr and kernel kept it until desktop login. `h96-display-console.service` blanks console once at boot (about 2 s) when output is YCbCr; kernel then selects RGB.
+- Enabling mSBC removed Bluetooth headset profile: codec allow-list in `30-h96-bluetooth.conf` did not name HFP codecs, which PipeWire 1.6 loads as plugins, so negotiated mSBC codec was never found (`failed to get HFP codec 2`). Allow-list removed.
+- Choppy Bluetooth audio: at PipeWire's 512-sample cycle (10.7 ms) Bluetooth encoder and h96 EQ filter chain missed their deadline now and then (xruns). While Bluetooth headset plays, it now forces 2048-sample cycle (43 ms); other outputs keep low latency.
+- Bluetooth headsets powered off or disconnected after audio stopped: sink suspended after 5 s idle, and headset then dropped link on its own timer. Bluetooth sinks no longer suspend (A2DP stream stays open with silence; costs some headset battery). BlueZ reconnects faster (`FastConnectable`) and retries dropped headset 15 times with backoff to 60 s (`/etc/bluetooth/main.conf`, original kept as `main.conf.orig`).
+- Bluetooth headsets showed no audio device or microphone, and sound streams started after it (Remote Play among them) got no output: h96 EQ filter chain reads `/etc/h96/eq/active.txt`, which only `h96-audio-eq` writes. PipeWire 1.6 stops filter graph when that file is missing, and failed node stalls WirePlumber, so no later device or stream is set up. Image now ships flat `active.txt` (0 dB).
+- Titles drew on CPU renderer (llvmpipe) after fresh install. Client downloads Valve's FEX tool at first title start, after launcher applied its settings, so GL and Vulkan forwarding stayed off until next client start. Launcher now applies them within one second of tool appearing or being replaced, and covers `/run/gfx/main`, where current runtimes mount graphics libraries.
+- Steam overlay UI (`gameoverlayui`) crashed on every start: client's helper programs load libraries from client's own directory, which launcher now puts on library path.
+- Client's desktop windows had no title bar until next login: setup now tells KWin to reload its window rules after writing frame rule.
+- Menu icon missing on fresh install: icons now come from client's own `steam_tray.ico`, not from x86 Steam package that fresh root filesystem does not carry.
+- `vk-spoof` resolves `vkDestroyDevice` when device is destroyed, not straight after device creation.
+- Every title failed to start, with `Bus error`, after many game sessions: `/dev/shm` filled with 26 MB segments Steam overlay left behind per session, and launch helper died writing to one. Launcher now sweeps unmapped segments at start and every minute; overlay buffers `steamwebhelper` still maps are freed within about 2 minutes of last game ending.
+- Launch handler did not run when FEX tool had been patched by standalone Steam ARM installer (same marker, other handler path). Installer and launcher now check for their own handler path and re-point tool.
+- Menu entry and desktop icon "Steam ARM" showed no icon: icon file carried wrong name.
+- Re-run keeps client home: installer reads `ARMHOME_DIR` from `/etc/h96/steam-arm.conf` that earlier run wrote, so re-run or fix script never moves client away from its games.
+- Kernel module tree `/lib/modules/6.1.115-h96v58v1` was owned by desktop account (uid 1000): module archive stored builder's owner and first boot kept it. Archive now stores root, and first boot extracts with `--no-same-owner`.
+- Persistent journal moved to `/var/log.hdd` every day, so `journalctl --list-boots` showed only current boot: `armbian-ramlog` is masked, but `ENABLED=true` in `/etc/default/armbian-ramlog` still made logrotate move logs and let `armbian-truncate-logs` wipe them at 75 % root use. Set to `false`.
+- `h96-audio-eq` state file was readable by root only, so `status` without sudo showed EQ off and `preset` without sudo lost stored settings. State file now 0644, and every EQ file is written atomically.
+- `h96-audio-eq enable` always put EQ in front of HDMI, even with Bluetooth headset as default output. It now follows current default output (ALSA or Bluetooth); `--target <sink>` picks one.
+- Bluetooth adapter stayed discoverable to every nearby device: `h96-bt-attach.py` set inquiry scan after bluetoothd started. It now sets page scan only (connectable, paired devices reconnect).
+- HDMI codec rule `51-h96-iec958.conf` matched no output (exact name instead of pattern).
+- `h96 <tool>` ran tool's action when tool had no help option: `h96 h96-wifi-connect` saved Wi-Fi network named `--help`, and other tools installed, unbound pads or started second VFD daemon. Every h96 tool now answers `-h` and `--help` without side effects; `h96` shows help text on error output too and lists no backup copies.
+- `h96-bt-speaker status` showed blank adapter fields (BlueZ 5.85 rejects `show hci0`).
+- `h96-steam status` printed stray `not-found` line; `h96-steam-remoteplay --check` looked in wrong home and reported no `localconfig.vdf`.
+- Steam installer re-run reset component selection and account and wiped other keys in `/etc/h96/steam-arm.conf`. Selection (`COMPONENTS_ON`, `COMPONENTS_OFF`) and account (`GAMEUSER`) are now saved there and kept; `--keep` re-runs with them. Deselecting `map-count` no longer removes image baseline `zz-h96-steam.conf`.
+- Launcher left its FEX tool watcher running after 60 s switch timeout; watcher now stops on every exit path. Launcher re-applies FEX settings when tool's server socket path names other account.
+- Unity scan in launch handler looped forever on engine file without Vulkan marker.
+- Native and standalone Steam ARM installers overwrote each other's launcher; each now stops when other one is installed, unless `--replace-other` is given.
+- Desktop install from `armbian-config` left its console mid-install: first-boot configure scripts started display manager while install still ran. They now wait for dpkg lock and for `armbian-config` to exit, so installer stays on screen until setup finishes.
+
+### Changed
+
+- "Silence (no microphone)" input device, lowest priority: KDE audio applet shows input selector only with two or more inputs, so default microphone can now be confirmed and set from tray. Choosing it silences input for apps that follow default device.
+- Bluetooth headset microphone listed at all times, by device name: WirePlumber autoswitch is on, so headset uses Handsfree while app records and returns to stereo A2DP after. Before, mic existed only after picking Handsfree by hand, so voice apps started earlier did not see it and tray input selector could not switch to it. While mic is open, output is mono call quality.
+- `h96-steam` help drops two lines: route option note and "Steam on this box, installed on demand".
+- Menu icons: dark, grainy green disc with small squares of vivid colour; chartreuse logo for Big Picture, bone logo for desktop mode.
+- `desktop` component covers menu entry and window frame rule only; desktop icons and tray are components of their own.
+- Launcher starts tray helper, so tray icon appears in session setup ran in, not only after next login.
+- Component checklist shows all twelve components without scrolling.
+
+### Known issues
+
+- Proton ARM64 titles: MangoHud and arm64 Steam overlay layer each crash title at device creation, together with `vk-spoof`. Handler does not run for these titles; leave `MANGOHUD` unset for them.
+- Steam overlay in OpenGL titles: controller Steam button opens it but cannot close it; Shift+Tab or on-screen close button does. In Vulkan titles Shift+Tab does not open it; controller Steam button opens and closes it.
+- Remote Play: Shift+Tab goes to host PC and can stall picture; use controller Steam button.
+- Some native OpenGL titles stop when Steam overlay attaches. Profile `overlay=off` for that title in `/etc/h96/titles.conf`, or launch option `STEAM_ARM_OVERLAY=off %command%`.
+- Some native titles leave one thread behind on quit; client shows title as running until Stop.
+- Windows titles whose first start runs legacy PhysX installer (msiexec) stop there, and title does not start without it.
+- Windows titles that need Direct3D feature level 11_0, such as Unreal Engine 4 titles, do not start: DXVK on Mali driver offers 10_1.
+- After installer or fix script runs, restart Steam once (tray icon > Stop Steam, then open Steam ARM). Client left running across update can fail to start titles until then.
+- Multichannel HDMI audio (5.1, 7.1) is not verified; no AV receiver tested.
+- Compressed passthrough (AC3/DTS) not supported yet: HDMI path sends it as PCM noise; stereo PCM works; multichannel PCM (5.1, 7.1) untested.
+- AV1 has no hardware decode path; YouTube in mpv excludes AV1.
+- 4K60 VP9 in mpv drops frames (frame copy-back limit); 1440p60 VP9 plays without drops.
+- One HDMI output (HDMI0).
+
 ## v6.1 (2026-09-20)
 
 v6.1 over v6.0. Ships as new image only. Kernel release string changes, so moving to it
@@ -97,7 +218,9 @@ that stops responding is reset after 44 seconds. `/etc/sysctl.d/zz-h96-hang.conf
 so task blocked for 120 seconds panics and oops panics instead of continuing, and
 `kernel.panic = 10` holds panic on console for 10 seconds before rebooting. Panic
 record survives reset: `/sys/fs/pstore` at next boot is moved by `systemd-pstore` to
-`/var/lib/systemd/pstore/` as `console-ramoops-0`. Verified end to end: with `kernel.panic` set
+`/var/lib/systemd/pstore/` as `console-ramoops-0`, which holds previous boot's console and is
+replaced at every boot, so copy it before next reboot; panic kernel log lands in same
+directory as `dmesg-ramoops-*` files. Verified end to end: with `kernel.panic` set
 to 0, so panic path itself could not reboot box, forced kernel panic led to watchdog
 reset, and box was back on network 75 seconds later, with panic recorded in
 `/var/lib/systemd/pstore/console-ramoops-0`.

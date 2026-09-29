@@ -1,17 +1,5 @@
 #!/bin/bash
-# h96-encode — hardware video encoding on the RK3588 VPU.
-#
-# WHY THIS EXISTS: this image has shipped hardware DECODE since v3 (the rkmpp
-# mpv stack). Hardware ENCODE was present the whole time and never exposed --
-# the kernel has RKVENC/RKVENC2/JPGENC enabled, both rkvenc cores are `okay` in
-# the DTS, /dev/mpp_service is present, and the bundled ffmpeg already carries
-# h264_rkmpp, hevc_rkmpp and mjpeg_rkmpp. Nothing documented it.
-#
-# It matters more than it looks: this ffmpeg build has NO libx264, so the
-# hardware encoder is the ONLY encode path on the box. Measured on an H96 Max
-# V58: 1080p encoded faster than 180 fps for both h264 and hevc.
-#
-# Deployed to /usr/local/bin/h96-encode.
+# h96-encode: hardware video encode on the RK3588 VPU (RKVENC/RKVENC2/JPGENC); the only encode path since this ffmpeg build has no libx264. 1080p encodes faster than 180 fps for h264 and hevc.
 
 set -uo pipefail
 
@@ -86,7 +74,7 @@ case "$CODEC" in
     *) die "unknown codec '$CODEC' (use h264, hevc or mjpeg)" ;;
 esac
 
-# match the encoder name as an exact field, the same way --list reads it
+# Match the encoder name as an exact field, same as --list.
 ffmpeg -hide_banner -encoders 2>/dev/null | awk -v e="$ENC" '$2 == e { found = 1 } END { exit !found }' \
     || die "$ENC is not in this ffmpeg build (try: h96-encode --list)"
 
@@ -100,7 +88,7 @@ fi
 args=(-hide_banner -y -i "$IN")
 [ -n "$SCALE" ] && args+=(-vf "scale=${SCALE/x/:}")
 args+=(-c:v "$ENC" -b:v "$BITRATE")
-# copy audio when there is any; ffmpeg is a no-op on files without an audio stream
+# Copy audio if present; ffmpeg is a no-op without an audio stream.
 args+=(-c:a copy)
 
 [ "$QUIET" -eq 1 ] && args=(-loglevel error "${args[@]}") || args=(-stats -loglevel warning "${args[@]}")

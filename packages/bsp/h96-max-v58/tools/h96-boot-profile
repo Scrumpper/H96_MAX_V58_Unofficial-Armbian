@@ -1,0 +1,33 @@
+#!/bin/bash
+# h96-boot-profile — capture systemd-analyze report after boot
+
+# shared banner; stub avoids "command not found" if lib is missing
+[ -r /usr/local/lib/h96/banner.sh ] && . /usr/local/lib/h96/banner.sh
+command -v h96_banner >/dev/null 2>&1 || h96_banner() { :; }
+
+case "${1:-}" in
+  -h|--help)
+    echo "usage: h96-boot-profile"
+    echo "  Prints systemd-analyze time, blame (top 30) and critical chain,"
+    echo "  and writes same report to /var/log/h96-boot-profile.txt (needs root)."
+    exit 0;;
+esac
+
+h96_banner "B O O T   P R O F I L E"
+
+LOG=/var/log/h96-boot-profile.txt
+{
+    echo "=== H96 Max V58 Boot Profile ==="
+    date
+    echo ""
+    echo "--- systemd-analyze ---"
+    systemd-analyze 2>/dev/null || echo "N/A"
+    echo ""
+    echo "--- blame (top 30) ---"
+    systemd-analyze blame 2>/dev/null | head -30 || echo "N/A"
+    echo ""
+    echo "--- critical-chain ---"
+    systemd-analyze critical-chain 2>/dev/null || echo "N/A"
+} | tee "$LOG"
+echo ""
+echo "Full report: $LOG"

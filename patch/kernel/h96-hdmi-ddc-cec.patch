@@ -1,0 +1,377 @@
+diff --git a/drivers/gpu/drm/bridge/synopsys/dw-hdmi-qp-cec.c b/drivers/gpu/drm/bridge/synopsys/dw-hdmi-qp-cec.c
+index 381e61490..a391dc923 100644
+--- a/drivers/gpu/drm/bridge/synopsys/dw-hdmi-qp-cec.c
++++ b/drivers/gpu/drm/bridge/synopsys/dw-hdmi-qp-cec.c
+@@ -191,6 +191,7 @@ static int dw_hdmi_qp_cec_enable(struct cec_adapter *adap, bool enable)
+ 		dw_hdmi_qp_write(cec, 0, CEC_INT_MASK_N);
+ 		dw_hdmi_qp_write(cec, ~0, CEC_INT_CLEAR);
+ 		cec->ops->disable(cec->hdmi);
++		cec->addresses = 0;
+ 	} else {
+ 		unsigned int irqs;
+ 
+@@ -199,7 +200,8 @@ static int dw_hdmi_qp_cec_enable(struct cec_adapter *adap, bool enable)
+ 		dw_hdmi_qp_write(cec, ~0, CEC_INT_CLEAR);
+ 		dw_hdmi_qp_write(cec, 1, CEC_LOCK_CONTROL);
+ 
+-		dw_hdmi_qp_cec_log_addr(cec->adap, CEC_LOG_ADDR_INVALID);
++		/* keep claimed logical addresses across a resume re-enable */
++		dw_hdmi_qp_write(cec, cec->addresses, CEC_ADDR);
+ 
+ 		irqs = CEC_STAT_LINE_ERR | CEC_STAT_NACK | CEC_STAT_EOM |
+ 		       CEC_STAT_DONE;
+@@ -261,8 +263,6 @@ static int dw_hdmi_qp_cec_probe(struct platform_device *pdev)
+ 		return PTR_ERR(cec->adap);
+ 	}
+ 
+-	dw_hdmi_qp_set_cec_adap(cec->hdmi, cec->adap);
+-
+ 	/* override the module pointer */
+ 	cec->adap->owner = THIS_MODULE;
+ 
+@@ -308,6 +308,9 @@ static int dw_hdmi_qp_cec_probe(struct platform_device *pdev)
+ 	 */
+ 	devm_remove_action(&pdev->dev, dw_hdmi_qp_cec_del, cec);
+ 
++	/* publish only a registered adapter: probe failure frees it */
++	dw_hdmi_qp_set_cec_adap(cec->hdmi, cec->adap);
++
+ 	return 0;
+ }
+ 
+@@ -315,6 +318,7 @@ static int dw_hdmi_qp_cec_remove(struct platform_device *pdev)
+ {
+ 	struct dw_hdmi_qp_cec *cec = platform_get_drvdata(pdev);
+ 
++	dw_hdmi_qp_set_cec_adap(cec->hdmi, NULL);
+ 	cec_notifier_cec_adap_unregister(cec->notify, cec->adap);
+ 	cec_unregister_adapter(cec->adap);
+ 
+diff --git a/drivers/gpu/drm/bridge/synopsys/dw-hdmi-qp.c b/drivers/gpu/drm/bridge/synopsys/dw-hdmi-qp.c
+index 2648b7e24..5e31df9b9 100644
+--- a/drivers/gpu/drm/bridge/synopsys/dw-hdmi-qp.c
++++ b/drivers/gpu/drm/bridge/synopsys/dw-hdmi-qp.c
+@@ -45,6 +45,24 @@
+ 
+ #include <media/cec-notifier.h>
+ 
++/* override when the EDID in use is not the sink's own (drm.edid_firmware) */
++static ushort cec_phys_addr;
++module_param(cec_phys_addr, ushort, 0644);
++MODULE_PARM_DESC(cec_phys_addr, "CEC physical address override, 0x1000 = 1.0.0.0 (0 = from EDID)");
++
++/* sinks keep the old colour space for a moment after an RGB <-> YCbCr switch */
++static uint fmt_switch_mute_ms = 1000;
++module_param(fmt_switch_mute_ms, uint, 0644);
++MODULE_PARM_DESC(fmt_switch_mute_ms, "AVMUTE hold after an RGB/YCbCr output switch, ms (0 = off)");
++
++static void dw_hdmi_qp_cec_set_pa(struct cec_notifier *n, const struct edid *edid)
++{
++	if (cec_phys_addr)
++		cec_notifier_set_phys_addr(n, cec_phys_addr);
++	else
++		cec_notifier_set_phys_addr_from_edid(n, edid);
++}
++
+ #define DDC_CI_ADDR		0x37
+ #define DDC_SEGMENT_ADDR	0x30
+ 
+@@ -354,6 +372,10 @@ struct dw_hdmi_qp {
+ 
+ 	struct work_struct flt_work;
+ 	struct workqueue_struct *workqueue;
++
++	struct delayed_work unmute_work;
++	bool sink_fmt_known;		/* sink_yuv = colour class the sink last received */
++	bool sink_yuv;
+ };
+ 
+ static inline void hdmi_writel(struct dw_hdmi_qp *hdmi, u32 val, int offset)
+@@ -801,7 +823,7 @@ void dw_hdmi_qp_set_audio_infoframe(struct dw_hdmi_qp *hdmi,
+ 
+ 	ret = hdmi_audio_infoframe_pack(&hparms->cea, infoframe_buf,
+ 					sizeof(infoframe_buf));
+-	if (!ret) {
++	if (ret < 0) {
+ 		dev_err(hdmi->dev, "%s: Failed to pack audio infoframe: %d\n",
+ 			__func__, ret);
+ 		return;
+@@ -913,6 +935,41 @@ static bool hdmi_bus_fmt_is_rgb(unsigned int bus_format)
+ 	}
+ }
+ 
++/* record the output colour class; true if it differs from what the sink had */
++static bool dw_hdmi_qp_fmt_switch(struct dw_hdmi_qp *hdmi, unsigned long bus_format)
++{
++	bool yuv = !hdmi_bus_fmt_is_rgb(bus_format);
++	bool changed = hdmi->sink_fmt_known && hdmi->sink_yuv != yuv;
++
++	hdmi->sink_fmt_known = true;
++	hdmi->sink_yuv = yuv;
++
++	return changed && fmt_switch_mute_ms;
++}
++
++static void dw_hdmi_qp_set_avmute(struct dw_hdmi_qp *hdmi, bool mute)
++{
++	hdmi_writel(hdmi, mute ? 1 : 2, PKTSCHED_PKT_CONTROL0);
++	hdmi_modb(hdmi, PKTSCHED_GCP_TX_EN, PKTSCHED_GCP_TX_EN, PKTSCHED_PKT_EN);
++}
++
++static void dw_hdmi_qp_unmute_work(struct work_struct *work)
++{
++	struct dw_hdmi_qp *hdmi = container_of(to_delayed_work(work),
++					       struct dw_hdmi_qp, unmute_work);
++
++	mutex_lock(&hdmi->mutex);
++	if (!hdmi->disabled)
++		dw_hdmi_qp_set_avmute(hdmi, false);
++	mutex_unlock(&hdmi->mutex);
++}
++
++static void dw_hdmi_qp_unmute_later(struct dw_hdmi_qp *hdmi)
++{
++	mod_delayed_work(system_wq, &hdmi->unmute_work,
++			 msecs_to_jiffies(fmt_switch_mute_ms));
++}
++
+ static bool hdmi_bus_fmt_is_yuv444(unsigned int bus_format)
+ {
+ 	switch (bus_format) {
+@@ -2765,7 +2822,7 @@ static int dw_hdmi_connector_get_modes(struct drm_connector *connector)
+ 		hdmi->support_hdmi = drm_detect_hdmi_monitor(edid);
+ 		hdmi->sink_has_audio = drm_detect_monitor_audio(edid);
+ 		if (hdmi->cec_notifier)
+-			cec_notifier_set_phys_addr_from_edid(hdmi->cec_notifier, edid);
++			dw_hdmi_qp_cec_set_pa(hdmi->cec_notifier, edid);
+ 		if (hdmi->plat_data->get_edid_dsc_info)
+ 			hdmi->plat_data->get_edid_dsc_info(data, edid);
+ 		memcpy(hdmi->vendor_info, &raw_edid[8], VENDOR_INFO_LEN);
+@@ -2796,8 +2853,7 @@ static int dw_hdmi_connector_get_modes(struct drm_connector *connector)
+ 			secondary->sink_is_hdmi = drm_detect_hdmi_monitor(edid);
+ 			secondary->sink_has_audio = drm_detect_monitor_audio(edid);
+ 			if (secondary->cec_notifier)
+-				cec_notifier_set_phys_addr_from_edid(secondary->cec_notifier,
+-								     edid);
++				dw_hdmi_qp_cec_set_pa(secondary->cec_notifier, edid);
+ 			if (secondary->plat_data->get_edid_dsc_info)
+ 				secondary->plat_data->get_edid_dsc_info(secondary_data, edid);
+ 		}
+@@ -2934,6 +2990,8 @@ static void dw_hdmi_attach_properties(struct dw_hdmi_qp *hdmi)
+ 	    hdmi->initialized) {
+ 		if (hdmi->plat_data->get_grf_color_fmt)
+ 			color = hdmi->plat_data->get_grf_color_fmt(data);
++		/* sink is showing the loader's format */
++		dw_hdmi_qp_fmt_switch(hdmi, color);
+ 
+ 		val = (hdmi_readl(hdmi, PKT_VSI_CONTENTS1) >> 8) & 0xffffff;
+ 		if (val == HDMI_FORUM_OUI)
+@@ -3234,11 +3292,17 @@ static int dw_hdmi_connector_atomic_check(struct drm_connector *connector,
+ 	    dw_hdmi_color_changed(connector, state) ||
+ 	    dw_hdmi_qp_check_output_type_changed(hdmi)) {
+ 		u32 mtmdsclk;
++		int ret;
+ 
+ 		crtc_state = drm_atomic_get_crtc_state(state, crtc);
+ 		if (IS_ERR(crtc_state))
+ 			return PTR_ERR(crtc_state);
+ 
++		/* planes redo their r2y csc for the new output format on the no-modeset path */
++		ret = drm_atomic_add_affected_planes(state, crtc);
++		if (ret)
++			return ret;
++
+ 		if (hdmi->plat_data->update_color_format)
+ 			hdmi->plat_data->update_color_format(new_state, data);
+ 		if (hdmi->plat_data->get_enc_in_encoding)
+@@ -3284,9 +3348,15 @@ static void dw_hdmi_connector_atomic_commit(struct drm_connector *connector,
+ 		container_of(connector, struct dw_hdmi_qp, connector);
+ 
+ 	if (hdmi->update) {
++		bool hold;
++
+ 		dw_hdmi_qp_setup(hdmi, hdmi->curr_conn, &hdmi->previous_mode);
++		hold = dw_hdmi_qp_fmt_switch(hdmi, hdmi->hdmi_data.enc_out_bus_format);
+ 		msleep(50);
+-		hdmi_writel(hdmi, 2, PKTSCHED_PKT_CONTROL0);
++		if (hold)
++			dw_hdmi_qp_unmute_later(hdmi);
++		else
++			hdmi_writel(hdmi, 2, PKTSCHED_PKT_CONTROL0);
+ 		hdmi->update = false;
+ 	}
+ 
+@@ -3494,6 +3564,8 @@ static void dw_hdmi_qp_bridge_atomic_disable(struct drm_bridge *bridge,
+ 	if (hdmi->panel)
+ 		drm_panel_disable(hdmi->panel);
+ 
++	cancel_delayed_work_sync(&hdmi->unmute_work);
++
+ 	/* set avmute */
+ 	hdmi_writel(hdmi, 1, PKTSCHED_PKT_CONTROL0);
+ 	mdelay(50);
+@@ -3546,6 +3618,7 @@ static void dw_hdmi_qp_bridge_atomic_enable(struct drm_bridge *bridge,
+ 	struct drm_connector *connector;
+ 	void *data = hdmi->plat_data->phy_data;
+ 	struct dw_hdmi_link_config *link_cfg = NULL;
++	bool hold;
+ 
+ 	if (hdmi->plat_data->get_link_cfg)
+ 		link_cfg = hdmi->plat_data->get_link_cfg(data);
+@@ -3559,11 +3632,19 @@ static void dw_hdmi_qp_bridge_atomic_enable(struct drm_bridge *bridge,
+ 	mutex_lock(&hdmi->mutex);
+ 	hdmi->curr_conn = connector;
+ 
++	/* colour class change: sink stays muted until it has taken the new AVI */
++	hold = hdmi->plat_data->get_output_bus_format &&
++	       dw_hdmi_qp_fmt_switch(hdmi, hdmi->plat_data->get_output_bus_format(data));
++	if (hold)
++		dw_hdmi_qp_set_avmute(hdmi, true);
++
+ 	dw_hdmi_qp_setup(hdmi, hdmi->curr_conn, &hdmi->previous_mode);
+ 
+ 	if ((link_cfg && !link_cfg->frl_mode) || hdmi->frl_switch) {
+-		hdmi_writel(hdmi, 2, PKTSCHED_PKT_CONTROL0);
+-		hdmi_modb(hdmi, PKTSCHED_GCP_TX_EN, PKTSCHED_GCP_TX_EN, PKTSCHED_PKT_EN);
++		if (hold)
++			dw_hdmi_qp_unmute_later(hdmi);
++		else
++			dw_hdmi_qp_set_avmute(hdmi, false);
+ 	}
+ 	mutex_unlock(&hdmi->mutex);
+ 
+@@ -3620,8 +3701,18 @@ static irqreturn_t dw_hdmi_qp_main_hardirq(int irq, void *dev_id)
+ 
+ 	stat = hdmi_readl(hdmi, MAINUNIT_1_INT_STATUS);
+ 
+-	i2c->stat = stat & (I2CM_OP_DONE_IRQ | I2CM_READ_REQUEST_IRQ |
+-			    I2CM_NACK_RCVD_IRQ);
++	/* external ddc-i2c-bus: no internal I2CM state to complete */
++	if (i2c) {
++		i2c->stat = stat & (I2CM_OP_DONE_IRQ | I2CM_READ_REQUEST_IRQ |
++				    I2CM_NACK_RCVD_IRQ);
++		if (i2c->stat) {
++			hdmi_writel(hdmi, i2c->stat, MAINUNIT_1_INT_CLEAR);
++			complete(&i2c->cmp);
++		}
++	} else if (stat & (I2CM_OP_DONE_IRQ | I2CM_READ_REQUEST_IRQ | I2CM_NACK_RCVD_IRQ)) {
++		hdmi_writel(hdmi, stat & (I2CM_OP_DONE_IRQ | I2CM_READ_REQUEST_IRQ |
++					  I2CM_NACK_RCVD_IRQ), MAINUNIT_1_INT_CLEAR);
++	}
+ 	hdmi->scdc_intr = stat & (SCDC_UPD_FLAGS_RD_IRQ |
+ 				  SCDC_UPD_FLAGS_CHG_IRQ |
+ 				  SCDC_UPD_FLAGS_CLR_IRQ |
+@@ -3632,10 +3723,6 @@ static irqreturn_t dw_hdmi_qp_main_hardirq(int irq, void *dev_id)
+ 				 FLT_EXIT_TO_LTSL_IRQ);
+ 
+ 	dev_dbg(hdmi->dev, "i2c main unit irq:%#x\n", stat);
+-	if (i2c->stat) {
+-		hdmi_writel(hdmi, i2c->stat, MAINUNIT_1_INT_CLEAR);
+-		complete(&i2c->cmp);
+-	}
+ 
+ 	if (hdmi->flt_intr) {
+ 		dev_dbg(hdmi->dev, "i2c flt irq:%#x\n", hdmi->flt_intr);
+@@ -3821,15 +3908,14 @@ void dw_hdmi_qp_cec_set_hpd(struct dw_hdmi_qp *hdmi, bool plug_in, bool change)
+ 	if (!plug_in)
+ 		cec_notifier_set_phys_addr(hdmi->cec_notifier,
+ 					   CEC_PHYS_ADDR_INVALID);
+-       else if (hdmi->ddc) {
+-               struct edid *edid = drm_get_edid(&hdmi->connector, hdmi->ddc);
+-               if (edid) {
+-                       if (hdmi->cec_notifier)
+-                               cec_notifier_set_phys_addr_from_edid(
+-                                       hdmi->cec_notifier, edid);
+-                       kfree(edid);
+-               }
+-       }
++	else if (hdmi->ddc) {
++		/* read only: drm_get_edid() would update the connector property unlocked */
++		const struct drm_edid *drm_edid = drm_edid_read_ddc(&hdmi->connector, hdmi->ddc);
++
++		if (drm_edid)
++			dw_hdmi_qp_cec_set_pa(hdmi->cec_notifier, drm_edid_raw(drm_edid));
++		drm_edid_free(drm_edid);
++	}
+ 
+ 	if (hdmi->bridge.dev) {
+ #if IS_REACHABLE(CONFIG_DRM_DW_HDMI_CEC)
+@@ -4374,7 +4460,8 @@ static struct dw_hdmi_qp *dw_hdmi_qp_probe(struct platform_device *pdev,
+ 			dev_dbg(hdmi->dev, "failed to read ddc node\n");
+ 			return ERR_PTR(-EPROBE_DEFER);
+ 		}
+-
++		/* EDID and drm_scdc_* go through this adapter, internal I2CM stays idle */
++		dev_info(hdmi->dev, "external DDC adapter %s\n", hdmi->ddc->name);
+ 	} else {
+ 		dev_dbg(hdmi->dev, "no ddc property found\n");
+ 	}
+@@ -4519,18 +4606,18 @@ static struct dw_hdmi_qp *dw_hdmi_qp_probe(struct platform_device *pdev,
+ 	if (ret)
+ 		goto err_ddc;
+ 
+-	if (of_property_read_bool(np, "cec-enable")) {
+-		hdmi->cec_enable = true;
++	if (IS_ENABLED(CONFIG_DRM_DW_HDMI_CEC) && of_property_read_bool(np, "cec-enable")) {
++		/* CEC is optional: a missing irq leaves video and audio up */
+ 		irq = platform_get_irq(pdev, 1);
+ 		if (irq < 0) {
+-			ret = irq;
+-			goto err_ddc;
++			dev_warn(dev, "cec irq missing (%d), CEC disabled\n", irq);
++		} else {
++			hdmi->cec_enable = true;
++			hdmi->cec_data.irq  = irq;
++			hdmi->cec_data.hdmi = hdmi;
++			hdmi->cec_data.ops = &dw_hdmi_qp_cec_ops;
+ 		}
+-
+-		hdmi->cec_data.irq  = irq;
+-		hdmi->cec_data.hdmi = hdmi;
+-		hdmi->cec_data.ops = &dw_hdmi_qp_cec_ops;
+-	};
++	}
+ 
+ 	irq = platform_get_irq(pdev, 2);
+ 	if (irq < 0) {
+@@ -4574,6 +4661,7 @@ static struct dw_hdmi_qp *dw_hdmi_qp_probe(struct platform_device *pdev,
+ 
+ 	hdmi->workqueue = create_workqueue("dw_hdmi_flt_queue");
+ 	INIT_WORK(&hdmi->flt_work, dw_hdmi_qp_flt_work);
++	INIT_DELAYED_WORK(&hdmi->unmute_work, dw_hdmi_qp_unmute_work);
+ 
+ 	return hdmi;
+ 
+@@ -4596,6 +4684,7 @@ static struct dw_hdmi_qp *dw_hdmi_qp_probe(struct platform_device *pdev,
+ 
+ static void dw_hdmi_qp_remove(struct dw_hdmi_qp *hdmi)
+ {
++	cancel_delayed_work_sync(&hdmi->unmute_work);
+ 	cancel_work_sync(&hdmi->flt_work);
+ 	flush_workqueue(hdmi->workqueue);
+ 	destroy_workqueue(hdmi->workqueue);
+@@ -4711,6 +4800,9 @@ void dw_hdmi_qp_suspend(struct device *dev, struct dw_hdmi_qp *hdmi)
+ 	if (hdmi->earc_irq)
+ 		disable_irq(hdmi->earc_irq);
+ 
++	if (hdmi->cec_adap)
++		disable_irq(hdmi->cec_data.irq);
++
+ 	pinctrl_pm_select_sleep_state(dev);
+ 	if (!hdmi->next_bridge)
+ 		drm_connector_update_edid_property(&hdmi->connector, NULL);
+@@ -4732,8 +4824,12 @@ void dw_hdmi_qp_resume(struct device *dev, struct dw_hdmi_qp *hdmi)
+ 
+ 	pinctrl_pm_select_default_state(dev);
+ 
+-	if (hdmi->cec_adap)
+-		hdmi->cec_adap->ops->adap_enable(hdmi->cec_adap, true);
++	/* restore CEC registers only if the core has the adapter enabled */
++	if (hdmi->cec_adap) {
++		if (hdmi->cec_adap->is_enabled)
++			hdmi->cec_adap->ops->adap_enable(hdmi->cec_adap, true);
++		enable_irq(hdmi->cec_data.irq);
++	}
+ 
+ 	mutex_lock(&hdmi->mutex);
+ 	if (hdmi->i2c)

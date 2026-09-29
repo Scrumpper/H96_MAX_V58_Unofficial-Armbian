@@ -1,0 +1,1219 @@
+#!/usr/bin/env python3
+# =============================================================================
+# h96-backup-gui - graphical front end for h96-backup and h96-restore.
+#
+# Pick what to back up (or what to restore from an archive) with checkboxes;
+# the tool builds the matching h96-backup / h96-restore command line and runs
+# it in a terminal window, so the CLIs' own prompts stay visible. All logic
+# lives in the CLIs; this file only selects and launches.
+#
+#   h96-backup-gui                    open the window
+#   h96-backup-gui --restore          open on the Restore tab, newest archive loaded
+#   h96-backup-gui --install-desktop  write the application menu entry (root)
+#   h96-backup-gui --selftest         print the command lines it would build
+#
+# Every panel the window draws is its own themed widget. Tk's built-in message
+# and file dialogs are not used: they ignore the theme and paint white. Reading
+# the box and reading an archive run on a worker thread, so the window keeps
+# painting while they work and no unpainted area is left behind.
+#
+# The Archive and Save-to fields accept a typed path as well as a pick from the
+# list: give a file to use it, or a folder to search it for archives.
+#
+# Needs python3-tk; the first launch installs it through a terminal (apt).
+# =============================================================================
+import os, sys, json, shlex, shutil, subprocess, glob, fnmatch, pwd, threading, queue, time
+
+TOOL_VERSION = "2.1"   # h96-backup/h96-restore/h96-backup-gui release version
+BACKUP_TOOL  = "h96-backup"
+RESTORE_TOOL = "h96-restore"
+DESKTOP_FILE = "/usr/share/applications/h96-backup-gui.desktop"
+FORCE_LOG    = "/var/log/h96-restore-force.log"
+
+# The terminal palette the flasher and the h96-* tools print with (ANSI 91..96),
+# on the dark background they are read on.
+BG, PANEL, FIELD = "#1b1d1e", "#242628", "#2c2f31"
+FG, DIM, MUTED   = "#e6e6e6", "#9a9a9a", "#5c5c5c"
+CYAN, MAGENTA, GREEN, YELLOW, RED = "#5fd7ff", "#d787d7", "#8ae234", "#f0d060", "#ff6b6b"
+MONO = ("DejaVu Sans Mono", 10)
+MONO_B = ("DejaVu Sans Mono", 10, "bold")
+MONO_S = ("DejaVu Sans Mono", 9)
+
+# scrumptop's banner texture, ported as-is: a sporadic purple speckle, dense at
+# the edges and thinning toward the centre, deterministic per column so it never
+# flickers between redraws. Same hash, thresholds and shades as scrumptop.
+P_EDGE, P_MID, P_DIM = "#482468", "#321a4a", "#221332"
+P_HI = "#8c46c8"   # sparse bright blockers set into the texture
+BLOCK = "#9cc865"  # block-text banner: muted chartreuse (scrumptop uses the same)
+
+def _noise(x, seed):
+    h = (x * 2654435761 + seed * 40503) & 0xFFFFFFFF
+    h ^= h >> 13
+    h = (h * 2246822519) & 0xFFFFFFFF
+    return ((h >> 8) & 0xFF) / 255.0
+
+def _noise_cell(x, width, seed):
+    """(glyph, colour) for one texture cell, exactly as scrumptop draws it."""
+    half = max(1.0, (width - 1) / 2.0)
+    e = min(x, width - 1 - x) / half
+    d = 1.0 - e
+    if _noise(x, seed + 977) < 0.03 + d * 0.04:
+        return "\u2588", P_HI
+    r = _noise(x, seed)
+    if r < d * 0.25:
+        return "\u2593", P_EDGE
+    if r < d * 0.25 + 0.08:
+        return "\u2592", P_MID
+    if r < d * 0.25 + 0.18:
+        return "\u2591", P_DIM
+    if r < d * 0.25 + 0.28:
+        return "\u254c", P_DIM
+    return " ", P_DIM
+
+_ART = r"""
+   ██╗  ██╗ █████╗  ██████╗    ██╗   ██╗███████╗ █████╗
+   ██║  ██║██╔══██╗██╔════╝    ██║   ██║██╔════╝██╔══██╗
+   ███████║╚██████║███████╗    ██║   ██║███████╗╚█████╔╝
+   ██╔══██║ ╚═══██║██╔═══██╗    ╚██╗ ██╔╝╚════██║██╔══██╗
+   ██║  ██║ █████╔╝╚██████╔╝     ╚████╔╝ ███████║╚█████╔╝
+   ╚═╝  ╚═╝ ╚════╝  ╚═════╝       ╚═══╝  ╚══════╝ ╚════╝"""
+
+CATEGORIES = [
+    # key, label, what the checkbox covers
+    ("desktop",         "Desktop environment",   "record KDE or GNOME so restore reinstalls it"),
+    ("configs",         "Desktop settings",      "~/.config subset: Plasma, KWin, shortcuts, mpv, autostart, dconf"),
+    ("emulators",       "Emulators",             "installed emulators plus their saves and settings"),
+    ("waydroid",        "Android (Waydroid)",    "image profile plus the Android /data (apps, accounts)"),
+    ("waydroid-images", "Android system images", "the multi-GB image stash; off, restore re-downloads them"),
+    ("widevine",        "Widevine DRM",          "record the L3 CDM so restore fetches it again"),
+    ("gaming",          "Windows gaming",        "wine prefixes, gaming stack marker, Steam ARM home"),
+    ("npu",             "NPU runtime",           "record the RKNN runtime so restore installs it"),
+    ("wifi",            "WiFi credentials",      "wpa_supplicant confs (root only, 0600)"),
+    ("autologin",       "Autologin",             "autologin-user setting only, via one h96 drop-in"),
+    ("system",          "System state",          "display/network/steam flags, opt-in service state"),
+    ("vm",              "Virtual machines",      "h96-vm definitions; disk images are separate (large)"),
+]
+CAT_KEYS = [c[0] for c in CATEGORIES]
+ARCHIVE_GLOBS = ("h96-backup-*.tar.zst", "h96-backup-*.tar.gz")
+
+# --------------------------------------------------------------- helpers -----
+def have(cmd): return shutil.which(cmd) is not None
+
+def human(n):
+    x = float(n or 0)
+    for u in ("B", "KB", "MB", "GB", "TB"):
+        if x < 1024 or u == "TB":
+            return f"{x:.0f} {u}" if u == "B" else f"{x:.1f} {u}"
+        x /= 1024.0
+
+def when(ts):
+    try:
+        return time.strftime("%Y-%m-%d %H:%M", time.localtime(ts))
+    except (OSError, ValueError):
+        return "?"
+
+def find_terminal():
+    for t in ("konsole", "x-terminal-emulator", "gnome-terminal", "xfce4-terminal", "xterm"):
+        if have(t): return t
+    return None
+
+def terminal_argv(term, title, script):
+    """argv that opens `term` running bash -c script, waits for Enter, then closes.
+    The script runs in a subshell so an `exit` inside it still reaches the prompt,
+    and no terminal is told to hold: Enter ends bash and the window goes with it."""
+    wrapped = "(\n" + script + "\n)\necho\nread -rp 'Press Enter to close this window'"
+    inner = ["bash", "-c", wrapped]
+    if term == "konsole":
+        return ["konsole", "-p", f"tabtitle={title}", "-e"] + inner
+    if term == "gnome-terminal":
+        return ["gnome-terminal", "--title", title, "--"] + inner
+    if term == "xfce4-terminal":
+        return ["xfce4-terminal", "--title", title, "-x"] + inner
+    return [term, "-T", title, "-e"] + inner if term == "xterm" else [term, "-e"] + inner
+
+def run_in_terminal(title, script):
+    term = find_terminal()
+    if not term:
+        raise RuntimeError("no terminal emulator found (konsole, gnome-terminal, xterm)")
+    subprocess.Popen(terminal_argv(term, title, script), start_new_session=True)
+
+def removable_mounts():
+    """Mounted removable media, most likely USB sticks first."""
+    out = []
+    for pat in ("/media/*/*", "/run/media/*/*", "/mnt/*", "/media/*"):
+        for p in sorted(glob.glob(pat)):
+            if os.path.ismount(p) and os.access(p, os.R_OK) and p not in out:
+                out.append(p)
+    return out
+
+def home_dirs():
+    homes = [pwd.getpwnam(u).pw_dir for u in {os.environ.get("USER", ""), os.environ.get("SUDO_USER", "")}
+             if u and _has_pw(u)]
+    homes += [p.pw_dir for p in pwd.getpwall() if 1000 <= p.pw_uid < 65000 and os.path.isdir(p.pw_dir)]
+    return sorted(set(homes))
+
+def _has_pw(u):
+    try:
+        pwd.getpwnam(u); return True
+    except KeyError:
+        return False
+
+def archives_in(directory, depth=1):
+    """Archives directly in `directory`, and one level below it."""
+    found = set()
+    pats = list(ARCHIVE_GLOBS) + ([os.path.join("*", g) for g in ARCHIVE_GLOBS] if depth else [])
+    for pat in pats:
+        for f in glob.glob(os.path.join(directory, pat)):
+            if os.path.isfile(f): found.add(f)
+    return sorted(found, key=lambda f: os.path.getmtime(f), reverse=True)
+
+def find_archives():
+    """Archives on mounted media and in home directories, newest first."""
+    found = set()
+    for d in removable_mounts() + home_dirs() + ["/root"]:
+        found.update(archives_in(d))
+    return sorted(found, key=lambda f: os.path.getmtime(f), reverse=True)
+
+def sh(argv): return " ".join(shlex.quote(a) for a in argv)
+
+def resolve_archive(text):
+    """Make sense of whatever was typed or picked in the Archive field.
+
+    Returns (archive_or_None, candidates, note). A file is taken as it stands; a
+    folder is searched for archives, so a stick can be typed in as a path."""
+    t = os.path.expanduser((text or "").strip())
+    if not t:
+        return None, [], ""
+    if os.path.isfile(t):
+        return t, [], f"{human(os.path.getsize(t))}, written {when(os.path.getmtime(t))}"
+    if os.path.isdir(t):
+        found = archives_in(t)
+        if not found:
+            return None, [], f"no archive in {t}"
+        if len(found) == 1:
+            return found[0], found, f"one archive in that folder: {os.path.basename(found[0])}"
+        return found[0], found, f"{len(found)} archives in that folder, newest picked"
+    return None, [], f"no such file or folder: {t}"
+
+# ------------------------------------------------------- command builders ----
+def backup_argv(dest, selected, emulators=None, vm_disks=False, proton_prefixes=False, steam_runtime=False):
+    """h96-backup command for the selected categories. selected: list of keys."""
+    argv = ["sudo", BACKUP_TOOL]
+    if dest: argv.append(dest)
+    sel = [c for c in CAT_KEYS if c in selected]
+    if sel != CAT_KEYS and sel != [c for c in CAT_KEYS if c != "waydroid-images"]:
+        argv += ["--only", ",".join(sel)]
+    elif "waydroid-images" in sel:
+        argv.append("--with-images")
+    if emulators is not None and "emulators" in sel:
+        argv += ["--emulators", ",".join(emulators)]
+    if vm_disks and "vm" in sel: argv.append("--with-vm-disks")
+    if proton_prefixes and "gaming" in sel: argv.append("--with-proton-prefixes")
+    if steam_runtime and "gaming" in sel: argv.append("--with-steam-runtime")
+    return argv
+
+def restore_argv(archive, selected, emulators=None, force=False, open_mode=False, dry=False):
+    argv = [RESTORE_TOOL, archive] if dry else ["sudo", RESTORE_TOOL, archive]
+    sel = [c for c in CAT_KEYS if c in selected]
+    if sel != CAT_KEYS:
+        argv += ["--only", ",".join(sel)] if sel else ["--only", "none"]
+    if emulators is not None and "emulators" in sel:
+        argv += ["--emulators", ",".join(emulators)]
+    if force: argv.append("--force")
+    if open_mode: argv.append("--open")
+    if dry: argv.append("--dry-run")
+    return argv
+
+def force_session_script(argv):
+    """Restore with --force outside the desktop session: a transient systemd
+    unit stops the display manager, runs the restore, starts it again. The
+    terminal that launches it dies with the session, so output goes to a log."""
+    inner = sh([a for a in argv if a != "sudo"])
+    unit_cmd = (f"systemctl stop lightdm 2>/dev/null; systemctl stop sddm 2>/dev/null; sleep 2; "
+                f"{inner}; rc=$?; echo \"h96-restore exit $rc\"; "
+                f"systemctl start lightdm 2>/dev/null || systemctl start sddm 2>/dev/null")
+    return ("echo 'The desktop session will stop in a few seconds and come back when the restore is done.'\n"
+            f"echo 'Output: {FORCE_LOG}'\n"
+            f"sudo systemd-run --unit=h96-restore-force --collect "
+            f"-p StandardOutput=append:{FORCE_LOG} -p StandardError=append:{FORCE_LOG} "
+            f"bash -c {shlex.quote(unit_cmd)}")
+
+def graphical_session_active():
+    try:
+        r = subprocess.run(["systemctl", "is-active", "lightdm", "sddm", "gdm"], capture_output=True, text=True)
+        return "active" in r.stdout.split()
+    except Exception:
+        return bool(os.environ.get("DISPLAY"))
+
+# ------------------------------------------------------------ CLI modes ------
+DESKTOP_ENTRY = """[Desktop Entry]
+Type=Application
+Name=H96 Backup and Restore
+Comment=Choose what to back up or restore on this box
+Exec=h96-backup-gui
+Icon=drive-harddisk
+Terminal=false
+Categories=System;Utility;
+"""
+
+def install_desktop():
+    path = DESKTOP_FILE if os.geteuid() == 0 else os.path.expanduser("~/.local/share/applications/h96-backup-gui.desktop")
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w") as f: f.write(DESKTOP_ENTRY)
+    print(f"wrote {path}")
+
+def ensure_tk():
+    try:
+        import tkinter  # noqa: F401
+        return True
+    except ImportError:
+        pass
+    term = find_terminal()
+    if term is None or not os.environ.get("DISPLAY"):
+        print("python3-tk is missing: sudo apt-get install -y python3-tk", file=sys.stderr)
+        return False
+    run_in_terminal("Installing python3-tk",
+                    "echo 'h96-backup-gui needs the python3-tk package (one-time).'\n"
+                    "sudo apt-get install -y python3-tk && echo && echo 'Done. Start H96 Backup and Restore again.'")
+    return False
+
+def selftest():
+    print(sh(backup_argv("/media/stick", CAT_KEYS[:-1])))
+    print(sh(backup_argv(None, ["configs", "wifi"])))
+    print(sh(backup_argv("/media/stick", CAT_KEYS, ["dolphin", "ppsspp"])))
+    print(sh(backup_argv(None, [c for c in CAT_KEYS if c != "waydroid-images"] + ["waydroid-images"])))
+    print(sh(restore_argv("/media/stick/h96-backup-1.tar.zst", CAT_KEYS)))
+    print(sh(restore_argv("/media/stick/h96-backup-1.tar.zst", ["configs", "emulators"], ["dolphin"], force=True)))
+    print(sh(restore_argv("/media/stick/h96-backup-1.tar.zst", ["waydroid"], dry=True)))
+    print(force_session_script(restore_argv("/a.tar.zst", ["configs"], force=True)))
+    print("terminal:", find_terminal(), " media:", removable_mounts(), " archives:", find_archives()[:3])
+    for probe in ("", "/nonexistent-path", os.path.expanduser("~")):
+        arch, cands, note = resolve_archive(probe)
+        print(f"resolve {probe!r} -> {arch} ({len(cands)} candidates) {note}")
+
+# ------------------------------------------------------------------ GUI ------
+def gui():
+    import tkinter as tk
+    from tkinter import ttk
+
+    root = tk.Tk()
+    # Build the whole window before it is mapped. A Toplevel is born white and
+    # repaints once its children are laid out; showing it only at the end means
+    # that first white frame is never on screen.
+    root.withdraw()
+    root.title(f"H96 Backup and Restore v{TOOL_VERSION}")
+    root.configure(bg=BG)
+    # The box drives a 1024x768 panel. Read the screen first and lay the window
+    # out to fit it, rather than assuming a desktop-sized display and pushing
+    # the buttons off the bottom edge.
+    SCR_W, SCR_H = root.winfo_screenwidth(), root.winfo_screenheight()
+    WIN_W = min(960, max(760, SCR_W - 40))
+    WIN_H = min(880, max(600, SCR_H - 70))
+    SHORT = SCR_H < 900
+    root.minsize(min(760, WIN_W), min(600, WIN_H))
+
+    # ---- theme: the flasher's terminal look ---------------------------------
+    st = ttk.Style(root)
+    st.theme_use("clam")
+    st.configure(".", background=BG, foreground=FG, font=MONO, borderwidth=0, focuscolor=BG)
+    st.configure("TFrame", background=BG)
+    st.configure("Panel.TFrame", background=PANEL)
+    st.configure("TLabel", background=BG, foreground=FG, font=MONO)
+    st.configure("Dim.TLabel", foreground=DIM)
+    st.configure("Muted.TLabel", foreground=MUTED)
+    st.configure("Cyan.TLabel", foreground=CYAN, font=MONO_B)
+    st.configure("Yellow.TLabel", foreground=YELLOW, font=MONO_S)
+    st.configure("Green.TLabel", foreground=GREEN)
+    st.configure("Red.TLabel", foreground=RED)
+    st.configure("Card.TLabel", background=PANEL, foreground=FG, font=MONO_S)
+    st.configure("CardKey.TLabel", background=PANEL, foreground=CYAN, font=MONO_S)
+    # no padding: twelve category rows per tab (v6.2 added system, vm), and on a
+    # 1080 desktop the height they give up keeps the restore options row and
+    # the action buttons on screen; recheck on the box's 1024x768 panel if more
+    # categories are ever added
+    st.configure("TCheckbutton", background=BG, foreground=FG, font=MONO, padding=0,
+                 indicatormargin=(1, 1, 4, 1),
+                 indicatorbackground=FIELD, indicatorforeground=GREEN)
+    st.map("TCheckbutton", background=[("active", BG), ("disabled", BG)],
+           foreground=[("disabled", MUTED), ("active", CYAN)],
+           indicatorbackground=[("disabled", BG), ("selected", FIELD)],
+           indicatorforeground=[("disabled", MUTED), ("selected", GREEN)])
+    st.configure("TButton", background=PANEL, foreground=CYAN, font=MONO_B, padding=(10, 4),
+                 bordercolor=CYAN, lightcolor=PANEL, darkcolor=PANEL, relief="flat")
+    st.map("TButton", background=[("active", FIELD), ("pressed", FIELD)],
+           foreground=[("active", FG), ("disabled", MUTED)])
+    st.configure("Go.TButton", foreground=GREEN, bordercolor=GREEN)
+    st.map("Go.TButton", foreground=[("active", FG)])
+    st.configure("Small.TButton", font=MONO_S, padding=(6, 2))
+    st.configure("TNotebook", background=BG, tabmargins=(0, 4, 0, 0))
+    st.configure("TNotebook.Tab", background=PANEL, foreground=DIM, font=MONO_B, padding=(14, 5))
+    st.map("TNotebook.Tab", background=[("selected", BG)], foreground=[("selected", CYAN)],
+           expand=[("selected", (0, 0, 0, 1))])
+    st.configure("TEntry", fieldbackground=FIELD, foreground=FG, insertcolor=FG,
+                 bordercolor=PANEL, lightcolor=PANEL, darkcolor=PANEL)
+    st.configure("TCombobox", fieldbackground=FIELD, background=PANEL, foreground=FG,
+                 arrowcolor=CYAN, bordercolor=PANEL, lightcolor=PANEL, darkcolor=PANEL)
+    st.map("TCombobox", fieldbackground=[("readonly", FIELD)], foreground=[("readonly", FG)])
+    root.option_add("*TCombobox*Listbox.background", FIELD)
+    root.option_add("*TCombobox*Listbox.foreground", FG)
+    root.option_add("*TCombobox*Listbox.selectBackground", CYAN)
+    root.option_add("*TCombobox*Listbox.selectForeground", BG)
+    st.configure("TLabelframe", background=BG, bordercolor=MUTED, lightcolor=BG, darkcolor=BG)
+    st.configure("TLabelframe.Label", background=BG, foreground=CYAN, font=MONO_B)
+    st.configure("Vertical.TScrollbar", background=PANEL, troughcolor=BG, arrowcolor=CYAN,
+                 bordercolor=BG, lightcolor=PANEL, darkcolor=PANEL)
+    st.configure("Treeview", background=FIELD, fieldbackground=FIELD, foreground=FG,
+                 bordercolor=PANEL, lightcolor=PANEL, darkcolor=PANEL, font=MONO_S, rowheight=22)
+    st.map("Treeview", background=[("selected", CYAN)], foreground=[("selected", BG)])
+    st.configure("Treeview.Heading", background=PANEL, foreground=CYAN, font=MONO_S, relief="flat")
+    st.map("Treeview.Heading", background=[("active", FIELD)])
+    st.configure("TProgressbar", background=CYAN, troughcolor=FIELD, bordercolor=BG,
+                 lightcolor=CYAN, darkcolor=CYAN)
+
+    # ---- worker thread plumbing --------------------------------------------
+    # Reading the box or an archive shells out, which can take seconds. Doing it
+    # on the UI thread freezes the window and leaves an unpainted rectangle
+    # behind whatever was on top of it. Both run on a worker instead and hand
+    # the result back through a queue the UI polls.
+    results = queue.Queue()
+
+    running = set()
+
+    def in_background(fn, tag):
+        running.add(tag)
+        show_busy()
+
+        def work():
+            try:
+                results.put((tag, True, fn()))
+            except Exception as e:                       # noqa: BLE001 - reported in the window
+                results.put((tag, False, str(e)))
+        threading.Thread(target=work, daemon=True).start()
+
+    def show_busy():
+        if running:
+            busy.pack(side="right", padx=(8, 0))
+            busy.start(12)
+        else:
+            busy.stop()
+            busy.pack_forget()
+
+    handlers = {}
+
+    def pump():
+        while True:
+            try:
+                tag, ok_, payload = results.get_nowait()
+            except queue.Empty:
+                break
+            running.discard(tag)
+            show_busy()
+            h = handlers.get(tag)
+            if h: h(ok_, payload)
+        root.after(80, pump)
+
+    def read_json(argv, what):
+        r = subprocess.run(argv, capture_output=True, text=True, timeout=300)
+        if r.returncode != 0:
+            raise RuntimeError(f"{what} failed: {(r.stderr.strip() or r.stdout.strip() or 'no output')}")
+        try:
+            return json.loads(r.stdout)
+        except ValueError:
+            raise RuntimeError(f"{what}: unreadable output")
+
+    # ---- themed modal panels ------------------------------------------------
+    # Tk's own message and file dialogs are drawn by the toolkit's Motif-era
+    # code, which ignores ttk styling and comes up white on this dark window.
+    # These replacements are ordinary Toplevels, so they carry the theme.
+    def _modal(title, width, height):
+        win = tk.Toplevel(root, bg=BG)
+        win.withdraw()
+        win.title(title)
+        win.transient(root)
+        win.resizable(False, False)
+        outer = ttk.Frame(win, padding=0); outer.pack(fill="both", expand=True)
+        bar = tk.Frame(outer, bg=PANEL, height=30); bar.pack(fill="x")
+        tk.Label(bar, text=title, bg=PANEL, fg=CYAN, font=MONO_B).pack(side="left", padx=12, pady=5)
+        body = ttk.Frame(outer, padding=(16, 12)); body.pack(fill="both", expand=True)
+
+        def show():
+            win.update_idletasks()
+            w = max(width, win.winfo_reqwidth())
+            h = max(height, win.winfo_reqheight())
+            x = root.winfo_rootx() + (root.winfo_width() - w) // 2
+            y = root.winfo_rooty() + (root.winfo_height() - h) // 3
+            win.geometry(f"{w}x{h}+{max(x, 0)}+{max(y, 0)}")
+            win.deiconify()
+            win.grab_set()
+            win.focus_set()
+        return win, body, show
+
+    def note(title, message, kind="info"):
+        """A themed replacement for a message box. Blocks until dismissed."""
+        win, body, show = _modal(title, 460, 150)
+        colour = {"info": FG, "warn": YELLOW, "error": RED}.get(kind, FG)
+        tk.Label(body, text=message, bg=BG, fg=colour, font=MONO, wraplength=420,
+                 justify="left").pack(anchor="w", pady=(0, 14))
+        row = ttk.Frame(body); row.pack(fill="x")
+        btn = ttk.Button(row, text="[ OK ]", command=win.destroy)
+        btn.pack(side="right")
+        win.bind("<Return>", lambda e: win.destroy())
+        win.bind("<Escape>", lambda e: win.destroy())
+        win.protocol("WM_DELETE_WINDOW", win.destroy)
+        show(); btn.focus_set()
+        root.wait_window(win)
+
+    def confirm(title, message, go_text="[ Continue ]"):
+        """A themed yes/no. Returns True when the go button is pressed."""
+        answer = {"v": False}
+        win, body, show = _modal(title, 520, 180)
+        tk.Label(body, text=message, bg=BG, fg=FG, font=MONO, wraplength=470,
+                 justify="left").pack(anchor="w", pady=(0, 14))
+        row = ttk.Frame(body); row.pack(fill="x")
+
+        def go():
+            answer["v"] = True; win.destroy()
+        ttk.Button(row, text="[ Cancel ]", command=win.destroy).pack(side="left")
+        btn = ttk.Button(row, text=go_text, style="Go.TButton", command=go)
+        btn.pack(side="right")
+        win.bind("<Return>", lambda e: go())
+        win.bind("<Escape>", lambda e: win.destroy())
+        win.protocol("WM_DELETE_WINDOW", win.destroy)
+        show(); btn.focus_set()
+        root.wait_window(win)
+        return answer["v"]
+
+    def browse(title, want="file", start=None):
+        """A themed file and folder browser. Returns a path or None.
+
+        want='file' lists folders and archives and returns an archive;
+        want='dir' lists folders only and returns the folder shown."""
+        chosen = {"v": None}
+        win, body, show = _modal(title, 720, 520)
+        win.resizable(True, True)
+
+        cur = tk.StringVar(value=os.path.abspath(os.path.expanduser(
+            start or (removable_mounts() or home_dirs() or ["/"])[0])))
+
+        top = ttk.Frame(body); top.pack(fill="x", pady=(0, 6))
+        ttk.Label(top, text="Folder", style="Cyan.TLabel").pack(side="left")
+        path_entry = ttk.Entry(top, textvariable=cur, font=MONO)
+        path_entry.pack(side="left", fill="x", expand=True, padx=6)
+        ttk.Button(top, text="[ Up ]", style="Small.TButton",
+                   command=lambda: go_to(os.path.dirname(cur.get().rstrip("/")) or "/")).pack(side="left")
+
+        shortcuts = ttk.Frame(body); shortcuts.pack(fill="x", pady=(0, 6))
+        ttk.Label(shortcuts, text="Go to", style="Dim.TLabel").pack(side="left", padx=(0, 6))
+        for p in (removable_mounts() + home_dirs())[:6]:
+            ttk.Button(shortcuts, text=os.path.basename(p) or p, style="Small.TButton",
+                       command=lambda q=p: go_to(q)).pack(side="left", padx=2)
+
+        listing = ttk.Frame(body); listing.pack(fill="both", expand=True)
+        cols = ("name", "size", "changed")
+        tree = ttk.Treeview(listing, columns=cols, show="headings", selectmode="browse")
+        for c, w, t in (("name", 380, "Name"), ("size", 110, "Size"), ("changed", 150, "Changed")):
+            tree.heading(c, text=t, anchor="w"); tree.column(c, width=w, anchor="w")
+        sb = ttk.Scrollbar(listing, orient="vertical", command=tree.yview)
+        tree.configure(yscrollcommand=sb.set)
+        sb.pack(side="right", fill="y")
+        tree.pack(side="left", fill="both", expand=True)
+        rows = {}
+
+        hint = ttk.Label(body, text="", style="Dim.TLabel")
+        hint.pack(fill="x", pady=(6, 0))
+
+        def go_to(d):
+            d = os.path.abspath(os.path.expanduser(d or "/"))
+            if not os.path.isdir(d):
+                hint.config(text=f"not a folder: {d}"); return
+            cur.set(d)
+            tree.delete(*tree.get_children()); rows.clear()
+            try:
+                names = sorted(os.listdir(d))
+            except OSError as e:
+                hint.config(text=f"cannot read {d}: {e.strerror}"); return
+            dirs, files = [], []
+            for n in names:
+                if n.startswith("."): continue
+                p = os.path.join(d, n)
+                if os.path.isdir(p):
+                    dirs.append((n, p))
+                elif want == "file" and any(fnmatch.fnmatch(n, g) for g in ARCHIVE_GLOBS):
+                    files.append((n, p))
+            for n, p in dirs:
+                iid = tree.insert("", "end", values=(n + "/", "", when(_mtime(p))))
+                rows[iid] = ("dir", p)
+            for n, p in files:
+                iid = tree.insert("", "end", values=(n, human(_size(p)), when(_mtime(p))))
+                rows[iid] = ("file", p)
+            hint.config(text=(f"{len(dirs)} folder(s), {len(files)} archive(s)" if want == "file"
+                              else f"{len(dirs)} folder(s)"))
+
+        def _size(p):
+            try: return os.path.getsize(p)
+            except OSError: return 0
+
+        def _mtime(p):
+            try: return os.path.getmtime(p)
+            except OSError: return 0
+
+        def activate(_e=None):
+            sel = tree.selection()
+            if not sel: return
+            kind, p = rows[sel[0]]
+            if kind == "dir":
+                go_to(p)
+            else:
+                chosen["v"] = p; win.destroy()
+
+        def accept():
+            sel = tree.selection()
+            if want == "dir":
+                chosen["v"] = cur.get(); win.destroy(); return
+            if sel and rows[sel[0]][0] == "file":
+                chosen["v"] = rows[sel[0]][1]; win.destroy(); return
+            hint.config(text="pick an archive, or open a folder to look inside it")
+
+        tree.bind("<Double-1>", activate)
+        tree.bind("<Return>", activate)
+        path_entry.bind("<Return>", lambda e: go_to(cur.get()))
+
+        row = ttk.Frame(body); row.pack(fill="x", pady=(10, 0))
+        ttk.Button(row, text="[ Cancel ]", command=win.destroy).pack(side="left")
+        ttk.Button(row, text=("[ Use this folder ]" if want == "dir" else "[ Open ]"),
+                   style="Go.TButton", command=accept).pack(side="right")
+        win.bind("<Escape>", lambda e: win.destroy())
+        win.protocol("WM_DELETE_WINDOW", win.destroy)
+        go_to(cur.get())
+        show()
+        root.wait_window(win)
+        return chosen["v"]
+
+    def texture(parent, font, n_rows=1, art=None, seed0=1, colour=CYAN, clear=False):
+        """A read-only Text carrying scrumptop's speckle texture across the full
+        window width, redrawn whenever that width changes. `art` rows are set
+        into it centred in `colour`, the way scrumptop sets its banner into the
+        same texture. `clear` keeps a blank box one cell wider than the text on
+        each side, so letter-spaced captions stay legible."""
+        from tkinter import font as tkfont
+        cw = max(1, tkfont.Font(root=root, font=font).measure("\u2588"))
+        art_rows = [r.rstrip() for r in (art or [])]
+        art_w = max((len(r) for r in art_rows), default=0)
+        rows = art_rows if art_rows else [""] * n_rows
+        tx = tk.Text(parent, height=len(rows), width=1, font=font, bg=BG, bd=0,
+                     highlightthickness=0, wrap="none", cursor="arrow", takefocus=0,
+                     padx=0, pady=0, spacing1=0, spacing3=0)
+        for col in (P_EDGE, P_MID, P_DIM, P_HI):
+            tx.tag_configure(col, foreground=col)
+        tx.tag_configure("art", foreground=colour)
+        drawn = {"cols": 0}
+
+        def draw(cols):
+            tx.configure(state="normal")
+            tx.delete("1.0", "end")
+            for ri, r in enumerate(rows):
+                # block art shares one left edge; captions centre row by row
+                pad = max(0, (cols - (len(r) if clear else art_w)) // 2)
+                lo, hi = pad - 2, pad + len(r) + 2
+                for x in range(cols):
+                    ax = x - pad
+                    ch = r[ax] if 0 <= ax < len(r) else " "
+                    if ch != " ":
+                        tx.insert("end", ch, "art")
+                    elif clear and r and lo <= x < hi:
+                        tx.insert("end", " ")
+                    else:
+                        g, c = _noise_cell(x, cols, seed0 + ri)
+                        tx.insert("end", g, c)
+                if ri < len(rows) - 1:
+                    tx.insert("end", "\n")
+            tx.configure(state="disabled")
+
+        def on_resize(e):
+            cols = max(art_w + 4, e.width // cw)
+            if cols != drawn["cols"]:
+                drawn["cols"] = cols
+                draw(cols)
+
+        draw(max(art_w + 4, (WIN_W - 24) // cw))
+        tx.bind("<Configure>", on_resize)
+        tx.bind("<Button-1>", lambda e: "break")
+        return tx
+
+    # ---- header, as the CLIs print it, set into scrumptop's texture ---------
+    hdr = ttk.Frame(root); hdr.pack(fill="x", padx=12, pady=(6, 0))
+    ART_FONT = ("DejaVu Sans Mono", 8, "bold")
+    if not SHORT:
+        texture(hdr, ART_FONT, art=_ART.strip("\n").split("\n"), seed0=1, colour=BLOCK).pack(fill="x")
+        texture(hdr, MONO_B, art=["S C R U M P P E R ' S",
+                                  "B A C K U P   A N D   R E S T O R E"],
+                seed0=5, colour=MAGENTA, clear=True).pack(fill="x")
+    else:
+        texture(hdr, MONO_S, n_rows=1, seed0=1).pack(fill="x")
+        texture(hdr, MONO_B, art=["S C R U M P P E R ' S   B A C K U P   A N D   R E S T O R E"],
+                seed0=5, colour=MAGENTA, clear=True).pack(fill="x")
+    texture(hdr, MONO_S, art=["H96 Max V58  \u00b7  Rockchip RK3588"],
+            seed0=7, colour=DIM, clear=True).pack(fill="x")
+    # the old plain rule, now a full-width texture rule
+    texture(hdr, MONO_S, n_rows=1, seed0=9).pack(fill="x", pady=(0, 2))
+
+    # The status strip and its progress bar are packed against the bottom edge
+    # before the notebook claims the rest, so they always keep their space.
+    status = tk.StringVar(value="")
+    foot = ttk.Frame(root); foot.pack(side="bottom", fill="x", padx=14, pady=(0, 6))
+    ttk.Label(foot, textvariable=status, anchor="w", style="Dim.TLabel").pack(side="left", fill="x", expand=True)
+    ttk.Label(foot, text="'q' to quit", style="Muted.TLabel").pack(side="right")
+    busy = ttk.Progressbar(foot, mode="indeterminate", length=140)
+    # scrumptop fills its bottom deadspace with the same texture; one row here,
+    # packed above the status strip and below whatever the notebook leaves free.
+    texture(root, MONO_S, n_rows=1, seed0=11).pack(side="bottom", fill="x", padx=12)
+
+    nb = ttk.Notebook(root); nb.pack(fill="both", expand=True, padx=12, pady=(4, 4))
+
+    def say(msg):
+        # No update_idletasks(): the event loop is never blocked now, so it has
+        # nothing to catch up on, and forcing a redraw here is what made the
+        # window flicker while a scan ran.
+        status.set(msg)
+
+    # ------------------------------------------------------------ backup ----
+    bt = ttk.Frame(nb); nb.add(bt, text="[B] Back up")
+    b_vars, b_rows, b_emu_vars = {}, {}, {}
+    b_probe = {}
+    top = ttk.Frame(bt); top.pack(fill="x", pady=(6, 2))
+    ttk.Label(top, text="What would you like to back up?", style="Cyan.TLabel").pack(side="left")
+    ttk.Button(top, text="[ Rescan ]", command=lambda: load_probe()).pack(side="right")
+    b_all = ttk.Frame(bt); b_all.pack(fill="x", pady=(0, 2))
+    ttk.Button(b_all, text="[ All ]", style="Small.TButton",
+               command=lambda: set_all(b_vars, b_rows, True)).pack(side="left")
+    ttk.Button(b_all, text="[ None ]", style="Small.TButton",
+               command=lambda: set_all(b_vars, b_rows, False)).pack(side="left", padx=4)
+    b_list = ttk.Frame(bt); b_list.pack(fill="x")
+    for key, label, tip in CATEGORIES:
+        v = tk.BooleanVar(value=key != "waydroid-images")
+        row = ttk.Frame(b_list); row.pack(fill="x")
+        cb = ttk.Checkbutton(row, text=label, variable=v, width=24); cb.pack(side="left")
+        info = ttk.Label(row, text=tip, style="Dim.TLabel"); info.pack(side="left", fill="x", expand=True)
+        b_vars[key] = v; b_rows[key] = (cb, info, tip)
+
+    def set_all(varmap, rowmap, state):
+        for k, v in varmap.items():
+            cb = rowmap[k][0]
+            if "disabled" not in cb.state():
+                v.set(state)
+
+    emu_frame = ttk.LabelFrame(bt, text="Emulators to include"); emu_frame.pack(fill="x", pady=6)
+    emu_none = ttk.Label(emu_frame, text="none installed", style="Muted.TLabel")
+
+    # Large opt-in extras: off by default, like waydroid-images. Shown with
+    # their size once the box has been read.
+    extra_frame = ttk.Frame(bt); extra_frame.pack(fill="x", pady=(0, 4))
+    vmdisks_var = tk.BooleanVar(value=False)
+    vmdisks_cb = ttk.Checkbutton(extra_frame, text="h96-vm disk images", variable=vmdisks_var)
+    vmdisks_cb.pack(side="left"); vmdisks_cb.state(["disabled"])
+    vmdisks_label = ttk.Label(extra_frame, text="", style="Dim.TLabel")
+    vmdisks_label.pack(side="left", padx=(4, 16))
+    proton_var = tk.BooleanVar(value=False)
+    proton_cb = ttk.Checkbutton(extra_frame, text="Steam ARM Proton prefixes", variable=proton_var)
+    proton_cb.pack(side="left"); proton_cb.state(["disabled"])
+    proton_label = ttk.Label(extra_frame, text="", style="Dim.TLabel")
+    proton_label.pack(side="left", padx=(4, 0))
+    extra_frame2 = ttk.Frame(bt); extra_frame2.pack(fill="x", pady=(0, 4))
+    steamrt_var = tk.BooleanVar(value=False)
+    steamrt_cb = ttk.Checkbutton(extra_frame2, text="Steam client program (re-downloads otherwise)",
+                                 variable=steamrt_var)
+    steamrt_cb.pack(side="left"); steamrt_cb.state(["disabled"])
+    steamrt_label = ttk.Label(extra_frame2, text="", style="Dim.TLabel")
+    steamrt_label.pack(side="left", padx=(4, 0))
+
+    dest_frame = ttk.Frame(bt); dest_frame.pack(fill="x", pady=6)
+    ttk.Label(dest_frame, text="Save to", style="Cyan.TLabel").pack(side="left")
+    dest_var = tk.StringVar(value="")
+    dest_box = ttk.Combobox(dest_frame, textvariable=dest_var, font=MONO)
+    dest_box.pack(side="left", fill="x", expand=True, padx=6)
+
+    def pick_dest():
+        d = browse("Folder for the backup archive", want="dir", start=dest_var.get() or None)
+        if d: dest_var.set(d)
+    ttk.Button(dest_frame, text="[ Browse ]", command=pick_dest).pack(side="left")
+    dest_note = ttk.Label(bt, text="", style="Dim.TLabel")
+    dest_note.pack(fill="x")
+    b_cmd = tk.StringVar(value="")
+    ttk.Label(bt, textvariable=b_cmd, style="Yellow.TLabel", wraplength=WIN_W - 60,
+              justify="left").pack(fill="x", pady=2)
+
+    def b_selected():
+        return [k for k in CAT_KEYS if b_vars[k].get()]
+
+    def b_emus():
+        all_emus = b_probe.get("emulators", [])
+        chosen = [e for e in all_emus if b_emu_vars.get(e) and b_emu_vars[e].get()]
+        return None if chosen == all_emus else chosen
+
+    def b_update(*_):
+        d = os.path.expanduser(dest_var.get().strip())
+        if not d:
+            dest_note.config(text="no folder given: the archive lands in the desktop user's home",
+                             style="Dim.TLabel")
+        elif os.path.isdir(d):
+            free = ""
+            try:
+                s = os.statvfs(d); free = f", {human(s.f_bavail * s.f_frsize)} free"
+            except OSError:
+                pass
+            dest_note.config(text=f"writing into {d}{free}", style="Green.TLabel")
+        else:
+            dest_note.config(text=f"no such folder: {d}", style="Red.TLabel")
+        total = sum((b_probe.get("categories", {}).get(k, {}) or {}).get("bytes", 0) for k in b_selected())
+        if vmdisks_var.get(): total += b_probe.get("vm_disk_bytes", 0)
+        if proton_var.get(): total += b_probe.get("steam_compatdata_bytes", 0)
+        if steamrt_var.get(): total += b_probe.get("steam_runtime_bytes", 0)
+        size_note = f"   about {human(total)} of data" if total else ""
+        b_cmd.set("Command: " + sh(backup_argv(dest_var.get().strip() or None, b_selected(), b_emus(),
+                                                vmdisks_var.get(), proton_var.get(), steamrt_var.get())) + size_note)
+
+    def load_probe():
+        say("Reading this box...")
+        in_background(lambda: read_json([BACKUP_TOOL, "--probe-json"], "probe"), "probe")
+
+    def probe_done(ok_, payload):
+        if not ok_:
+            say("Could not read this box.")
+            note("Back up", str(payload), kind="error")
+            return
+        p = payload or {}
+        b_probe.clear(); b_probe.update(p)
+        cats = p.get("categories", {})
+        for key, (cb, info, tip) in b_rows.items():
+            c = cats.get(key, {})
+            present = c.get("present", False)
+            size = human(c.get("bytes", 0)) if c.get("bytes") else ""
+            detail = c.get("detail") or ""
+            info.config(text=(f"{detail}  {size}".strip() if present else "not present on this box"),
+                        style="TLabel" if present else "Muted.TLabel")
+            cb.state(["!disabled"] if present else ["disabled"])
+            if not present: b_vars[key].set(False)
+            elif key != "waydroid-images": b_vars[key].set(True)
+        vm_bytes = p.get("vm_disk_bytes", 0)
+        vmdisks_cb.state(["!disabled"] if vm_bytes else ["disabled"])
+        vmdisks_label.config(text=(f"{human(vm_bytes)}" if vm_bytes else "(none)"))
+        if not vm_bytes: vmdisks_var.set(False)
+        compat_bytes = p.get("steam_compatdata_bytes", 0)
+        proton_cb.state(["!disabled"] if compat_bytes else ["disabled"])
+        proton_label.config(text=(f"{human(compat_bytes)}" if compat_bytes else "(none)"))
+        if not compat_bytes: proton_var.set(False)
+        steamrt_bytes = p.get("steam_runtime_bytes", 0)
+        steamrt_cb.state(["!disabled"] if steamrt_bytes else ["disabled"])
+        steamrt_label.config(text=(f"{human(steamrt_bytes)}" if steamrt_bytes else "(none)"))
+        if not steamrt_bytes: steamrt_var.set(False)
+        # Reuse the emulator checkboxes instead of destroying and rebuilding
+        # them: rebuilding is what made this row flash on every rescan.
+        items = cats.get("emulators", {}).get("items", {})
+        names = p.get("emulators", [])
+        for name in names:
+            if name not in b_emu_vars:
+                v = tk.BooleanVar(value=True)
+                cbx = ttk.Checkbutton(emu_frame, text=name, variable=v, command=b_update)
+                b_emu_vars[name] = v
+                emu_widgets[name] = cbx
+            emu_widgets[name].config(text=f"{name} ({human(items.get(name, 0))})")
+            emu_widgets[name].pack(side="left", padx=6)
+            b_emu_vars[name].set(True)
+        for name, cbx in emu_widgets.items():
+            if name not in names:
+                cbx.pack_forget()
+        if names:
+            emu_none.pack_forget()
+        else:
+            emu_none.pack(side="left", padx=6)
+        media = removable_mounts()
+        dest_box["values"] = media + home_dirs()
+        if media and not dest_var.get(): dest_var.set(media[0])
+        elif not dest_var.get(): dest_var.set(p.get("home", os.path.expanduser("~")))
+        b_update()
+        say(f"This box read. Desktop user: {p.get('user', '?')}")
+    emu_widgets = {}
+    handlers["probe"] = probe_done
+    for v in b_vars.values(): v.trace_add("write", b_update)
+    vmdisks_var.trace_add("write", b_update)
+    proton_var.trace_add("write", b_update)
+    steamrt_var.trace_add("write", b_update)
+    dest_var.trace_add("write", b_update)
+
+    def do_backup():
+        sel = b_selected()
+        if not sel:
+            note("Back up", "Nothing is selected, so there is nothing to capture.", kind="warn"); return
+        dest = dest_var.get().strip()
+        if dest and not os.path.isdir(os.path.expanduser(dest)):
+            note("Back up", f"That folder does not exist:\n{dest}", kind="warn"); return
+        argv = backup_argv(os.path.expanduser(dest) or None, sel, b_emus(),
+                            vmdisks_var.get(), proton_var.get(), steamrt_var.get())
+        try:
+            run_in_terminal("H96 backup", sh(argv))
+            say("Backup running in a terminal window.")
+        except RuntimeError as e:
+            note("Back up", str(e), kind="error")
+    bt_actions = ttk.Frame(bt)
+    # packed ahead of the tab's first row: the packer hands out height in packing
+    # order, so the action bar keeps its space and any shortfall clips the text above
+    bt_actions.pack(side="bottom", fill="x", pady=(4, 2), before=top)
+    ttk.Button(bt_actions, text="[ Back up now ]", style="Go.TButton",
+               command=do_backup).pack(side="right")
+
+    # ----------------------------------------------------------- restore ----
+    rt = ttk.Frame(nb); nb.add(rt, text="[R] Restore")
+    r_vars, r_rows, r_emu_vars, r_plan = {}, {}, {}, {}
+    r_emu_widgets = {}
+
+    af = ttk.Frame(rt); af.pack(fill="x", pady=(6, 0))
+    ttk.Label(af, text="Archive", style="Cyan.TLabel").pack(side="left")
+    arch_var = tk.StringVar(value="")
+    arch_box = ttk.Combobox(af, textvariable=arch_var, width=58, font=MONO)
+    arch_box.pack(side="left", fill="x", expand=True, padx=6)
+
+    def pick_archive():
+        f = browse("Pick a backup archive", want="file",
+                   start=os.path.dirname(arch_var.get()) if arch_var.get() else None)
+        if f: arch_var.set(f)
+    ttk.Button(af, text="[ Browse ]", command=pick_archive).pack(side="left")
+    ttk.Button(af, text="[ Rescan ]", style="Small.TButton",
+               command=lambda: refill_archives()).pack(side="left", padx=4)
+    ttk.Label(rt, text="Pick one from the list, or type the path to an archive or to a folder to "
+                       "search, a USB stick for instance.",
+              style="Dim.TLabel", wraplength=WIN_W - 60, justify="left").pack(fill="x", pady=(2, 0))
+    arch_note = ttk.Label(rt, text="", style="Dim.TLabel")
+    arch_note.pack(fill="x")
+
+    # One summary line for the loaded archive, so what is about to be replayed is
+    # visible without opening anything and without costing four rows of height.
+    summary = tk.StringVar(value="")
+    tk.Label(rt, textvariable=summary, bg=PANEL, fg=FG, font=MONO_S, anchor="w",
+             padx=10, pady=4).pack(fill="x", pady=(3, 5))
+
+    r_all = ttk.Frame(rt); r_all.pack(fill="x", pady=(0, 2))
+    ttk.Button(r_all, text="[ All ]", style="Small.TButton",
+               command=lambda: set_all(r_vars, r_rows, True)).pack(side="left")
+    ttk.Button(r_all, text="[ None ]", style="Small.TButton",
+               command=lambda: set_all(r_vars, r_rows, False)).pack(side="left", padx=4)
+    r_list = ttk.Frame(rt); r_list.pack(fill="x")
+    for key, label, tip in CATEGORIES:
+        v = tk.BooleanVar(value=False)
+        row = ttk.Frame(r_list); row.pack(fill="x")
+        cb = ttk.Checkbutton(row, text=label, variable=v, width=24); cb.pack(side="left")
+        info = ttk.Label(row, text="load an archive first", style="Muted.TLabel")
+        info.pack(side="left", fill="x", expand=True)
+        cb.state(["disabled"])
+        r_vars[key] = v; r_rows[key] = (cb, info)
+    r_emu_frame = ttk.LabelFrame(rt, text="Emulators to restore"); r_emu_frame.pack(fill="x", pady=6)
+    r_emu_none = ttk.Label(r_emu_frame, text="none in this archive", style="Muted.TLabel")
+    r_emu_none.pack(side="left", padx=6)
+
+    opt = ttk.Frame(rt); opt.pack(fill="x")
+    force_var = tk.BooleanVar(value=False); open_var = tk.BooleanVar(value=False)
+    ttk.Checkbutton(opt, text="Replace settings that are newer on disk (--force)", variable=force_var).pack(side="left")
+    ttk.Checkbutton(opt, text="Print installer commands instead of running them (--open)", variable=open_var).pack(side="left", padx=12)
+    advice = ttk.Label(rt, text="", style="Dim.TLabel", wraplength=WIN_W - 60, justify="left")
+    advice.pack(fill="x", pady=(2, 2))
+    r_cmd = tk.StringVar(value="")
+    ttk.Label(rt, textvariable=r_cmd, style="Yellow.TLabel", wraplength=WIN_W - 60,
+              justify="left").pack(fill="x")
+
+    bb = ttk.Frame(rt); bb.pack(side="bottom", fill="x", pady=(4, 2), before=af)  # see bt_actions
+    # The dry run opens in its own window: on a 1080 desktop the tab has no height
+    # left for it under the banner and the twelve category rows. One window, reused
+    # by each Preview; not modal, so the Restore tab stays usable beside it.
+    pv = {"win": None, "text": None}
+
+    def preview_window():
+        if pv["win"] is not None and pv["win"].winfo_exists():
+            pv["win"].deiconify(); pv["win"].lift()
+            return pv["text"]
+        win = tk.Toplevel(root, bg=BG)
+        win.withdraw()
+        win.title("Restore dry run")
+        win.transient(root)
+        bar = tk.Frame(win, bg=PANEL, height=30); bar.pack(fill="x")
+        tk.Label(bar, text="Restore dry run", bg=PANEL, fg=CYAN,
+                 font=MONO_B).pack(side="left", padx=12, pady=5)
+        tk.Label(bar, text="changes nothing", bg=PANEL, fg=DIM,
+                 font=MONO_S).pack(side="right", padx=12)
+        foot_ = ttk.Frame(win, padding=(12, 6)); foot_.pack(side="bottom", fill="x")
+        ttk.Label(foot_, text="'q' or Esc to close", style="Muted.TLabel").pack(side="left")
+        ttk.Button(foot_, text="[ Close ]", command=win.destroy).pack(side="right")
+        body = ttk.Frame(win, padding=(12, 8, 12, 0)); body.pack(fill="both", expand=True)
+        text = tk.Text(body, font=MONO_S, bg=FIELD, fg=FG, insertbackground=FG,
+                       relief="flat", highlightthickness=0, wrap="none")
+        sb_y = ttk.Scrollbar(body, orient="vertical", command=text.yview)
+        sb_x = ttk.Scrollbar(body, orient="horizontal", command=text.xview)
+        text.configure(yscrollcommand=sb_y.set, xscrollcommand=sb_x.set, state="disabled")
+        sb_y.pack(side="right", fill="y"); sb_x.pack(side="bottom", fill="x")
+        text.pack(side="left", fill="both", expand=True)
+        for k in ("<Key-q>", "<Key-Q>", "<Escape>"):
+            win.bind(k, lambda e: win.destroy())
+        root.update_idletasks()
+        w = min(max(760, root.winfo_width() - 80), SCR_W - 40)
+        h = min(max(420, root.winfo_height() - 160), SCR_H - 100)
+        x = root.winfo_rootx() + (root.winfo_width() - w) // 2
+        y = root.winfo_rooty() + (root.winfo_height() - h) // 3
+        win.geometry(f"{w}x{h}+{max(x, 0)}+{max(y, 0)}")
+        win.deiconify()
+        win.focus_set()
+        pv["win"], pv["text"] = win, text
+        return text
+
+    def set_preview(text):
+        tx = preview_window()
+        tx.configure(state="normal")
+        tx.delete("1.0", "end")
+        tx.insert("end", text)
+        tx.configure(state="disabled")
+
+    def r_selected(): return [k for k in CAT_KEYS if r_vars[k].get()]
+
+    def r_emus():
+        all_emus = r_plan.get("emulators", [])
+        chosen = [e for e in all_emus if r_emu_vars.get(e) and r_emu_vars[e].get()]
+        return None if chosen == all_emus else chosen
+
+    def r_update(*_):
+        a = current_archive[0]
+        if a:
+            r_cmd.set("Command: " + sh(restore_argv(a, r_selected(), r_emus(), force_var.get(), open_var.get())))
+        else:
+            r_cmd.set("")
+        if "configs" in r_selected() and not force_var.get():
+            advice.config(text="Tick Replace settings that are newer on disk to restore your archived "
+                               "desktop settings.", style="Yellow.TLabel")
+        elif force_var.get() and "configs" in r_selected():
+            advice.config(text="Your archived desktop settings will replace the current ones. The desktop "
+                               "session closes while they are written and starts again afterwards, so save "
+                               f"open work first. Output goes to {FORCE_LOG}.", style="Dim.TLabel")
+        else:
+            advice.config(text="", style="Dim.TLabel")
+
+    # Resolving what was typed touches the disk, so it is debounced rather than
+    # run on every keystroke.
+    current_archive = [None]
+    pending = {"job": None}
+
+    def arch_changed(*_):
+        if pending["job"]:
+            root.after_cancel(pending["job"])
+        pending["job"] = root.after(350, resolve_typed)
+
+    def resolve_typed():
+        pending["job"] = None
+        text = arch_var.get().strip()
+        archive, candidates, msg = resolve_archive(text)
+        if candidates and len(candidates) > 1:
+            arch_box["values"] = candidates
+        arch_note.config(text=msg, style="Green.TLabel" if archive else
+                         ("Dim.TLabel" if not text else "Red.TLabel"))
+        if archive and archive != current_archive[0]:
+            current_archive[0] = archive
+            load_plan()
+        elif not archive:
+            current_archive[0] = None
+            clear_plan()
+            r_update()
+
+    def clear_plan():
+        r_plan.clear()
+        for key, (cb, info) in r_rows.items():
+            info.config(text="load an archive first", style="Muted.TLabel")
+            cb.state(["disabled"]); r_vars[key].set(False)
+        summary.set("")
+
+    def load_plan():
+        a = current_archive[0]
+        if not a: return
+        try:
+            big = f" ({human(os.path.getsize(a))}, this takes a moment)"
+        except OSError:
+            big = ""
+        say(f"Reading {os.path.basename(a)}{big} ...")
+        in_background(lambda: read_json([RESTORE_TOOL, a, "--plan-json"], "archive read"), "plan")
+
+    def plan_done(ok_, payload):
+        if not ok_:
+            say("Could not read that archive.")
+            clear_plan()
+            note("Restore", str(payload), kind="error")
+            return
+        p = payload or {}
+        r_plan.clear(); r_plan.update(p)
+        cats = p.get("categories", {})
+        held = 0
+        for key, (cb, info) in r_rows.items():
+            c = cats.get(key, {})
+            present = c.get("present", False)
+            txt = c.get("detail") or ""
+            if c.get("files"): txt += f"  {c['files']} file(s), {human(c.get('bytes', 0))}"
+            info.config(text=txt if present else "not in this archive",
+                        style="TLabel" if present else "Muted.TLabel")
+            cb.state(["!disabled"] if present else ["disabled"])
+            r_vars[key].set(bool(present))
+            held += 1 if present else 0
+        names = p.get("emulators", [])
+        for name in names:
+            if name not in r_emu_vars:
+                v = tk.BooleanVar(value=True)
+                r_emu_vars[name] = v
+                r_emu_widgets[name] = ttk.Checkbutton(r_emu_frame, text=name, variable=v, command=r_update)
+            r_emu_widgets[name].pack(side="left", padx=6)
+            r_emu_vars[name].set(True)
+        for name, cbx in r_emu_widgets.items():
+            if name not in names: cbx.pack_forget()
+        if names: r_emu_none.pack_forget()
+        else: r_emu_none.pack(side="left", padx=6)
+        a = current_archive[0]
+        try:
+            size = human(os.path.getsize(a))
+        except OSError:
+            size = "?"
+        summary.set(f"written {(p.get('created') or '?')[:16].replace('T', ' ')}   ·   {size}"
+                    f"   ·   desktop {p.get('desktop') or 'none'}"
+                    f"   ·   holds {held} of {len(CAT_KEYS)} categories")
+        r_update()
+        say(f"Archive read: {os.path.basename(a)}")
+    handlers["plan"] = plan_done
+
+    for v in list(r_vars.values()) + [force_var, open_var]: v.trace_add("write", r_update)
+    arch_var.trace_add("write", arch_changed)
+
+    def refill_archives():
+        say("Looking for archives...")
+        in_background(find_archives, "archives")
+
+    def archives_done(ok_, payload):
+        found = payload if ok_ else []
+        arch_box["values"] = found
+        if ok_:
+            say(f"{len(found)} archive(s) found on mounted media and in home folders."
+                if found else "No archive found. Type a path, or plug the stick in and rescan.")
+            if found and not arch_var.get():
+                arch_var.set(found[0])
+        else:
+            say("Could not search for archives.")
+    handlers["archives"] = archives_done
+
+    def preview_done(ok_, payload):
+        set_preview(payload if ok_ else f"dry run failed: {payload}")
+        say("Dry run done; nothing was changed." if ok_ else "Dry run failed.")
+
+    handlers["preview"] = preview_done
+
+    def do_preview():
+        a = current_archive[0]
+        if not a:
+            note("Restore", "Pick an archive first, or type the path to one.", kind="warn"); return
+        say("Running the dry run...")
+        set_preview("working...\n")
+        argv = restore_argv(a, r_selected(), r_emus(), dry=True)
+
+        def work():
+            r = subprocess.run(argv, capture_output=True, text=True, timeout=600)
+            return r.stdout + ("\n" + r.stderr if r.stderr.strip() else "")
+        in_background(work, "preview")
+
+    def do_restore():
+        a = current_archive[0]
+        if not a:
+            note("Restore", "Pick an archive first, or type the path to one.", kind="warn"); return
+        sel = r_selected()
+        if not sel:
+            note("Restore", "Nothing is selected, so there is nothing to restore.", kind="warn"); return
+        argv = restore_argv(a, sel, r_emus(), force_var.get(), open_var.get())
+        try:
+            if force_var.get() and "configs" in sel and graphical_session_active():
+                if not confirm("Restore",
+                               "The desktop session will stop while the settings are written and start "
+                               f"again afterwards.\n\nOutput goes to {FORCE_LOG}.",
+                               go_text="[ Restore ]"):
+                    return
+                run_in_terminal("H96 restore", force_session_script(argv))
+            else:
+                run_in_terminal("H96 restore", sh(argv))
+            say("Restore running in a terminal window.")
+        except RuntimeError as e:
+            note("Restore", str(e), kind="error")
+    ttk.Button(bb, text="[ Preview (dry run) ]", command=do_preview).pack(side="left")
+    ttk.Button(bb, text="[ Restore now ]", style="Go.TButton", command=do_restore).pack(side="right")
+
+    # ------------------------------------------------------------ startup ---
+    b_update()
+    r_update()
+    root.after(80, pump)
+    root.after(0, load_probe)
+    root.after(0, refill_archives)
+    if "--restore" in sys.argv[1:]:
+        nb.select(rt)
+
+    # Wrapped notes start at WIN_W - 60 and then follow the width they are given,
+    # so a maximized window spends its width on them instead of extra lines.
+    def _follow_width(w):
+        for c in w.winfo_children():
+            if c.winfo_class() == "TLabel" and str(c.cget("wraplength")) == str(WIN_W - 60):
+                c.bind("<Configure>", lambda e: e.widget.configure(
+                    wraplength=max(300, e.width - 8)), add="+")
+            _follow_width(c)
+    _follow_width(root)
+
+    # everything is laid out: place it, and only now put it on screen
+    root.update_idletasks()
+    w = min(max(WIN_W, root.winfo_reqwidth()), SCR_W - 20)
+    h = min(max(WIN_H, root.winfo_reqheight()), SCR_H - 60)
+    root.geometry(f"{w}x{h}+{max((SCR_W - w) // 2, 0)}+{max((SCR_H - h) // 4, 0)}")
+    root.deiconify()
+    # Below 1200 px the tabs, once the background scan fills them, want more height
+    # than an unmaximized window gets under the title bar and taskbar; maximized, the
+    # window manager gives the whole work area and every row fits. The size above is
+    # still what un-maximizing returns to.
+    # Sent once the window is mapped: a request made before that is dropped by KWin.
+    def _zoom():
+        try:
+            root.wm_attributes("-zoomed", True)
+        except tk.TclError:
+            pass
+    if SCR_H < 1200:
+        root.after(150, _zoom)
+    def _quit_key(e):
+        w = root.focus_get()
+        if w is not None and w.winfo_class() in ("Entry", "TEntry", "Text", "TCombobox"):
+            return
+        root.destroy()
+    root.bind("<Key-q>", _quit_key)
+    root.bind("<Key-Q>", _quit_key)
+    root.mainloop()
+
+def main():
+    args = sys.argv[1:]
+    if any(a in ("-v", "--version") for a in args):
+        print(f"h96-backup-gui v{TOOL_VERSION}"); return
+    if any(a in ("-h", "--help") for a in args):
+        print(f"h96-backup-gui v{TOOL_VERSION} - graphical front end for h96-backup and h96-restore.\n\n"
+              "  h96-backup-gui                    open the window\n"
+              "  h96-backup-gui --restore          open on the Restore tab with the newest archive loaded\n"
+              "  h96-backup-gui --install-desktop  write the application menu entry\n"
+              "  h96-backup-gui --selftest         print the command lines it would build\n\n"
+              "Pick categories with checkboxes; the matching h96-backup or h96-restore\n"
+              "command runs in a terminal window so its prompts stay visible. The Archive\n"
+              "and Save-to fields take a typed path as well as a pick from the list: give\n"
+              "a folder and it is searched for archives. Needs python3-tk; the first\n"
+              "launch installs it through a terminal.")
+        return
+    if "--install-desktop" in args:
+        install_desktop(); return
+    if "--selftest" in args:
+        selftest(); return
+    if not ensure_tk():
+        sys.exit(1)
+    user_desktop = os.path.expanduser("~/.local/share/applications/h96-backup-gui.desktop")
+    if not os.path.exists(DESKTOP_FILE) and not os.path.exists(user_desktop) and os.geteuid() != 0:
+        try: install_desktop()
+        except OSError: pass
+    gui()
+
+if __name__ == "__main__":
+    main()

@@ -1,50 +1,21 @@
 #!/usr/bin/env python3
-# =============================================================================
-# h96-emulators - opt-in game-emulator suite installer for the H96 Max V58
-#                 (RK3588 / Mali-G610, all-open Panthor/PanVK stack).
-#
-# Installs nothing by default. Emulators are pulled on demand so non-gamers carry
-# no weight and no game code is ever bundled. Bring your own game dumps/BIOS.
-#
-#   h96-emulators                       interactive multi-select menu
-#   h96-emulators list                  catalog + install state + GPU backend
-#   h96-emulators install <names...|all>
-#   h96-emulators remove  <names...|all>
-#   h96-emulators bootstrap             install flatpak + Flathub (fresh flashes)
-#   h96-emulators gpu                   report GPU wiring (PanVK/Panfrost vs software)
-#
-# The suite (GPU-accelerated systems only - each offloads real 3D rendering to the
-# Mali-G610 through PanVK / Panfrost; verified on the box, see `h96-emulators gpu`):
-#   retroarch  Multi-system, Vulkan/glcore cores (PS1/N64/PSP/Saturn) - Flatpak
-#   dolphin    GameCube / Wii            (Vulkan PanVK)                - Flatpak
-#   ppsspp     Sony PSP                  (Vulkan PanVK)                - Flatpak
-#   flycast    Sega Dreamcast / NAOMI    (Vulkan / GL)                 - Flatpak
-#   melonds    Nintendo DS               (OpenGL 3D renderer)         - Flatpak
-#   rmg        Nintendo 64 (Parallel-RDP Vulkan)                       - Flatpak
-#   azahar     Nintendo 3DS              (Vulkan PanVK)                - Flatpak
-#   cemu       Nintendo Wii U            (Vulkan PanVK, box64, no wine)- box64
-#
-# CPU-RENDERED SYSTEMS ARE NOT INCLUDED HERE, ON PURPOSE. mGBA (Game Boy Advance) and
-# ScummVM (point-and-click adventures) are 2D: they do not meaningfully use the Mali GPU,
-# so there is nothing for this tool's GPU wiring to do for them. They are NOT missing from
-# the box - both are already one click away in the software store (Discover), as aarch64
-# Flatpaks on Flathub (io.mgba.mGBA, org.scummvm.ScummVM) and as apt packages (mgba-qt,
-# scummvm). Install them there; they run fine on the CPU.
-#
-# The seven Flatpaks are native ARM64 and render on the GPU through PanVK/Panfrost.
-# Cemu has no ARM build, so it runs the x86-64 build under box64 (Vulkan -> PanVK).
-# `install` runs a GPU wiring + verification pass so each emulator actually uses the
-# Mali GPU (not the llvmpipe software fallback); see gpu_wire()/gpu_probe().
-#
-# GPU: pick the recommended backend (shown by `list`) inside each emulator. On this
-# open Panfrost/PanVK stack, Vulkan (PanVK) is preferred where supported; a few use
-# OpenGL ES (Panfrost). Flatpak GPU acceleration relies on the runtime's Mesa having
-# Panfrost/PanVK - verify per emulator that it is NOT falling back to software.
-#
-# FRESH FLASHES have no flatpak. Running an install auto-bootstraps it (apt install
-# flatpak + Flathub remote) after a warning; or run `h96-emulators bootstrap` first.
-# Auto-elevates via sudo. Cemu files land under the invoking desktop user's home.
-# =============================================================================
+# h96-emulators: opt-in installer for GPU-accelerated console emulators (RK3588 Mali-G610, Panfrost/PanVK). Nothing bundled; fetched on demand, BYO game dumps/BIOS.
+# 2D systems (mGBA, ScummVM) are excluded on purpose: they gain nothing from the GPU and are already available via Discover/apt.
+# Auto-elevates via sudo; Cemu files land under the invoking desktop user's home.
+"""h96-emulators: opt-in GPU-accelerated emulator suite (Flatpak + box64 Cemu).
+
+usage:
+  h96-emulators                        interactive multi-select menu
+  h96-emulators list                   catalog, install state, GPU backend
+  h96-emulators install <names...|all> install emulators (fetched on demand)
+  h96-emulators remove  <names...|all> remove emulators
+  h96-emulators bootstrap              install flatpak + Flathub remote
+  h96-emulators gpu                    report GPU wiring (PanVK/Panfrost or software)
+  h96-emulators -h | --help            show this help
+
+names: retroarch dolphin ppsspp flycast melonds rmg azahar cemu
+Install, remove, bootstrap and gpu elevate via sudo. No game files are bundled.
+"""
 import os, sys, shutil, subprocess, tempfile, json, urllib.request, pwd
 
 BANNER_LIB    = "/usr/local/lib/h96/banner.sh"
@@ -74,10 +45,7 @@ def die(m): print(c("ERROR: " + m, "91"), file=sys.stderr); sys.exit(1)
 
 CYAN, MAGENTA, DIM = "96", "95", "2"   # Scrumpper's suite palette
 
-# Shared block-letter wordmark, matching /usr/local/lib/h96/banner.sh and every
-# other h96- tool. Embedded (not only sourced) so this suite installer always
-# shows the Scrumpper's theme, on-box or off. TTY-gated + NO_COLOR honoured, so
-# it prints nothing from a pipe or a systemd unit.
+# block-letter wordmark, embedded (not sourced) so this installer always shows the theme; TTY-gated + NO_COLOR honoured
 _ART = r"""
    ██╗  ██╗ █████╗  ██████╗    ██╗   ██╗███████╗ █████╗
    ██║  ██║██╔══██╗██╔════╝    ██║   ██║██╔════╝██╔══██╗
@@ -207,10 +175,7 @@ def install_flatpak(name, user, interactive=True):
 
 
 # --------------------------------------------------------- GPU wiring --------
-# "Connect the GPU back in": these images ship the OPEN Panfrost/PanVK Mesa stack,
-# but a stray libmali blob or a software-only Flatpak GL extension can leave an
-# emulator on the llvmpipe software renderer. Verified on the box: PPSSPP/Dolphin
-# enumerate 'Mali-G610 MC4' via PanVK when wired correctly.
+# a stray libmali blob or software-only Flatpak GL extension can leave an emulator on llvmpipe instead of the Mali GPU
 PANVK_ICD_SANDBOX = "/usr/share/vulkan/icd.d/panfrost_icd.aarch64.json"
 
 def _user_env(user):
@@ -292,8 +257,7 @@ def gpu_wire(user, app_id):
     subprocess.run(["flatpak", "override", "--system", app_id,
                     "--device=dri", "--socket=wayland"], check=False,
                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    # 2. ensure a HARDWARE GL/Vulkan driver extension is present. A fresh flash can
-    #    otherwise land only the software lvp fallback and every 3D emulator crawls.
+    # 2. ensure a hardware GL/Vulkan driver extension is present (else software lvp fallback)
     subprocess.run(["flatpak", "install", "-y", "--system", "--noninteractive",
                     "flathub", "org.freedesktop.Platform.GL.default"],
                    check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -313,8 +277,7 @@ def gpu_status(user):
     any_app = False
     for name, (desc, kind, app_id, _) in CATALOG.items():
         if kind != "flatpak":
-            # cemu runs under box64, not flatpak. It was silently skipped here, which
-            # hid the one entry most likely to have GPU trouble. Report it explicitly.
+            # cemu runs under box64, not flatpak; report its state explicitly
             state = "installed" if os.path.isdir(cemu_home(user)) else "not installed"
             print(f"    {name:10} box64 build, {state}. Its GPU path is only exercised once a")
             print(f"    {'':10} title is loaded; launch it and watch the GPU load to confirm.")
@@ -478,6 +441,8 @@ def menu(user):
 
 def main():
     args = sys.argv[1:]
+    if args and args[0] in ("-h", "--help", "help"):
+        print(__doc__.rstrip()); return
     if not (args and args[0] in ("list", "-h", "--help", "help")):
         elevate()
     user = desktop_user()
@@ -503,8 +468,6 @@ def main():
         names = resolve_names(args[1:]) if len(args) > 1 else []
         if not names: die("usage: h96-emulators remove <names...|all>")
         do_remove(names, user)
-    elif cmd in ("-h", "--help", "help"):
-        print(__doc__)
     else:
         die(f"unknown command '{cmd}' (list | install | remove | bootstrap | gpu)")
 

@@ -2,16 +2,27 @@
 # h96-cec -- HDMI-CEC control for the H96 Max V58 (RK3588 / dw-hdmi-qp)
 #
 # Subcommands:
-#   status      Show CEC device, adapter info, addresses, and daemon state.
-#   on          Wake the TV and make this box the active source.
-#   off         Put the TV into standby.
-#   monitor     Live CEC bus traffic (Ctrl-C to stop).
-#   keys        Follow the CEC->uinput daemon log (what the remote is sending).
-#   test        Ask the TV who it is (probe the bus).
-#   restart     Restart the h96-cec.service daemon.
+#   status            Show CEC device, adapter info, addresses, and daemon state.
+#   on                Wake the TV and make this box the active source.
+#   off               Put the TV into standby.
+#   monitor           Live CEC bus traffic (Ctrl-C to stop).
+#   keys              Follow the CEC->uinput daemon log (what the remote is sending).
+#   test              Ask the TV who it is (probe the bus).
+#   restart           Restart the h96-cec.service daemon.
+#   phys-addr [ADDR]  Set the kernel's CEC physical address: an explicit a.b.c.d, or
+#                     auto (default): HDMI detect cache, else sink EDID over DDC.
+#   wake on|off|status              TV on + active source when display wakes (default on).
+#   standby-on-blank on|off|status  TV standby when display goes off (default off).
 #
 # Device-agnostic: uses the kernel CEC API via /dev/cec0. Prefers cec-ctl
 # (v4l-utils); uses cec-client (libcec) for on/off when present.
+#
+# Physical address: HDMI detect (h96-display detect) writes the sink's address to
+# dw_hdmi_qp's cec_phys_addr and caches it in /etc/h96/hdmi-sink.json. phys-addr auto
+# takes that cache when it matches the kernel's current EDID, else reads the sink EDID
+# over DDC under detect's lock (one DDC reader at a time). Only when the parameter or
+# the adapter's address differs (or adapter is f.f.f.f) does it write the parameter and
+# redetect the connector: a redetect is a hotplug that can re-drive the display mode.
 
 set -u
 
@@ -21,14 +32,30 @@ command -v h96_banner >/dev/null 2>&1 || h96_banner() { :; }
 CEC_DEV="${H96_CEC_DEV:-/dev/cec0}"
 OSD="${H96_CEC_OSD:-H96}"
 SERVICE="h96-cec.service"
+EDID_LIB="${H96_EDID_LIB:-/usr/local/lib/h96/edid_audio.py}"
+CEC_PHYS_PARAM="${H96_CEC_PHYS_PARAM:-/sys/module/dw_hdmi_qp/parameters/cec_phys_addr}"
+DRM_STATUS="${H96_DRM_STATUS:-/sys/class/drm/card0-HDMI-A-1/status}"
+DRM_EDID="${H96_DRM_EDID:-/sys/class/drm/card0-HDMI-A-1/edid}"
+SINK_JSON="${H96_SINK_JSON:-/etc/h96/hdmi-sink.json}"   # HDMI detect cache (phys_addr)
+DETECT_LOCK="${H96_DETECT_LOCK:-/run/h96-audio-detect.lock}"
+WAKE_OFF_FLAG="${H96_CEC_WAKE_OFF:-/etc/h96/cec-wake.off}"            # present = wake off
+BLANK_FLAG="${H96_CEC_BLANK_FLAG:-/etc/h96/cec-standby-on-blank}"     # present = standby on blank
 
 err() { printf '%s\n' "$*" >&2; }
+
+need_root() {
+  if [ "$(id -u)" -ne 0 ]; then
+    err "This action writes system state; re-run as root (sudo $0 $*)."
+    return 1
+  fi
+  return 0
+}
 
 need_dev() {
   if [ ! -e "$CEC_DEV" ]; then
     err "No CEC device at $CEC_DEV."
     err "This kernel/device-tree may not expose HDMI-CEC on the HDMI-TX port."
-    err "Check:  cec-ctl -D 2>/dev/null ;  dmesg | grep -i cec"
+    err "Check:  cec-ctl -d /dev/cec0 2>/dev/null ;  dmesg | grep -i cec"
     return 1
   fi
   return 0
@@ -37,7 +64,7 @@ need_dev() {
 have() { command -v "$1" >/dev/null 2>&1; }
 
 pick_backend() {
-  # Echo the tool we will use for bus operations; empty if none.
+  # echo backend tool to use, empty if none
   if have cec-ctl; then echo cec-ctl
   elif have cec-client; then echo cec-client
   else echo ""; fi
@@ -54,19 +81,57 @@ cmd_status() {
   echo "backends: cec-ctl=$(have cec-ctl && echo yes || echo no)  cec-client=$(have cec-client && echo yes || echo no)"
   echo
   if [ -e "$CEC_DEV" ] && have cec-ctl; then
-    echo "-- adapter (cec-ctl -D) --"
-    cec-ctl -d "$CEC_DEV" -D 2>/dev/null | sed 's/^/  /'
+    echo "-- adapter (cec-ctl) --"
+    cec-ctl -d "$CEC_DEV" 2>/dev/null | sed 's/^/  /'
     echo
   fi
+  echo "physical address: kernel=$(cec_phys)  sink EDID (DDC)=$(edid_phys_addr || echo 'unreadable')"
+  echo
   if have systemctl; then
     echo "-- daemon --"
     systemctl is-enabled "$SERVICE" 2>/dev/null | sed 's/^/  enabled: /'
     systemctl is-active  "$SERVICE" 2>/dev/null | sed 's/^/  active:  /'
   fi
+  echo
+  echo "display wake:     $(flag_state wake)"
+  echo "standby on blank: $(flag_state blank)"
+}
+
+# on/off for a display-link flag; wake is on unless its .off flag exists
+flag_state() {
+  case "$1" in
+    wake)  [ -e "$WAKE_OFF_FLAG" ] && echo off || echo on ;;
+    blank) [ -e "$BLANK_FLAG" ] && echo on || echo off ;;
+  esac
+}
+
+# wake|blank on|off|status; flags read by h96-cecd per request, no restart needed
+cmd_flag() {
+  local what="$1" act="${2:-status}" file on_means cli="${1/blank/standby-on-blank}"
+  case "$what" in
+    wake)  file="$WAKE_OFF_FLAG"; on_means=absent ;;
+    blank) file="$BLANK_FLAG";    on_means=present ;;
+  esac
+  case "$act" in
+    status) ;;
+    on|off)
+      need_root "$cli $act" || return 1
+      if { [ "$act" = on ] && [ "$on_means" = present ]; } || { [ "$act" = off ] && [ "$on_means" = absent ]; }; then
+        mkdir -p "${file%/*}" && : > "$file" || { err "Cannot write $file."; return 1; }
+      else
+        rm -f "$file" || { err "Cannot remove $file."; return 1; }
+      fi ;;
+    *) err "usage: h96-cec $cli on|off|status"; return 2 ;;
+  esac
+  echo "$([ "$what" = wake ] && echo "display wake" || echo "standby on blank"): $(flag_state "$what")"
+  if [ "$(flag_state "$what")" = on ] && have systemctl && ! systemctl is-active --quiet "$SERVICE" 2>/dev/null; then
+    echo "note: $SERVICE not running; enable CEC first (systemctl enable --now $SERVICE)."
+  fi
 }
 
 cmd_on() {
   need_dev || return 1
+  apply_phys_addr_auto
   echo "Waking TV and claiming active source..."
   if have cec-client; then
     { echo "on 0"; sleep 1; echo "as"; sleep 1; } | cec-client -t p -o "$OSD" -s -d 1 "$CEC_DEV" >/dev/null 2>&1
@@ -93,11 +158,95 @@ cmd_off() {
   echo "done."
 }
 
+# adapter's current physical address from cec-ctl; empty when unreadable
+cec_adapter_pa() {
+  have cec-ctl || return 0
+  cec-ctl -d "$CEC_DEV" 2>/dev/null | grep -oiE 'Physical Address *: *[0-9a-f.]+' | grep -oE '[0-9a-f.]+$' | head -n1
+}
+
+# best-effort physical address, default 1.0.0.0
 cec_phys() {
-  # Best-effort physical address from cec-ctl; default 1.0.0.0.
   local p
-  p="$(cec-ctl -d "$CEC_DEV" -D 2>/dev/null | grep -oiE 'Physical Address *: *[0-9a-f.]+' | grep -oE '[0-9a-f.]+$' | head -n1)"
+  p="$(cec_adapter_pa)"
   [ -n "$p" ] && echo "$p" || echo "1.0.0.0"
+}
+
+# sink physical address: HDMI detect cache when it matches kernel's current EDID, else
+# DDC read (edid_audio.py) under detect's lock (one DDC reader), 3 tries 1 s apart
+edid_phys_addr() {
+  have python3 && [ -r "$EDID_LIB" ] || return 1
+  local pa="" i
+  if [ -r "$SINK_JSON" ] && [ -r "$DRM_EDID" ]; then
+    pa="$(python3 -c '
+import hashlib, json, sys
+o = json.load(open(sys.argv[1]))
+k = hashlib.md5(open(sys.argv[2], "rb").read()).hexdigest()
+if o.get("phys_addr") and o.get("kernel_edid_md5") == k:
+    print(o["phys_addr"])' "$SINK_JSON" "$DRM_EDID" 2>/dev/null)"
+    [ -n "$pa" ] && { echo "$pa"; return 0; }
+  fi
+  (
+    flock -w 60 9 2>/dev/null || exit 1   # lock still held: fail, never read DDC unprotected
+    for i in 1 2 3; do
+      python3 "$EDID_LIB" phys-addr 2>/dev/null && exit 0
+      [ "$i" -lt 3 ] && sleep 1
+    done
+    exit 1
+  ) 9>>"$DETECT_LOCK"
+}
+
+# a.b.c.d (one hex nibble per field) -> 0xABCD; empty on a malformed address
+phys_addr_to_hex() {
+  local a b c d
+  IFS=. read -r a b c d <<<"$1" || return 1
+  case "$a$b$c$d" in *[!0-9a-fA-F]*|"") return 1 ;; esac
+  printf '0x%01x%01x%01x%01x\n' "0x$a" "0x$b" "0x$c" "0x$d" 2>/dev/null
+}
+
+# set the kernel's CEC physical address (ADDR = a.b.c.d, or auto = read sink EDID);
+# redetect the connector only when parameter or adapter address differs (no modeset otherwise)
+cmd_phys_addr() {
+  local want="${1:-auto}" addr hex cur ada
+  if [ "$want" = auto ]; then
+    addr="$(edid_phys_addr)"
+    if [ -z "$addr" ]; then
+      err "Could not read a physical address from sink EDID (DDC); kernel value left as is."
+      return 1
+    fi
+  else
+    addr="$want"
+  fi
+  hex="$(phys_addr_to_hex "$addr")"
+  if [ -z "$hex" ]; then
+    err "Bad physical address '$addr' (expected a.b.c.d, each 0-f)."
+    return 1
+  fi
+  need_root "phys-addr $*" || return 1
+  if [ ! -e "$CEC_PHYS_PARAM" ]; then
+    err "No $CEC_PHYS_PARAM (dw_hdmi_qp not loaded, or no cec_phys_addr parameter on this kernel)."
+    return 1
+  fi
+  cur="$(cat "$CEC_PHYS_PARAM" 2>/dev/null)"
+  cur="$(printf '0x%04x' "${cur:-0}" 2>/dev/null)"
+  ada="$(phys_addr_to_hex "$(cec_adapter_pa)")"
+  if [ "$cur" = "$hex" ] && [ "$ada" = "$hex" ]; then
+    echo "physical address: $addr ($hex) current; no redetect."
+    return 0
+  fi
+  if [ "$cur" != "$hex" ]; then
+    echo "$hex" > "$CEC_PHYS_PARAM" 2>/dev/null || { err "Write to $CEC_PHYS_PARAM failed."; return 1; }
+  fi
+  [ -e "$DRM_STATUS" ] && echo detect > "$DRM_STATUS" 2>/dev/null
+  echo "physical address: $addr ($hex) $([ "$cur" != "$hex" ] && echo "written to $CEC_PHYS_PARAM" || echo "unchanged, adapter had ${ada:-none}"); connector redetect triggered."
+}
+
+# best-effort inside on()/service start: never blocks the wake sequence
+apply_phys_addr_auto() {
+  if [ "$(id -u)" -ne 0 ]; then
+    err "note: not root, skipping physical-address sync (run 'h96-cec phys-addr auto' as root)."
+    return 0
+  fi
+  cmd_phys_addr auto || err "note: physical-address sync from sink EDID failed; kernel value unchanged."
 }
 
 cmd_monitor() {
@@ -142,17 +291,41 @@ cmd_restart() {
 }
 
 usage() {
-  sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//'
+cat <<'HLP'
+h96-cec status|on|off|monitor|keys|test|restart|phys-addr [ADDR]|wake|standby-on-blank|--help
+
+status      CEC device, adapter info, both physical addresses, daemon state
+on          wake the TV and make this box the active source
+off         put the TV into standby
+monitor     live CEC bus traffic (Ctrl-C to stop)
+keys        follow the CEC->uinput daemon log (what the remote is sending)
+test        ask the TV who it is (probe the bus)
+restart     restart the h96-cec.service daemon
+phys-addr   set the kernel CEC physical address: ADDR = a.b.c.d, or auto
+            (default): HDMI detect cache, else sink EDID over DDC
+wake on|off|status
+            TV on + active source when display wakes from DPMS off (key or
+            mouse), or on input after 10 min idle; at most once per 10 s.
+            Default on; works while h96-cec.service runs
+standby-on-blank on|off|status
+            TV standby when display goes DPMS off. Default off
+
+Device-agnostic: uses the kernel CEC API via /dev/cec0. Prefers cec-ctl
+(v4l-utils); uses cec-client (libcec) for on/off when present.
+HLP
 }
 
 case "${1:-status}" in
-  status)  cmd_status ;;
-  on)      cmd_on ;;
-  off)     cmd_off ;;
-  monitor) cmd_monitor ;;
-  keys)    cmd_keys ;;
-  test)    cmd_test ;;
-  restart) cmd_restart ;;
+  status)    cmd_status ;;
+  on)        cmd_on ;;
+  off)       cmd_off ;;
+  monitor)   cmd_monitor ;;
+  keys)      cmd_keys ;;
+  test)      cmd_test ;;
+  restart)   cmd_restart ;;
+  phys-addr) cmd_phys_addr "${2:-auto}" ;;
+  wake)      cmd_flag wake "${2:-status}" ;;
+  standby-on-blank) cmd_flag blank "${2:-status}" ;;
   -h|--help|help) usage ;;
   *) err "unknown command: $1"; usage; exit 2 ;;
 esac

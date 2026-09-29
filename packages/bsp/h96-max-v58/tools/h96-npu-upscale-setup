@@ -118,7 +118,7 @@ def looks_like_rknn(path):
     try:
         with open(path, "rb") as fh:
             head = fh.read(8)
-        # RKNN container magic begins with "RKNN" on current toolkit exports.
+        # RKNN container magic begins with "RKNN" on current toolkit exports
         return head[:4] == b"RKNN" or len(head) == 8
     except Exception:
         return False
@@ -196,10 +196,10 @@ def cmd_install():
         print("  Try:  h96-npu-upscale in.png out.png")
         return
 
-    # Temp dir on the SAME filesystem as MODELS: /tmp is tmpfs here, so a
-    # mkdtemp() default landed the download on tmpfs and os.replace() into
+    # temp dir on the same filesystem as MODELS: /tmp is tmpfs here, and a
+    # mkdtemp() default landed the download there, so os.replace() into
     # /var/lib failed with EXDEV (Invalid cross-device link). Staging under
-    # MODELS keeps the final rename on one filesystem.
+    # MODELS keeps the rename on one filesystem.
     tmp = tempfile.mkdtemp(prefix="h96-upscale-setup-", dir=MODELS)
     try:
         got = os.path.join(tmp, MODEL_NAME)

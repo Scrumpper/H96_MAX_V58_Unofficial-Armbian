@@ -1,0 +1,532 @@
+#!/usr/bin/env bash
+# h96-vm: opt-in KVM virtual machines on the H96 Max V58 (install/create/start/stop/list/ssh/delete/status/remove).
+# EL2+VHE kernel gives real KVM acceleration; qemu-system-aarch64 -M virt -accel kvm -cpu host, UEFI boot, cloud-init seed.
+# State: /var/lib/h96-vm/<name>/ (overlay disk, seed, console log, QMP socket, meta). Config: /etc/h96/vm.conf.
+
+set -uo pipefail
+
+[ -r /usr/local/lib/h96/banner.sh ] && . /usr/local/lib/h96/banner.sh
+command -v h96_banner >/dev/null 2>&1 || h96_banner() { :; }
+
+# --- constants / config -----------------------------------------------------
+VAR_ROOT="/var/lib/h96-vm"
+IMAGES_DIR="$VAR_ROOT/images"
+CONF="/etc/h96/vm.conf"
+
+DEFAULT_MEM=2048
+DEFAULT_CPUS=2
+DEFAULT_DISK=16
+PORT_LO=2200
+PORT_HI=2299
+
+PKGS=(qemu-system-arm qemu-efi-aarch64 cloud-image-utils)
+
+UBUNTU_URL="https://cloud-images.ubuntu.com/releases/24.04/release/ubuntu-24.04-server-cloudimg-arm64.img"
+UBUNTU_SUMS="https://cloud-images.ubuntu.com/releases/24.04/release/SHA256SUMS"
+DEBIAN_URL="https://cloud.debian.org/images/cloud/bookworm/latest/debian-12-genericcloud-arm64.qcow2"
+DEBIAN_SUMS="https://cloud.debian.org/images/cloud/bookworm/latest/SHA512SUMS"
+
+# shellcheck source=/dev/null
+[ -r "$CONF" ] && . "$CONF"
+
+err()  { printf '%s\n' "$*" >&2; }
+info() { printf '%s\n' "$*"; }
+have() { command -v "$1" >/dev/null 2>&1; }
+
+need_root() {
+  if [ "$(id -u)" -ne 0 ]; then
+    err "This action changes system state; re-run as root (sudo $0 $*)."
+    exit 1
+  fi
+}
+
+qemu_installed() { dpkg -s qemu-system-arm >/dev/null 2>&1 && have qemu-system-aarch64; }
+
+# --- invoking-user SSH key / password (cloud-init seed) --------------------
+# whoever ran `sudo h96-vm create`, else the active desktop session, else root.
+invoking_user() {
+  if [ -n "${SUDO_USER:-}" ] && [ "$SUDO_USER" != root ]; then printf '%s\n' "$SUDO_USER"; return; fi
+  local u=""
+  if have loginctl; then
+    u="$(loginctl list-sessions --no-legend 2>/dev/null | awk '{print $3}' \
+         | while read -r n; do
+             [ -n "$n" ] && [ "$n" != root ] || continue
+             [ "$(loginctl show-user "$n" -p State --value 2>/dev/null)" = active ] && { printf '%s\n' "$n"; break; }
+           done)"
+  fi
+  [ -n "$u" ] || u="$(id -nu 1000 2>/dev/null)"
+  [ -n "$u" ] || u=root
+  printf '%s\n' "$u"
+}
+
+collect_ssh_keys() {
+  local home; home="$(getent passwd "$1" 2>/dev/null | cut -d: -f6)"
+  [ -n "$home" ] || return 0
+  { [ -r "$home/.ssh/authorized_keys" ] && grep -v '^[[:space:]]*#' "$home/.ssh/authorized_keys"
+    for f in "$home"/.ssh/*.pub; do [ -r "$f" ] && cat "$f"; done
+  } 2>/dev/null | awk 'NF && !seen[$0]++'
+}
+
+gen_password() { tr -dc 'A-HJ-NP-Za-km-z2-9' </dev/urandom | head -c 14; }
+
+# --- big-core (A76) affinity, derived from cpu_capacity, never hardcoded ----
+big_cores() {
+  local f cap best=0 idx list=()
+  for f in /sys/devices/system/cpu/cpu*/cpu_capacity; do
+    cap="$(cat "$f" 2>/dev/null)" || continue
+    [ "$cap" -gt "$best" ] 2>/dev/null && best="$cap"
+  done
+  for f in /sys/devices/system/cpu/cpu*/cpu_capacity; do
+    cap="$(cat "$f" 2>/dev/null)" || continue
+    if [ "$cap" -eq "$best" ]; then
+      idx="$(basename "$(dirname "$f")")"; idx="${idx#cpu}"
+      list+=("$idx")
+    fi
+  done
+  local IFS=,; printf '%s\n' "${list[*]}"
+}
+
+# --- firmware (edk2/AAVMF) ---------------------------------------------------
+# Ubuntu's qemu-efi-aarch64 ships one combined image; some distros split code/vars.
+# Prefer a split pair (persistent NVRAM per VM); fall back to a single -bios file
+# (NVRAM resets each boot -- harmless for a cloud-init guest, which re-seeds anyway).
+resolve_firmware() {
+  local code vars
+  for code in /usr/share/AAVMF/AAVMF_CODE.fd /usr/share/edk2/aarch64/QEMU_EFI.fd; do
+    [ -r "$code" ] || continue
+    vars="${code/CODE/VARS}"
+    if [ -r "$vars" ]; then FW_CODE="$code"; FW_VARS_TEMPLATE="$vars"; FW_MODE="pflash"; return 0; fi
+  done
+  for code in /usr/share/qemu-efi-aarch64/QEMU_EFI.fd /usr/share/AAVMF/AAVMF_CODE.fd \
+              /usr/share/edk2/aarch64/QEMU_EFI.fd; do
+    [ -r "$code" ] || continue
+    FW_CODE="$code"; FW_VARS_TEMPLATE=""; FW_MODE="bios"; return 0
+  done
+  return 1
+}
+
+# --- host SSH port allocation (22xx, first free, persisted in the VM's meta)
+alloc_port() {
+  local p
+  for p in $(seq "$PORT_LO" "$PORT_HI"); do
+    grep -qs "^SSH_PORT=$p\$" "$VAR_ROOT"/*/meta 2>/dev/null || { printf '%s\n' "$p"; return 0; }
+  done
+  return 1
+}
+
+# --- base cloud images -------------------------------------------------------
+resolve_image() {
+  case "$1" in
+    ubuntu-24.04|"") IMG_URL="$UBUNTU_URL"; IMG_SUMS="$UBUNTU_SUMS"; IMG_USER_GUESS=ubuntu ;;
+    debian-12)       IMG_URL="$DEBIAN_URL"; IMG_SUMS="$DEBIAN_SUMS"; IMG_USER_GUESS=debian ;;
+    http://*|https://*)
+      IMG_URL="$1"; IMG_SUMS="$(dirname "$1")/SHA256SUMS"
+      case "$1" in *ubuntu*) IMG_USER_GUESS=ubuntu ;; *debian*) IMG_USER_GUESS=debian ;; *) IMG_USER_GUESS="" ;; esac
+      ;;
+    *) err "unknown --image '$1' (known: ubuntu-24.04, debian-12, or a direct URL)"; return 1 ;;
+  esac
+  IMG_FILE="$(basename "$IMG_URL")"
+}
+
+# downloads once into $IMAGES_DIR, verified against the vendor's checksum list;
+# a cached, already-verified file is reused untouched.
+download_image() {
+  local dest="$IMAGES_DIR/$IMG_FILE" sums_tmp
+  mkdir -p "$IMAGES_DIR"
+  if [ -f "$dest.sha_ok" ] && [ -f "$dest" ]; then
+    info "using cached, verified image: $dest"; return 0
+  fi
+  if [ ! -f "$dest" ]; then
+    info "downloading $IMG_URL"
+    curl -fL --progress-bar -o "$dest.part" "$IMG_URL" || { rm -f "$dest.part"; err "download failed."; return 1; }
+    mv -f "$dest.part" "$dest"
+  fi
+  sums_tmp="$(mktemp)"
+  if curl -fsSL -o "$sums_tmp" "$IMG_SUMS" 2>/dev/null; then
+    local algo=sha256sum expected actual
+    grep -q '^[0-9a-f]\{128\} ' "$sums_tmp" && algo=sha512sum
+    expected="$(grep -E "[* ]$IMG_FILE\$" "$sums_tmp" | awk '{print $1}' | head -n1)"
+    if [ -z "$expected" ]; then
+      err "checksum list fetched but has no entry for $IMG_FILE -- NOT verified."
+    else
+      actual="$($algo "$dest" | awk '{print $1}')"
+      if [ "$actual" != "$expected" ]; then
+        rm -f "$dest"; rm -f "$sums_tmp"
+        err "checksum MISMATCH for $IMG_FILE -- image deleted, not used."
+        return 1
+      fi
+      : > "$dest.sha_ok"
+      info "checksum OK ($algo, vendor list)."
+    fi
+  else
+    err "could not fetch $IMG_SUMS -- image downloaded but NOT verified."
+  fi
+  rm -f "$sums_tmp"
+}
+
+# --- cloud-init seed ---------------------------------------------------------
+write_seed() {
+  local vmdir="$1" name="$2" keys="$3" pass="$4" ud="$1/user-data" md="$1/meta-data"
+  {
+    echo "#cloud-config"
+    echo "hostname: $name"
+    echo "manage_etc_hosts: true"
+    if [ -n "$keys" ]; then
+      echo "ssh_authorized_keys:"
+      while IFS= read -r k; do [ -n "$k" ] && printf '  - %s\n' "$k"; done <<<"$keys"
+      echo "ssh_pwauth: false"
+    else
+      echo "ssh_pwauth: true"
+      echo "password: $pass"
+      echo "chpasswd:"
+      echo "  expire: false"
+    fi
+  } > "$ud"
+  { echo "instance-id: h96-vm-$name-$(date +%s)"; echo "local-hostname: $name"; } > "$md"
+  if have cloud-localds; then
+    cloud-localds "$vmdir/seed.iso" "$ud" "$md"
+  else
+    genisoimage -quiet -output "$vmdir/seed.iso" -volid cidata -joliet -rock "$ud" "$md"
+  fi
+  rm -f "$ud" "$md"
+}
+
+# --- meta I/O -----------------------------------------------------------------
+save_meta() { # vmdir key=val...
+  local vmdir="$1"; shift
+  { printf '# h96-vm meta -- managed file\n'; printf '%s\n' "$@"; } > "$vmdir/meta"
+}
+load_meta() { # sets NAME MEM CPUS DISK_GB IMAGE_ALIAS SSH_USER SSH_PORT CREATED
+  local vmdir="$VAR_ROOT/$1"
+  [ -r "$vmdir/meta" ] || return 1
+  # shellcheck disable=SC1090
+  . "$vmdir/meta"
+}
+
+vm_pid() { local p="$VAR_ROOT/$1/pid"; [ -f "$p" ] && cat "$p"; }
+vm_running() { local pid; pid="$(vm_pid "$1")"; [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; }
+
+# --- QMP: cooperative ACPI shutdown (never a SIGKILL by default) ------------
+qmp_powerdown() {
+  python3 - "$1" <<'PY' 2>/dev/null
+import socket, sys
+s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+s.settimeout(5)
+try:
+    s.connect(sys.argv[1])
+    s.recv(4096)
+    s.sendall(b'{"execute":"qmp_capabilities"}'); s.recv(4096)
+    s.sendall(b'{"execute":"system_powerdown"}'); s.recv(4096)
+except Exception as e:
+    print(e, file=sys.stderr); sys.exit(1)
+finally:
+    s.close()
+PY
+}
+
+# --- commands ----------------------------------------------------------------
+cmd_install() {
+  need_root install "$@"
+  local yes=0
+  for a in "$@"; do [ "$a" = "--yes" ] || [ "$a" = "-y" ] && yes=1; done
+  h96_banner "V I R T U A L   M A C H I N E S"
+  if qemu_installed; then info "already installed (${PKGS[*]})."; return 0; fi
+  info "This installs: ${PKGS[*]} (+ dependencies)."
+  local out; out="$(apt-get install --no-install-recommends -s "${PKGS[@]}" 2>&1)"
+  printf '%s\n' "$out" | grep -E '^(Inst|Need to get|After this operation)' | sed 's/^/  /'
+  if [ "$yes" -ne 1 ]; then
+    read -r -p "Proceed? [y/N] " ans
+    case "$ans" in y|Y|yes|YES) ;; *) info "cancelled."; return 1 ;; esac
+  fi
+  apt-get update -qq || true
+  apt-get install --no-install-recommends -y "${PKGS[@]}" || { err "apt install failed."; return 1; }
+  mkdir -p "$IMAGES_DIR"
+  info "installed. Next: h96-vm create NAME"
+}
+
+usage_create() {
+  cat <<EOF
+h96-vm create NAME [--image ubuntu-24.04|debian-12|URL] [--mem MB] [--cpus N] [--disk GB]
+  Downloads the base cloud image (cached + sha-verified), makes a qcow2 overlay
+  and a cloud-init seed carrying your SSH key ($HOME/.ssh/authorized_keys or
+  *.pub), or a generated password if none is found (printed once).
+  Defaults: --image ubuntu-24.04 --mem $DEFAULT_MEM --cpus $DEFAULT_CPUS --disk ${DEFAULT_DISK}G
+EOF
+}
+
+cmd_create() {
+  need_root create "$@"
+  local name="" image_alias="ubuntu-24.04" mem="$DEFAULT_MEM" cpus="$DEFAULT_CPUS" disk="$DEFAULT_DISK"
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --image) image_alias="${2:?--image needs a value}"; shift 2 ;;
+      --mem)   mem="${2:?--mem needs a value}"; shift 2 ;;
+      --cpus)  cpus="${2:?--cpus needs a value}"; shift 2 ;;
+      --disk)  disk="${2:?--disk needs a value}"; shift 2 ;;
+      -h|--help) usage_create; return 0 ;;
+      -*) err "create: unknown option '$1'"; usage_create; return 2 ;;
+      *) [ -z "$name" ] && name="$1" || { err "unexpected argument '$1'"; return 2; }; shift ;;
+    esac
+  done
+  [ -n "$name" ] || { usage_create; return 2; }
+  [[ "$name" =~ ^[a-zA-Z0-9_-]+$ ]] || { err "NAME: letters, digits, - and _ only."; return 2; }
+  qemu_installed || { err "qemu not installed. Run: sudo h96-vm install"; return 1; }
+  [ -e "$VAR_ROOT/$name" ] && { err "VM '$name' already exists (see: h96-vm list)."; return 1; }
+
+  resolve_image "$image_alias" || return 1
+  download_image || return 1
+
+  local vmdir="$VAR_ROOT/$name"
+  mkdir -p "$vmdir"
+  info "creating ${disk}G overlay disk for '$name'..."
+  qemu-img create -q -f qcow2 -F qcow2 -b "$IMAGES_DIR/$IMG_FILE" "$vmdir/disk.qcow2" "${disk}G" \
+    || { rm -rf "$vmdir"; err "qemu-img create failed."; return 1; }
+
+  resolve_firmware || { rm -rf "$vmdir"; err "no UEFI firmware found (qemu-efi-aarch64 not installed?)."; return 1; }
+  if [ "$FW_MODE" = pflash ]; then cp "$FW_VARS_TEMPLATE" "$vmdir/OVMF_VARS.fd"; fi
+
+  local iu keys pass=""
+  iu="$(invoking_user)"
+  keys="$(collect_ssh_keys "$iu")"
+  [ -z "$keys" ] && pass="$(gen_password)"
+  write_seed "$vmdir" "$name" "$keys" "$pass"
+
+  local port; port="$(alloc_port)" || { rm -rf "$vmdir"; err "no free host port $PORT_LO-$PORT_HI."; return 1; }
+  save_meta "$vmdir" \
+    "NAME=$name" "MEM=$mem" "CPUS=$cpus" "DISK_GB=$disk" \
+    "IMAGE_ALIAS=$image_alias" "SSH_USER=${IMG_USER_GUESS:-root}" \
+    "SSH_PORT=$port" "CREATED=$(date -Is)"
+
+  info ""
+  info "VM '$name' created."
+  info "  image:    $image_alias ($IMG_FILE, cached)"
+  info "  mem/cpus: ${mem}MB / $cpus"
+  info "  disk:     ${disk}G overlay (backing image untouched)"
+  info "  SSH:      ssh -p $port ${IMG_USER_GUESS:-root}@127.0.0.1  (after 'h96-vm start $name')"
+  if [ -n "$keys" ]; then
+    info "  login:    your SSH key (from ${iu}'s authorized_keys / *.pub)"
+  else
+    info "  login:    password auth, user '${IMG_USER_GUESS:-root}', password: $pass"
+    info "            (shown once; not stored anywhere. 'h96-vm ssh $name' will prompt for it.)"
+  fi
+}
+
+cmd_start() {
+  need_root start "$@"
+  local name="" gui=0
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --gui) gui=1; shift ;;
+      -h|--help) echo "h96-vm start NAME [--gui]"; return 0 ;;
+      -*) err "start: unknown option '$1'"; return 2 ;;
+      *) [ -z "$name" ] && name="$1" || { err "unexpected argument '$1'"; return 2; }; shift ;;
+    esac
+  done
+  [ -n "$name" ] || { err "usage: h96-vm start NAME [--gui]"; return 2; }
+  load_meta "$name" || { err "no such VM: $name (see: h96-vm list)"; return 1; }
+  qemu_installed || { err "qemu not installed. Run: sudo h96-vm install"; return 1; }
+  vm_running "$name" && { info "'$name' is already running (ssh -p $SSH_PORT ...)."; return 0; }
+
+  local avail need; avail="$(awk '/MemAvailable/{print int($2/1024)}' /proc/meminfo)"
+  need=$((MEM + 512))
+  if [ "$avail" -lt "$need" ]; then
+    err "refusing to start: ${avail}MB free RAM, need ~${need}MB (VM mem + 512MB headroom)."
+    return 1
+  fi
+
+  resolve_firmware || { err "no UEFI firmware found."; return 1; }
+  local vmdir="$VAR_ROOT/$name" cores; cores="$(big_cores)"
+
+  local args=(-M virt -accel kvm -cpu host -smp "$CPUS" -m "$MEM"
+              -drive "if=virtio,format=qcow2,file=$vmdir/disk.qcow2"
+              -drive "if=virtio,format=raw,readonly=on,file=$vmdir/seed.iso"
+              -netdev "user,id=net0,hostfwd=tcp::$SSH_PORT-:22"
+              -device "virtio-net-pci,netdev=net0,romfile="
+              -qmp "unix:$vmdir/qmp.sock,server,nowait"
+              -name "h96-vm-$name" -no-user-config)
+  if [ "$FW_MODE" = pflash ]; then
+    args+=(-drive "if=pflash,format=raw,readonly=on,file=$FW_CODE"
+           -drive "if=pflash,format=raw,file=$vmdir/OVMF_VARS.fd")
+  else
+    args+=(-bios "$FW_CODE")
+  fi
+
+  if [ "$gui" -eq 1 ]; then
+    local du; du=""
+    if have loginctl; then
+      du="$(loginctl list-sessions --no-legend 2>/dev/null | awk '$4=="seat0"{print $3; exit}')"
+    fi
+    if [ -z "$du" ] || ! pgrep -x Xorg >/dev/null 2>&1; then
+      err "--gui needs a running desktop session on seat0; none found. Starting headless instead."
+      gui=0
+    else
+      args+=(-display gtk -vga virtio)
+      info "starting '$name' with a GUI window on the desktop session ($du)..."
+      setsid runuser -u "$du" -- env DISPLAY=:0 XAUTHORITY="$(getent passwd "$du" | cut -d: -f6)/.Xauthority" \
+        qemu-system-aarch64 "${args[@]}" >>"$vmdir/qemu.log" 2>&1 &
+      echo $! > "$vmdir/pid"
+    fi
+  fi
+  if [ "$gui" -eq 0 ]; then
+    args+=(-display none -serial "file:$vmdir/console.log" -monitor none)
+    info "starting '$name' headless (console: $vmdir/console.log)..."
+    setsid taskset -c "$cores" qemu-system-aarch64 "${args[@]}" >>"$vmdir/qemu.log" 2>&1 &
+    echo $! > "$vmdir/pid"
+  fi
+  sleep 1
+  if vm_running "$name"; then
+    info "'$name' is up (pid $(vm_pid "$name")), big cores $cores."
+    info "  ssh -p $SSH_PORT $SSH_USER@127.0.0.1   (guest needs ~30-60s to finish cloud-init on first boot)"
+  else
+    err "qemu exited immediately; see $vmdir/qemu.log"
+    return 1
+  fi
+}
+
+cmd_stop() {
+  need_root stop "$@"
+  local name="" force=0
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --force) force=1; shift ;;
+      -h|--help) echo "h96-vm stop NAME [--force]"; return 0 ;;
+      *) [ -z "$name" ] && name="$1" || { err "unexpected argument '$1'"; return 2; }; shift ;;
+    esac
+  done
+  [ -n "$name" ] || { err "usage: h96-vm stop NAME [--force]"; return 2; }
+  load_meta "$name" || { err "no such VM: $name"; return 1; }
+  local vmdir="$VAR_ROOT/$name"
+  if ! vm_running "$name"; then info "'$name' is already stopped."; rm -f "$vmdir/pid" "$vmdir/qmp.sock"; return 0; fi
+
+  info "requesting a clean ACPI shutdown of '$name'..."
+  if ! qmp_powerdown "$vmdir/qmp.sock"; then
+    err "could not reach QMP; the guest may not shut down on its own."
+  fi
+  local i
+  for i in $(seq 1 30); do vm_running "$name" || break; sleep 2; done
+  if vm_running "$name"; then
+    if [ "$force" -eq 1 ]; then
+      err "'$name' did not shut down in 60s; forcing (SIGTERM, then SIGKILL if needed)."
+      kill -TERM "$(vm_pid "$name")" 2>/dev/null; sleep 3
+      vm_running "$name" && kill -KILL "$(vm_pid "$name")" 2>/dev/null
+    else
+      err "'$name' has not shut down after 60s. Re-run with --force to kill it, or wait and try again."
+      return 1
+    fi
+  fi
+  rm -f "$vmdir/pid" "$vmdir/qmp.sock"
+  info "'$name' stopped."
+}
+
+cmd_list() {
+  h96_banner "V I R T U A L   M A C H I N E S"
+  local d name state
+  printf '%-16s %-10s %-6s %-6s %-8s %s\n' NAME STATE MEM CPUS DISK SSH
+  for d in "$VAR_ROOT"/*/; do
+    [ -f "$d/meta" ] || continue
+    name="$(basename "$d")"
+    load_meta "$name" || continue
+    state="stopped"; vm_running "$name" && state="running"
+    printf '%-16s %-10s %-6s %-6s %-8s %s\n' "$name" "$state" "${MEM}M" "$CPUS" "${DISK_GB}G" "127.0.0.1:$SSH_PORT"
+  done
+}
+
+cmd_ssh() {
+  local name="${1:-}"
+  [ -n "$name" ] || { err "usage: h96-vm ssh NAME"; return 2; }
+  load_meta "$name" || { err "no such VM: $name"; return 1; }
+  vm_running "$name" || { err "'$name' is not running (h96-vm start $name)."; return 1; }
+  exec ssh -p "$SSH_PORT" -o StrictHostKeyChecking=accept-new "$SSH_USER@127.0.0.1"
+}
+
+cmd_delete() {
+  need_root delete "$@"
+  local name="" yes=0
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --yes|-y) yes=1; shift ;;
+      *) [ -z "$name" ] && name="$1" || { err "unexpected argument '$1'"; return 2; }; shift ;;
+    esac
+  done
+  [ -n "$name" ] || { err "usage: h96-vm delete NAME [--yes]"; return 2; }
+  load_meta "$name" || { err "no such VM: $name"; return 1; }
+  vm_running "$name" && { err "'$name' is running; stop it first (h96-vm stop $name)."; return 1; }
+  if [ "$yes" -ne 1 ]; then
+    read -r -p "Delete VM '$name' and its disk? This cannot be undone. [y/N] " ans
+    case "$ans" in y|Y|yes|YES) ;; *) info "cancelled."; return 1 ;; esac
+  fi
+  rm -rf "$VAR_ROOT/$name"
+  info "deleted '$name'."
+}
+
+cmd_status() {
+  h96_banner "V I R T U A L   M A C H I N E S"
+  info "qemu-system-aarch64: $(qemu_installed && echo installed || echo "not installed (h96-vm install)")"
+  info "/dev/kvm:            $([ -e /dev/kvm ] && echo present || echo missing)"
+  info "images cache:        $IMAGES_DIR ($(du -sh "$IMAGES_DIR" 2>/dev/null | cut -f1 || echo 0))"
+  info ""
+  cmd_list
+}
+
+cmd_remove() {
+  need_root remove "$@"
+  local yes=0
+  for a in "$@"; do [ "$a" = "--yes" ] || [ "$a" = "-y" ] && yes=1; done
+  h96_banner "V I R T U A L   M A C H I N E S"
+  local running=0 d
+  for d in "$VAR_ROOT"/*/; do
+    [ -f "$d/meta" ] || continue
+    vm_running "$(basename "$d")" && running=1
+  done
+  [ "$running" -eq 1 ] && { err "one or more VMs are still running; stop them first (h96-vm list)."; return 1; }
+  if [ "$yes" -ne 1 ]; then
+    info "This purges ${PKGS[*]} and deletes ALL VMs under $VAR_ROOT (images, disks, everything)."
+    read -r -p "Proceed? [y/N] " ans
+    case "$ans" in y|Y|yes|YES) ;; *) info "cancelled."; return 1 ;; esac
+  fi
+  if qemu_installed; then
+    apt-get purge -y "${PKGS[@]}" && apt-get autoremove --purge -y
+  else
+    info "qemu was not installed; nothing to purge."
+  fi
+  rm -rf "$VAR_ROOT"
+  info "removed. Box is back to its pre-h96-vm state."
+}
+
+usage() {
+  cat <<EOF
+h96-vm -- opt-in KVM virtual machines (H96 Max V58, EL2/VHE, hardware-accelerated)
+
+  install [--yes]                    apt-get install qemu + UEFI firmware + cloud-init tools
+  create NAME [OPTS]                 make a VM (see 'h96-vm create --help')
+  start NAME [--gui]                 boot it (headless by default; --gui needs a desktop session)
+  stop NAME [--force]                ACPI shutdown via QMP; --force kills it if the guest won't
+  list                                all VMs, state, resources, SSH forward
+  ssh NAME                           ssh into a running VM
+  delete NAME [--yes]                remove a VM and its disk (must be stopped)
+  status                              install state + kvm + VM list
+  remove [--yes]                     purge the qemu packages and all VM data
+
+Config: $CONF (overrides DEFAULT_MEM, DEFAULT_CPUS, DEFAULT_DISK, PORT_LO/HI)
+Ships installed but OFF: nothing is downloaded or installed until 'h96-vm install'.
+EOF
+}
+
+main() {
+  local cmd="${1:-status}"; shift || true
+  case "$cmd" in
+    install) cmd_install "$@" ;;
+    create)  cmd_create "$@" ;;
+    start)   cmd_start "$@" ;;
+    stop)    cmd_stop "$@" ;;
+    list)    cmd_list "$@" ;;
+    ssh)     cmd_ssh "$@" ;;
+    delete)  cmd_delete "$@" ;;
+    status)  cmd_status "$@" ;;
+    remove)  cmd_remove "$@" ;;
+    -h|--help|help) usage ;;
+    *) err "unknown command: $cmd"; usage; exit 2 ;;
+  esac
+}
+
+main "$@"

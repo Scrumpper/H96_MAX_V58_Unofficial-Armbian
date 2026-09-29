@@ -36,9 +36,9 @@ ASR_HOME  = "/var/lib/h96/subtitles"
 BIN       = f"{ASR_HOME}/bin/sherpa-onnx"
 LIBS      = f"{ASR_HOME}/lib"
 MODELS    = f"{ASR_HOME}/models"
-BIG_CORES = "1,2,3,4"          # RK3588 topology is NOT contiguous: policy0 = cpus 0,5,6,7
+BIG_CORES = "1,2,3,4"          # RK3588 topology is not contiguous: policy0 = cpus 0,5,6,7
 CHUNK_S   = 60                 # transcribe in chunks so progress is visible and RAM is bounded
-BATCH     = 10                 # chunks per engine invocation; amortises the ~4s recognizer load
+BATCH     = 10                 # chunks per engine invocation; amortises recognizer load
 
 
 def banner(sub=""):
@@ -80,7 +80,7 @@ def model_files(d, engine):
         if all(os.path.isfile(f) for f in trio):
             return (*trio, toks)
         return None
-    # CPU: prefer int8 (what the WER above was measured with)
+    # CPU: prefer int8, the variant the WER above was measured with
     for suffix in (".int8.onnx", ".onnx"):
         trio = []
         for n in ("encoder", "decoder", "joiner"):
@@ -147,10 +147,8 @@ def run_chunk(wavs, enc, dec, joi, toks, engine, threads):
     env = dict(os.environ)
     env["LD_LIBRARY_PATH"] = LIBS + ":" + env.get("LD_LIBRARY_PATH", "")
     r = subprocess.run(cmd, capture_output=True, text=True, env=env)
-    # sherpa-onnx prints its JSON result on STDERR; stdout only carries
-    # "Recognizer created". Scan both so this does not silently find nothing.
-    # sherpa-onnx prints its JSON on STDERR (stdout only carries "Recognizer created"),
-    # and for a batch it prints the wav path before each result. Map results back by path.
+    # sherpa-onnx prints its JSON on stderr (stdout only carries "Recognizer created")
+    # and, for a batch, the wav path before each result; scan both and map by path.
     out, cur = {}, None
     for stream in (r.stderr, r.stdout):
         for line in stream.splitlines():
@@ -263,19 +261,11 @@ def cmd_file(args):
 
 
 
-# ---------------------------------------------------------------------------
-# LIVE  (experimental)
-# ---------------------------------------------------------------------------
-# Each piece below is verified INDIVIDUALLY on this board:
-#   * streaming ASR   2.5x realtime through the websocket server, ~3.2 hypothesis
-#                     updates/sec, correct text (measured)
-#   * mpv renderer    osd-overlay accepted, 5/5 repeat draws on ONE persistent
-#                     socket (measured -- overlays die if the client disconnects)
-#   * chunk latency   ~640 ms algorithmic (chunk-16 x 4 subsampling x 10 ms)
-#
-# What is NOT verified is the three of them wired together, because that needs a
-# desktop session (PipeWire is absent on the headless image) and a display. Treat
-# `live` as experimental until someone runs it on a box with a desktop installed.
+# --- live (experimental) ---
+# Streaming ASR, mpv overlay rendering and chunk latency are each verified
+# individually on this board; wiring the three together is not, since that
+# needs a desktop session (PipeWire is absent on the headless image). Treat
+# `live` as experimental until run on a box with a desktop installed.
 WS_PORT = 6006
 
 
@@ -327,8 +317,8 @@ def cmd_live(args):
     ov = MpvOverlay(args.socket, font_size=args.font_size)
     ov.connect()
     try:
-        # audio -> server over the websocket client is not wired here; the loop below is
-        # the render half, kept deliberately simple until the pipeline is verified end to end
+        # audio -> server over the websocket client is not wired here; the loop below
+        # is the render half, kept simple until the pipeline is verified end to end
         raise NotImplementedError(
             "live capture is not wired end to end yet - see the note above. "
             "Milestones 1-4 are complete; this needs a desktop session to finish and test.")

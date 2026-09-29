@@ -33,21 +33,52 @@ GPL-2.0. See [`LICENSE`](LICENSE) and [`CREDITS.md`](CREDITS.md).
 
 ---
 
-## Release images (v6.1)
+## Release images (v6.2)
 
-Current release is **v6.1**, shipped as one pre-built full image. It boots to
-text console and does not pre-install desktop. Kernel release string changes from
+Current release is **v6.2**, shipped as one pre-built full image. It boots to
+text console and does not pre-install desktop. v6.2 updates native Steam route over
+v6.1 and reworks audio: flat EQ file restores device setup on PipeWire 1.6, and Bluetooth
+headset microphone, codecs and reconnect behaviour change.
+
+v6.2 kernel moves to release string `6.1.115-h96v58v2` and adds:
+
+- VOP2 window power-domain tracking, extended from v6.1: cursor no longer vanishes
+  after mode change and cursor hide in one frame.
+- HDMI-CEC on HDMI0 (`/dev/cec0`): TV remote controls box; box puts TV in standby and
+  wakes it. Verified on Sony TV.
+- HDMI0 DDC on GPIO I2C bus, since on-chip DDC controller never completes transfers:
+  native EDID reads and HDMI 2.0 SCDC scrambling. Verified: 2560x1440 at 120 and
+  144 Hz, 3840x2160 at 60 Hz.
+- Plane colour conversion re-applied on colour-format switch without modeset: no green
+  cast when switching between RGB and YCbCr.
+- HDMI audio channel allocation derived with ELD bypass: groundwork for multichannel.
+  Multichannel is not verified; no AV receiver tested.
+- EDID override NULL-dereference guard; audio infoframe error check.
+- RGA 2D accelerator binds after deferred probes (`/dev/rga` works).
+- stmmac Wake-on-LAN IRQ balance: no kernel warning when toggling WoL.
+- SARADC volume key: pinhole recovery button driver.
+- Neutral kernel build banner.
+- HDMI output stays muted 1 s when colour format changes between RGB and YCbCr: no green flash at boot handover from loader. `dw_hdmi_qp.fmt_switch_mute_ms` sets hold (0 = off).
+
+Box on v6.1 gets userland changes above without reflash through
+`h96-v6.1.1-HOTfix.zip`; kernel changes above ship only with v6.2 image, so full
+benefit needs reflash. Over v6.0, kernel release string changes from
 `6.1.115-h96` to `6.1.115-h96v58v1`, so moving to it is reflash rather than
 `apt upgrade`. This build adds three kernel checks (`CONFIG_LOCKUP_DETECTOR`,
 `CONFIG_SOFTLOCKUP_DETECTOR`, `CONFIG_BOOTPARAM_SOFTLOCKUP_PANIC`) that panic kernel on
 stuck CPU, paired with watchdog reset. One device tree node changes, watchdog is
 enabled, and every v6.0 feature and command is retained.
 
-| Image           | Boots to | GPU                        | Desktop                                  | Zip size |
-|-----------------|----------|----------------------------|------------------------------------------|----------|
-| **v6.1** (full) | console  | Mali-G610 (Panthor) + Mesa | installed on demand via `armbian-config` | 1.23 GB  |
-| **v6.0** (full) | console  | Mali-G610 (Panthor) + Mesa | installed on demand via `armbian-config` | 1.23 GB  |
+| Image             | Boots to | GPU                        | Desktop                                  | Zip size   |
+|-------------------|----------|----------------------------|------------------------------------------|------------|
+| **v6.2** (full) | console  | Mali-G610 (Panthor) + Mesa | installed on demand via `armbian-config` | 1.23 GB    |
+| **v6.1** (full)   | console  | Mali-G610 (Panthor) + Mesa | installed on demand via `armbian-config` | 1.23 GB    |
+| **v6.0** (full)   | console  | Mali-G610 (Panthor) + Mesa | installed on demand via `armbian-config` | 1.23 GB    |
 
+- **New in v6.2, Steam ARM 1.2 on native route.** Launch handler sets Steam overlay, MangoHud, Godot 4 and Unity renderer per title, with no launch options, and reads title profiles from `/etc/h96/titles.conf`. Graphics forwarding is applied as soon as client downloads its emulation tool, so titles no longer start on CPU renderer after fresh install. New components `desktop-mode`, `icon-bigpicture`, `icon-desktop` and `tray`. Install, re-run and component changes keep installed games. 32-bit titles lose `-vulkan`, start scripts are followed to binary they start, `gl32=off` profile key runs title on emulated x86 Mesa, and Steam overlay buffers left after game sessions are freed. Full list in [CHANGELOG.md](CHANGELOG.md).
+- **New in v6.2, display.** `h96-display detect` builds mode list from connected display, up to 8K; modes wider than 4096 px and FRL tier are listed but untested. HDMI 2.0 tier (340 to 600 MHz, SCDC) is on by default. Modes are picked in KDE System Settings → Display and persist per display. Colour format and range are set per display on command line (`sudo h96-display color rgb|ycbcr|auto`, `range full|limited|auto`), each applied live with 15 s confirm-or-revert. One HDMI output (HDMI0).
+- **New in v6.2, tools.** `h96-leds` steady by default, blinking opt-in. Installed and off by default: `h96-wol`, `h96-cec`, `h96-vm`, `h96-hotspot`. `h96-backup` / `h96-restore` v2.1 restore backups from v5.0.1 and newer. mpv decodes through `rkmpp-copy` and prefers 8-bit VP9 on YouTube; AV1 is excluded.
+- **New in v6.2, audio.** Image ships flat EQ file `/etc/h96/eq/active.txt`; PipeWire 1.6 stops h96 EQ filter chain without it and WirePlumber then stalls. Bluetooth headset microphone is listed at all times (autoswitch), runs mSBC where headset supports it, Bluetooth sinks run 2048-sample cycle and never suspend, BlueZ reconnect policy is set, and `h96-bt-a2dp-heal.service` restores dropped A2DP link. See [docs/BLUETOOTH-AUDIO.md](docs/BLUETOOTH-AUDIO.md).
 - **New in v6.1, Steam installed on demand.** `h96-steam` installs either of two clients and
   downloads nothing until it runs. Native route installs ARM64 client, which runs on
   Mali GPU as ARM program; titles built for x86 run through emulation tool
@@ -57,13 +88,13 @@ enabled, and every v6.0 feature and command is retained.
   anti-cheat do not run on either route. Installers are also published on their own as
   `h96-steam-installers.zip` for boxes on earlier image. `steam-arm --desktop` starts
   client in its desktop interface; `h96-steam-tray` places Steam icon in panel's system
-  tray (open, open in desktop mode, stop, quit), installed with `desktop` component and
-  started at login `h96-steam-remoteplay` pins hardware decoding off and HEVC off in
+  tray (open, open in desktop mode, stop, quit), installed with `tray` component and
+  started at login. `h96-steam-remoteplay` pins hardware decoding off and HEVC off in
   client's Remote Play settings, because streaming client has no hardware decode path on
   this box and session otherwise sits on launch screen; launcher runs it before
   each start, and `--check` reports without changing anything. Keep game window in
   foreground on host: game in background renders nothing new, so stream shows
-  one frame and takes no input
+  one frame and takes no input.
 - **ARM64 client.** ARM64 client is build of Steam that Valve made for its ARM based
   VR headset, Steam Frame: native ARM program that runs title's x86 code through
   emulation tool client downloads. On this box that means client interface, overlay,
@@ -94,7 +125,9 @@ enabled, and every v6.0 feature and command is retained.
   and pets it at half that period.
   CPU that makes no scheduling progress for 20 seconds, task blocked for 120 seconds, or oops panics
   kernel, which then reboots after holding panic on console for 10 seconds.
-  Panic record survives reset in `/var/lib/systemd/pstore/console-ramoops-0`.
+  Panic record survives reset in `/var/lib/systemd/pstore/`: `dmesg-ramoops-*` files hold
+  panic kernel log, and `console-ramoops-0` holds previous boot's console and is replaced at
+  every boot, so copy it before next reboot.
 - **v6.1 kernel: release `6.1.115-h96v58v1`.** Suffix names board and kernel revision
   number that moves independently of image version, so kernel is identifiable from
   `uname -r` alone. Module set is rebuilt against it with `CONFIG_MODVERSIONS=y`, so
@@ -117,7 +150,8 @@ enabled, and every v6.0 feature and command is retained.
   `--force` overwrites configs that are newer on disk (stop desktop session first on
   fresh image, whose session has already written default configs). Both tools take `--only`
   and `--skip` category lists and `--emulators`; `h96-backup-gui` presents same choices
-  as checkboxes. Boxes on v5.0.1 or earlier have no backup tool; migration kit (`h96-migrate-kit.zip` in release) installs same three tools there (`sudo bash install.sh`, `--gui` for window) so box can be captured to USB stick before flash.
+  as checkboxes. Steam is not covered: neither tool has Steam category, so Steam clients,
+  sign-in, settings and installed games are not in archive. Boxes on v5.0.1 or earlier have no backup tool; migration kit (`h96-migrate-kit.zip` in release) installs same three tools there (`sudo bash install.sh`, `--gui` for window) so box can be captured to USB stick before flash.
 - **v6.0, clearer `h96-undervolt` trial flow.** `set <mV>`, then reboot, and setting is
   active on that boot so you can test it under load; `confirm` keeps it, and reboot without
   confirming reverts to stock on its own.
@@ -308,55 +342,115 @@ packages/
                                   image build ships it precompiled)
     src/ddc-edid-read.c           GPIO bit-bang EDID reader source (h96-display auto;
                                   image build ships it precompiled)
-    systemd/h96-vfd.service       unit for daemon
-    systemd/h96-display-wake.service  display-wake daemon unit (+ -once.service
-                                  for hotplug; see CHANGELOG v4.0 2c)
-    lib/h96-display-wake-daemon.py  input watcher: re-drives HDMI when stuck off
+    src/ddc-vcp.c                 DDC/CI VCP read/write over bit-banged DDC bus
+                                  (h96-brightness)
+    overlays/h96-ddc-i2c-gpio.dts HDMI DDC pins as i2c-gpio bus (DDC/CI brightness)
+    edid/h96-1080p-audio.bin      forced 1080p EDID with audio block (+ README.md)
     environment.d-h96-gpu.conf    GLES/EGL env so desktop composites on GPU
     brcm4362a2_firmware/          BCM4362A2.hcd - vendor Bluetooth firmware blob
-    wireplumber/30-h96-bluetooth.conf  Bluetooth audio: A2DP codec order + HFP
-                                  headset-microphone roles (install to
+    wireplumber/30-h96-bluetooth.conf  Bluetooth audio: A2DP and HFP settings, autoswitch,
+                                  sink quantum and no-suspend (install to
                                   /etc/wireplumber/wireplumber.conf.d/)
+    wireplumber/51-h96-iec958.conf  IEC958 codec list on HDMI node (h96-audio-passthrough
+                                  codecs on|off)
+    pipewire/90-h96-eq.conf       h96 EQ filter chain (install to
+                                  /etc/pipewire/pipewire.conf.d/)
+    pipewire/95-h96-silence-source.conf  v6.2 "Silence (no microphone)" input
+    bluetooth/h96-bt-policy.py    v6.2 BlueZ reconnect policy for main.conf
+                                  (install to /usr/local/lib/h96/)
+    bluetooth/h96-bt-a2dp-heal.py v6.2 headset A2DP reconnect daemon
+                                  (install to /usr/local/lib/h96/)
+    etc-h96/eq/active.txt         v6.2 flat EQ file (0 dB); also installed as
+                                  /usr/local/lib/h96/eq-active-flat.txt for tmpfiles
+    etc-h96/eq/presets/           AutoEQ presets for h96-audio-eq
+    etc-h96/bt-speaker.conf       h96-bt-speaker settings
+    etc-h96/cec-keymap.conf       h96-cecd key map
+    etc-h96/transcode.conf        h96-transcode-server settings
+    tmpfiles.d/h96-eq.conf        v6.2 restores flat EQ file at boot if missing
+                                  (install to /etc/tmpfiles.d/)
+    mpv/                          hdr.conf, motion.conf, passthrough.conf fragments
+                                  (h96-hdr, h96-motion, h96-audio-passthrough)
     modules-load.d/rfcomm.conf    autoloads rfcomm (needs CONFIG_BT_RFCOMM=m in
                                   the kernel config) so the Hands-Free headset mic
                                   works; install to /etc/modules-load.d/
     modules-load.d/xpad.conf      autoloads xpad (CONFIG_JOYSTICK_XPAD=m, with
                                   JOYSTICK_XPAD_LEDS and JOYSTICK_XPAD_FF since v6.0)
+    systemd/h96-vfd.service       unit for daemon
+    systemd/h96-display-wake.service  display-wake daemon unit (+ -once.service
+                                  for hotplug; see CHANGELOG v4.0 2c)
+    systemd/h96-edid-adapt.service  injects attached display's EDID into DRM
     systemd/h96-rfcomm.service    depmod for the running kernel (uname -r), then
                                   loads rfcomm and xpad before BlueZ; enable it
     systemd/bt-sco-hci.service    routes SCO audio over HCI (Broadcom VSC 0xFC1C)
                                   so the headset mic carries data; enable it
+    systemd/h96-bt-a2dp-heal.service  v6.2 runs h96-bt-a2dp-heal.py; enable it
+    systemd/bluetooth.service.d/20-h96-policy.conf  v6.2 runs h96-bt-policy.py
+                                  before bluetoothd
     systemd/h96-undervolt-trial.service  boot-time guard for the h96-undervolt trial
+    systemd/h96-autologin.service, h96-cec.service, h96-gmediarender.service,
+      h96-shairport.service, h96-uxplay.service, h96-transcode-server.service
+                                  units behind h96-autologin-setup, h96-cec, h96-cast
+                                  and h96-transcode-server
+    systemd/system.conf.d/zz-h96-watchdog.conf  v6.1 RuntimeWatchdogSec=30s
+                                  (install to /etc/systemd/system.conf.d/)
     tools/                        userspace tools installed to /usr/local/bin|sbin:
-                                  h96-npu, h96-encode, h96-upscale, h96-npu-setup,
-                                  h96-subtitles, h96-subtitles-setup, scrumptop,
-                                  h96-display, h96-display-wake.sh, h96-brightness,
-                                  h96-scale, h96-widevine-setup, h96-autologin-setup,
-                                  h96-waydroid (v5.0, Android in a container),
-                                  h96-emulators (v5.0, GPU emulator suite)
-    lib/                          shared banner library + mpv overlay client
-                                  (installed under /usr/local/lib/h96/)
+                                  h96 (command index), h96-perf, h96-npu, h96-encode,
+                                  h96-upscale, h96-npu-setup, h96-npu-upscale(-setup),
+                                  h96-subtitles(-setup), scrumptop, h96-display,
+                                  h96-display-wake.sh, h96-edid-adapt.sh,
+                                  h96-brightness, h96-scale, h96-widevine-setup,
+                                  h96-autologin-setup, h96-undervolt, h96-waydroid,
+                                  h96-emulators, h96-game-mode, h96-dxvk-install,
+                                  h96-backup, h96-restore, h96-backup-gui, h96-cec,
+                                  h96-hdr, h96-motion, h96-audio-eq,
+                                  h96-audio-passthrough, h96-bt-speaker, h96-cast,
+                                  h96-transcode-server, h96-xpad-dedup (/usr/local/sbin/)
+    tools/h96-steam               v6.1 Steam installer front end (native installer 1.2
+                                  since v6.2); installers in
+                                  lib/steam/ (installed to /usr/local/lib/h96/steam/)
+    lib/                          shared banner library, EDID mode picker, subtitle
+                                  renderer, h96-bt-agent, h96-bt-loopback, h96-cecd,
+                                  display-wake daemon (installed under /usr/local/lib/h96/)
     udev/99-h96-dma-heap.rules    DMA-heap group/mode rule (hardware video decode
                                   for non-root users; see CHANGELOG v4.0)
     udev/97-h96-display-wake.rules  HDMI re-drive check after hotplug
-    shaders/ravu-lite-ar-r4.hook  mpv prescaler used by h96-upscale
-                                  (bjin/mpv-prescalers, LGPL-3.0, header intact)
-    tools/h96                     command index (lists every h96 command)
-    tools/h96-perf                performance profile switcher
-    tools/h96-steam               v6.1 Steam installer front end; installers in
-                                  lib/steam/ (installed to /usr/local/lib/h96/steam/)
-    tools/h96-xpad-dedup          v6.1 duplicate-joystick fix (/usr/local/sbin/)
+    udev/99-h96-hdmi-audio.rules  v6.2 HDMI detect (modes, audio, CEC address) on hotplug
+    udev/99-h96-ddc-i2c.rules     video group access to i2c-ddc bus
+    udev/99-h96-cec.rules         video group access to CEC device
+    udev/99-h96-xpad.rules        binds X-input dongles missing from xpad table
     udev/60-h96-gamepad-hidraw.rules  v6.1 hidraw + uinput access for every xpad pad
     udev/71-h96-xpad-dedup.rules  v6.1 drops headset interface of third-party 360 pads
+    shaders/ravu-lite-ar-r4.hook  mpv prescaler used by h96-upscale
+                                  (bjin/mpv-prescalers, LGPL-3.0, header intact)
     sysctl.d/zz-h96-hang.conf     v6.1 hang recovery sysctls (install to /etc/sysctl.d/)
     sysctl.d/zz-h96-steam.conf    v6.1 vm.max_map_count for Proton
-    systemd/system.conf.d/zz-h96-watchdog.conf  v6.1 RuntimeWatchdogSec=30s
-                                  (install to /etc/systemd/system.conf.d/)
     apt/                          v6.1 offline repo source (Signed-By), its low pin and
                                   public keyring; install to /etc/apt/sources.list.d/,
                                   /etc/apt/preferences.d/ and /usr/share/keyrings/
+    v6.2 additions (install path in brackets):
+    systemd/h96-display-console.service  console colour: one blank cycle at boot when loader
+                                  left HDMI in YCbCr [/etc/systemd/system/, enabled]
+    systemd/h96-hdmi-audio-detect.service, h96-scdc.service, h96-leds.service,
+      h96-hotspot-repair.service, h96-pkgs-setup.service/.timer
+    tools/h96-scdc, h96-leds, h96-wol, h96-vm, h96-hotspot, h96-boot-profile,
+      h96-wifi-connect, h96-video-setup.sh, h96-pkgs-setup.sh, h96-bt-attach.py
+    lib/edid_audio.py, edid_merge.py, h96-hdmi-sink-migrate.sh, h96-cec-wake
+                                  [/usr/local/lib/h96/]
+    lib/eq-active-flat.txt        flat EQ restored at boot [/usr/local/lib/h96/]
+    autostart/h96-cec-wake.desktop, h96-display-session.desktop  [/etc/xdg/autostart/]
+    wireplumber/10-h96-audio-names.conf, 20-h96-hdmi-audio.conf, 51-h96-iec958.conf
+                                  [/etc/wireplumber/wireplumber.conf.d/]
+    alsa/60-h96-hdmi.conf         [/etc/alsa/conf.d/]
+    alsa-card-profile/h96-hdmi.conf  HDMI layouts as card profiles
+                                  [/etc/alsa-card-profile/mixer/profile-sets/]
+    edid/h96-sink-audio.seed.bin  first-boot kernel EDID [/usr/lib/firmware/edid/h96-sink-audio.bin]
+    skel/wireplumber-default-nodes  [/etc/skel/.local/state/wireplumber/default-nodes]
+    mpv/mpv.conf                  base mpv config [/etc/mpv/mpv.conf]
+    udev/70-h96-pinhole.rules     desktop ignores pinhole button
 docs/
   DEVICE-TREE-CHANGES.md          every DT change vs stock vendor DTB, explained
+  BLUETOOTH-AUDIO.md              Bluetooth audio, headset microphone, codecs, manual install
+  MEDIA-FEATURES.md               media suite and USB controllers
 CHANGELOG.md  CREDITS.md  LICENSE
 ```
 
@@ -384,7 +478,7 @@ Device tree carries hardware enablement; rest is board config + BSP.
 touch `rockchip_drm_vop2.c`; second is diff against result of first, so apply
 them in that order), built with `config/linux-rk35xx-vendor.config`.
 `config/kernel-h96-max-v58.config` is human-readable summary of that config, not build
-input. Release string is `6.1.115-h96v58v1`; v6.0 kernel was same source with
+input. Release string is `6.1.115-h96v58v2` (v6.1: `6.1.115-h96v58v1`); v6.0 kernel was same source with
 first two patches, release string `6.1.115-h96`, and two debug options on that v6.1
 turns off (`SLUB_DEBUG`, `SCHEDSTATS`). This build also turns on `CONFIG_LOCKUP_DETECTOR=y`,
 `CONFIG_SOFTLOCKUP_DETECTOR=y` and `CONFIG_BOOTPARAM_SOFTLOCKUP_PANIC=y`, so CPU that stops
@@ -453,17 +547,17 @@ separate userspace delta releases carry, not part of this build.
 parts of any user-supplied `.config` before build: they set `CONFIG_LOCALVERSION` to
 empty string, force `CONFIG_RT_GROUP_SCHED=y` for Docker, and turn BTF debug information on (`CONFIG_DEBUG_INFO`, `CONFIG_DEBUG_INFO_BTF`), which shipped configuration also carries, along with
 zram, nftables, filesystem and container options that vendor config already carries.
-Board file's `custom_kernel_config` hook runs after them and restores v6.1 values
-(`CONFIG_LOCALVERSION="-h96v58v1"`, `CONFIG_RT_GROUP_SCHED=n`, `CONFIG_MODVERSIONS=y`,
+Board file's `custom_kernel_config` hook runs after them and restores v6.2 values
+(`CONFIG_LOCALVERSION="-h96v58v2"`, `CONFIG_RT_GROUP_SCHED=n`, `CONFIG_MODVERSIONS=y`,
 `CONFIG_PSI=y`, `CONFIG_SCHED_CLUSTER=y`, `CONFIG_NVMEM_ROCKCHIP_SEC_OTP=n`, `CONFIG_DRM_PANTHOR=m`, `CONFIG_DEBUG_INFO_BTF=y`, `CONFIG_DEBUG_INFO_BTF_MODULES=y`, `CONFIG_JOYSTICK_XPAD_LEDS=y`, `CONFIG_JOYSTICK_XPAD_FF=y`, `CONFIG_LOCKUP_DETECTOR=y`, `CONFIG_SOFTLOCKUP_DETECTOR=y`, `CONFIG_BOOTPARAM_SOFTLOCKUP_PANIC=y`); do not pass `KERNEL_BTF=no`, which would turn BTF off. Framework also
 adds `LOCALVERSION=-vendor-rk35xx` on make command line, so framework-built kernel
-reports `6.1.115-h96v58v1-vendor-rk35xx` and installs its modules under that name;
-released image reports `6.1.115-h96v58v1`. That is naming difference, not configuration difference.
+reports `6.1.115-h96v58v2-vendor-rk35xx` and installs its modules under that name;
+released image reports `6.1.115-h96v58v2`. That is naming difference, not configuration difference.
 Framework's own patches in `patch/kernel/<KERNELPATCHDIR>/` (two small files at time of
 writing: HID Sony patch and Bluetooth HCI quirk) are applied as well and are not in
 released kernel; delete them from checkout before step 6 for closer match.
 
-**Modules travel with Image.** Config sets `CONFIG_LOCALVERSION="-h96v58v1"` and
+**Modules travel with Image.** Config sets `CONFIG_LOCALVERSION="-h96v58v2"` and
 `CONFIG_MODVERSIONS=y`, so built kernel's modules carry symbol versions. Install
 modules with kernel they were built with (`make modules_install` from same tree into
 `/lib/modules/$(make kernelrelease)`); loader rejects module built against different
@@ -487,7 +581,7 @@ boot, force mode: add `video=HDMI-A-1:1280x720@60e` to `extraargs=` line in
 > **Note on device tree.** `patch/kernel/rk3588-h96-max-v58-panthor.dts` is decompile of
 > stock Android vendor DTB, edited for open-GPU Armbian (hence
 > `rockchip,rk3588-nvr-demo-v10-android` compatible and numeric phandles). File is
-> decompile of `rk3588-h96-max-v58-panthor.dtb`, DTB v6.0 image boots (`fdtfile=` in
+> decompile of `rk3588-h96-max-v58-panthor.dtb`, DTB v6.2 image boots (`fdtfile=` in
 > `/boot/armbianEnv.txt`), and recompiles to same tree. `docs/DEVICE-TREE-CHANGES.md`
 > documents every change so it can be re-applied onto mainline `rk3588.dtsi` for
 > from-scratch DTS. BSP tools that edit device tree (`h96-undervolt`,
@@ -535,6 +629,7 @@ sudo cp h96-max-v58-gpio-ir.dtbo /boot/overlay-user/
 # add to /boot/armbianEnv.txt:   user_overlays=h96-max-v58-gpio-ir
 sudo reboot
 # then learn your remote:
+sudo apt install ir-keytable   # needs network; not in offline repo
 ir-keytable            # shows gpio_ir_recv device
 ir-keytable -p nec -t  # press buttons -> scancodes
 ```

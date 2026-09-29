@@ -1,16 +1,12 @@
 #!/bin/bash
-# h96-scale — set KDE Plasma global display scale (X11) and apply it live.
+# h96-scale: set KDE Plasma global display scale (X11) and apply it live
 #
-# Plasma's "Global Scale" slider on X11 only affects newly-started processes, so
-# a running desktop does not visibly change until the next login. This tool
-# writes the same config the slider does (kdeglobals ScaleFactor +
-# ScreenScaleFactors, kcmfonts forceFontDPI), sets live X font DPI, and restarts
-# the Plasma shell, so scale applies immediately with no logout. Already-open
-# apps rescale when relaunched, or at the next login (autologin reduces that
-# to one logout).
+# Global Scale slider on X11 only affects newly-started processes; this writes the same
+# config (kdeglobals ScaleFactor + ScreenScaleFactors, kcmfonts forceFontDPI), sets live
+# X font DPI, and restarts Plasma shell so scale applies with no logout. Already-open apps
+# rescale on relaunch or at next login (autologin reduces that to one logout)
 #
-# Runs from a desktop terminal, or over SSH with sudo. Deployed to
-# /usr/local/bin/h96-scale.
+# runs from a desktop terminal or over SSH with sudo
 
 set -uo pipefail
 
@@ -19,8 +15,7 @@ command -v h96_banner >/dev/null 2>&1 || h96_banner() { :; }
 
 die() { echo "h96-scale: $*" >&2; exit 1; }
 
-# Locate the running Plasma session and its environment, whether this runs as
-# the desktop user or as root over SSH.
+# locate running Plasma session and environment, whether run as desktop user or root over SSH
 PID=$(pgrep -x plasmashell 2>/dev/null | head -1) || true
 [ -n "${PID:-}" ] || die "no running Plasma session found (start the desktop first)"
 SESS_USER=$(ps -o user= -p "$PID" 2>/dev/null | tr -d ' ')
@@ -70,7 +65,7 @@ EOF
   exit 0
 fi
 
-# validate: a number in 0.5 .. 3.0
+# validate: number in 0.5 .. 3.0
 awk "BEGIN{exit !($FACTOR+0 >= 0.5 && $FACTOR+0 <= 3.0)}" 2>/dev/null \
   || die "scale must be a number between 0.5 and 3.0 (got '$FACTOR')"
 
