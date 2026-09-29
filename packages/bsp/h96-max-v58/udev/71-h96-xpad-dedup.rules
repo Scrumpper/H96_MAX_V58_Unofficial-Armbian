@@ -1,0 +1,2 @@
+# Third-party Xbox 360 style pads: drops second xpad binding on headset interface (see h96-xpad-dedup).
+ACTION=="add|bind", SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_interface", DRIVER=="xpad", ATTR{bInterfaceProtocol}=="03", RUN+="/usr/bin/systemd-run --no-block --quiet /usr/local/sbin/h96-xpad-dedup"

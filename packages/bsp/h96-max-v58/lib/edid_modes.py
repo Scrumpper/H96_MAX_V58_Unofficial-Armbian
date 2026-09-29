@@ -49,19 +49,19 @@ import sys
 EDID_HEADER = bytes((0x00, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x00))
 BLOCK = 128
 
-# --- box capability cap (matches the h96-display "4k" preset ceiling) -------
+# --- box capability cap, matches the h96-display "4k" preset ceiling ---
 MAX_W = 3840
 MAX_H = 2160
-MAX_PIXRATE = 3840 * 2160 * 30          # px/s — the "4k" preset's demand
+MAX_PIXRATE = 3840 * 2160 * 30          # px/s, the "4k" preset's demand
 COMMON_HZ = (120, 100, 60, 50, 30, 25, 24)   # down-cap ladder, best first
 
-# --- sanity ranges for detailed timings (research doc, plus HDMI2.0 pclk) ---
+# --- sanity ranges for detailed timings (plus HDMI2.0 pclk) ---
 SANE_W = (640, 7680)
 SANE_H = (480, 4320)
 SANE_HZ = (23.0, 121.0)
 SANE_PCLK_KHZ = (25_000, 600_000)       # 25 MHz .. 600 MHz TMDS
 
-# Established-timing bitmap, bytes 35..37 of the base block.
+# established-timing bitmap, bytes 35..37 of the base block:
 # (byte, bit, w, h, hz, interlaced)
 ESTABLISHED = (
     (35, 7, 720, 400, 70, False), (35, 6, 720, 400, 88, False),
@@ -118,9 +118,7 @@ def sane_dtd(m):
             and SANE_PCLK_KHZ[0] <= m.pclk_khz <= SANE_PCLK_KHZ[1])
 
 
-# --------------------------------------------------------------------------
-# input handling
-# --------------------------------------------------------------------------
+# --- input handling ---
 def read_blob(path):
     """Read raw EDID bytes; tolerate a hex-text dump (handy on the bench)."""
     if path == "-":
@@ -130,7 +128,7 @@ def read_blob(path):
             data = f.read()
     if data[:8] == EDID_HEADER:
         return data
-    # Not binary EDID — maybe someone piped in hex text (xxd -p / edid-decode).
+    # not binary EDID; maybe hex text was piped in (xxd -p / edid-decode)
     try:
         text = data.decode("ascii")
         cleaned = "".join(text.split())
@@ -138,7 +136,7 @@ def read_blob(path):
             return bytes.fromhex(cleaned)
     except (UnicodeDecodeError, ValueError):
         pass
-    return data   # let validate() produce the real error message
+    return data   # let validate() produce the error message
 
 
 def checksum_ok(block):
@@ -178,9 +176,7 @@ def validate(data, strict, warn):
     return blocks
 
 
-# --------------------------------------------------------------------------
-# base-block parsing
-# --------------------------------------------------------------------------
+# --- base-block parsing ---
 def parse_dtd(d, source):
     """Parse one 18-byte detailed timing descriptor; None if not a timing."""
     pclk_khz = (d[0] | (d[1] << 8)) * 10
@@ -192,7 +188,7 @@ def parse_dtd(d, source):
     vb = d[6] | ((d[7] & 0x0F) << 8)
     ht, vt = ha + hb, va + vb
     if ha == 0 or va == 0 or ht <= ha or vt <= va:
-        return None                      # degenerate blanking — nonsense
+        return None                      # degenerate blanking, nonsense
     hz_exact = (pclk_khz * 1000.0) / (ht * vt)
     return Mode(ha, va, round(hz_exact), source, hz_exact=hz_exact,
                 pclk_khz=pclk_khz, interlaced=bool(d[17] & 0x80))
@@ -215,7 +211,7 @@ def established_modes(base):
 
 
 def standard_modes(base):
-    # EDID < 1.3: aspect code 0 meant 1:1, not 16:10.
+    # EDID < 1.3: aspect code 0 meant 1:1, not 16:10
     old = (base[18], base[19]) < (1, 3)
     aspects = {0: (1, 1) if old else (16, 10), 1: (4, 3), 2: (5, 4), 3: (16, 9)}
     out = []
@@ -259,9 +255,7 @@ def cea_info(blocks):
     return False, False, False
 
 
-# --------------------------------------------------------------------------
-# mode selection
-# --------------------------------------------------------------------------
+# --- mode selection ---
 def downcap_hz(w, h, hz):
     """Highest common refresh <= hz that fits the box's pixel-rate cap."""
     for r in COMMON_HZ:
@@ -293,7 +287,7 @@ def pick_mode(dtds, std, est, warn):
             warn(f"preferred timing {preferred} exceeds {MAX_W}x{MAX_H} — "
                  "falling back")
 
-    # Fall back through every other advertised timing, biggest first.
+    # fall back through every other advertised timing, biggest first
     candidates = [m for m in (dtds[1:] if preferred else dtds) + std + est
                   if sane_or_listed(m) and supported(m)]
     candidates.sort(key=lambda m: (m.w * m.h, m.hz), reverse=True)
@@ -308,13 +302,11 @@ def pick_mode(dtds, std, est, warn):
 
 
 def sane_or_listed(m):
-    # Standard/established entries come from fixed tables — inherently sane.
+    # standard/established entries come from fixed tables, inherently sane
     return sane_dtd(m) if m.pclk_khz is not None else True
 
 
-# --------------------------------------------------------------------------
-# entry point
-# --------------------------------------------------------------------------
+# --- entry point ---
 def main(argv=None):
     ap = argparse.ArgumentParser(
         description="Validate an EDID blob and pick the best H96 Max V58 mode.")
@@ -373,7 +365,7 @@ def main(argv=None):
         }, indent=2))
         return 0 if chosen else 3
 
-    # Human report on stderr; the bare mode (the contract) on stdout.
+    # human report on stderr; the bare mode (the contract) on stdout
     err = sys.stderr
     print(f"EDID: monitor {name!r}" if name else "EDID: (unnamed monitor)",
           file=err)

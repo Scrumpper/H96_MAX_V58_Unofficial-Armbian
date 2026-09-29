@@ -11,10 +11,7 @@ Restart=on-failure
 RestartSec=5
 # Encode is on the VPU, not the CPU, so keep the daemon low priority.
 Nice=5
-# NOTE: do NOT add DeviceAllow=. Setting it switches systemd to a device WHITELIST,
-# which then blocks /dev/dma_heap/* and /dev/dri/renderD12x that rkmpp hwaccel needs
-# (verified: with DeviceAllow=/dev/mpp_service the ffmpeg rkmpp path failed; without
-# it, it works). Leave device access at the default (all).
+# Do not add DeviceAllow=: it switches systemd to a device whitelist and blocks /dev/dma_heap/* and /dev/dri/renderD12x that rkmpp hwaccel needs; leave device access at the default (all).
 StandardOutput=journal
 StandardError=journal
 

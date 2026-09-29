@@ -1,0 +1,17 @@
+[Unit]
+Description=H96 depmod + load rfcomm and xpad before BlueZ
+After=local-fs.target systemd-modules-load.service
+Before=bluetooth.service h96-bt.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+# depmod regenerates modules.dep/alias for the running kernel so modprobe/udev modalias can resolve rfcomm (Bluetooth HFP mic) and xpad (USB pad dongles); uname -r keeps this unchanged across kernel updates.
+# Release 6.1.115 shipped rfcomm.ko out of tree: if missing from /lib/modules, restore it from the stash under /usr/local/lib/h96 before depmod; later releases build it in-tree and must not get the stash (vermagic differs).
+ExecStartPre=/bin/sh -c 'R=$(uname -r); D=/lib/modules/$R/kernel/net/bluetooth; if [ "$R" = 6.1.115 ] && [ ! -s "$D/rfcomm.ko" ] && [ -f /usr/local/lib/h96/rfcomm.ko ]; then install -D -m0644 /usr/local/lib/h96/rfcomm.ko "$D/rfcomm.ko"; fi; exit 0'
+ExecStart=/bin/sh -c 'exec /sbin/depmod "$(uname -r)"'
+ExecStart=/sbin/modprobe rfcomm
+ExecStart=-/sbin/modprobe xpad
+
+[Install]
+WantedBy=multi-user.target

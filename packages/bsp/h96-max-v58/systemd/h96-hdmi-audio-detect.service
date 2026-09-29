@@ -1,0 +1,26 @@
+# /etc/systemd/system/h96-hdmi-audio-detect.service
+# H96 Max V58: HDMI detect (h96-display detect): display EDID over DDC -> kernel EDID with
+# display modes (RGB 8-bit, <= 340 MHz) + sink audio, KDE card profiles, passthrough,
+# CEC physical address.
+# Boot: before display manager, so X and first desktop session start on detected modes.
+# Hotplug: started by /etc/udev/rules.d/99-h96-hdmi-audio.rules (drm HOTPLUG=1).
+# Idempotent: unchanged sink = no file write, no reload, no WirePlumber restart.
+# Name kept from v6.1 (audio-only detect) for hotfix/image compatibility.
+[Unit]
+Description=H96 Max V58 HDMI detect (display EDID -> modes, audio, CEC address)
+After=systemd-udev-settle.service sys-kernel-debug.mount local-fs.target
+Wants=sys-kernel-debug.mount
+Before=display-manager.service
+ConditionPathExists=/usr/local/lib/h96/edid_audio.py
+# A hotplug storm must only delay detection, never disable it (own debounce still applies)
+StartLimitIntervalSec=0
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/h96-display detect --hotplug --quiet
+TimeoutStartSec=90
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

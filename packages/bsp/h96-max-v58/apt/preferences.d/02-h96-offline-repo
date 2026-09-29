@@ -1,0 +1,6 @@
+# Offline repo /opt/h96-pkgs installs packages during the first boot with no network.
+# Some also exist online at the same version, which made apt/Discover offer a
+# phantom reinstall; pin it low so it is a first-boot fallback only.
+Package: *
+Pin: origin ""
+Pin-Priority: 1

@@ -1,0 +1,7 @@
+[Desktop Entry]
+Type=Application
+Name=H96 display colour
+Comment=Re-applies HDMI colour format and range set with h96-display color / range
+Exec=/usr/local/sbin/h96-display session-apply
+NoDisplay=true
+X-KDE-autostart-phase=2

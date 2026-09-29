@@ -1,19 +1,13 @@
 #!/usr/bin/env python3
-# h96-cecd -- HDMI-CEC to uinput daemon for H96 Max V58 (RK3588)
-#
+# h96-cecd: HDMI-CEC to uinput daemon for H96 Max V58 (RK3588).
 # Listens for CEC "User Control Pressed" events from the TV remote and injects
-# them as Linux input key events through /dev/uinput, so the TV remote drives
-# KDE Plasma, mpv, and Kodi.
-#
-# Device-agnostic: talks to the kernel CEC API via /dev/cec0.
-# Backend priority:
-#   1. cec-client  (libcec, package: cec-utils)   -- preferred, turnkey key decode
-#   2. cec-ctl     (v4l-utils, package: v4l-utils) -- fallback, kernel-native
-#
-# Fails gracefully when no CEC device / no backend is present: it prints a
-# clear message and exits 0 (so systemd does not crash-loop).
-#
-# No third-party Python deps. uinput driven directly via ctypes/struct.
+# them as Linux input key events through /dev/uinput, so the remote drives
+# KDE Plasma, mpv and Kodi. Talks to the kernel CEC API via /dev/cec0.
+# Backend priority: cec-client (libcec, turnkey key decode), then cec-ctl
+# (v4l-utils, kernel-native). Exits 0 with no backend/device so systemd does
+# not crash-loop. No third-party Python deps; uinput driven via ctypes/struct.
+# Also serves display wake/blank requests from the session watcher (h96-cec-wake)
+# on WAKE_SOCK: wake = TV on + active source, blank = TV standby (opt-in flag).
 
 import fcntl
 import os
@@ -21,24 +15,33 @@ import re
 import select
 import shutil
 import signal
+import socket
 import struct
 import subprocess
 import sys
+import threading
 import time
 
 CEC_DEV = os.environ.get("H96_CEC_DEV", "/dev/cec0")
 UINPUT_DEV = "/dev/uinput"
 OSD_NAME = os.environ.get("H96_CEC_OSD", "H96")
 KEYMAP_FILE = "/etc/h96/cec-keymap.conf"
+WAKE_SOCK = os.environ.get("H96_CEC_WAKE_SOCK", "/run/h96-cec/wake.sock")
+WAKE_OFF_FLAG = "/etc/h96/cec-wake.off"
+BLANK_FLAG = "/etc/h96/cec-standby-on-blank"
+SEAT_FILE = "/run/systemd/seats/seat0"
+DEBOUNCE_S = 10.0
+
+# live cec-client process (libcec backend); None with the cec-ctl backend
+LIBCEC = {"proc": None}
+LIBCEC_LOCK = threading.Lock()
 
 
 def log(*a):
     print("h96-cecd:", *a, file=sys.stderr, flush=True)
 
 
-# ---------------------------------------------------------------------------
-# Linux input key codes (subset we need). From <linux/input-event-codes.h>.
-# ---------------------------------------------------------------------------
+# --- Linux input key codes (subset needed), from <linux/input-event-codes.h> ---
 KEY = {
     "KEY_ESC": 1, "KEY_BACKSPACE": 14, "KEY_ENTER": 28,
     "KEY_UP": 103, "KEY_DOWN": 108, "KEY_LEFT": 105, "KEY_RIGHT": 106,
@@ -56,8 +59,8 @@ KEY = {
     "KEY_5": 6, "KEY_6": 7, "KEY_7": 8, "KEY_8": 9, "KEY_9": 10,
 }
 
-# Default map: normalized CEC user-control name -> KEY_ symbol.
-# Names are normalized to lowercase, spaces/underscores -> "-".
+# default map: normalized CEC user-control name -> KEY_ symbol (lowercase,
+# spaces/underscores -> "-")
 DEFAULT_MAP = {
     "select": "KEY_ENTER",
     "ok": "KEY_ENTER",
@@ -112,7 +115,7 @@ DEFAULT_MAP = {
     "number-7": "KEY_7", "number-8": "KEY_8", "number-9": "KEY_9",
 }
 
-# libcec key-name aliases (cec-client prints these) -> normalized names above.
+# libcec key-name aliases (cec-client prints these) -> normalized names above
 LIBCEC_ALIAS = {
     "channel up": "channel-up",
     "channel down": "channel-down",
@@ -161,10 +164,8 @@ def normalize(name):
     return name.lower().replace(" ", "-").replace("_", "-")
 
 
-# ---------------------------------------------------------------------------
-# uinput virtual keyboard (legacy uinput_user_dev + write interface).
-# aarch64 uses asm-generic ioctl encoding.
-# ---------------------------------------------------------------------------
+# --- uinput virtual keyboard (legacy uinput_user_dev + write interface);
+# aarch64 uses asm-generic ioctl encoding ---
 UINPUT_IOCTL_BASE = ord("U")
 
 
@@ -194,7 +195,7 @@ class UInput:
         for c in sorted(set(codes)):
             fcntl.ioctl(self.fd, UI_SET_KEYBIT, c)
         # struct uinput_user_dev: name[80], input_id{bustype,vendor,product,version}
-        # (4 x u16), ff_effects_max u32, then abs arrays 4 x s32[64].
+        # (4x u16), ff_effects_max u32, then abs arrays 4x s32[64]
         name = b"H96-CEC-Remote"
         dev = struct.pack(
             "80sHHHHI" + "i" * (64 * 4),
@@ -212,8 +213,8 @@ class UInput:
         log("uinput device created: H96-CEC-Remote")
 
     def _emit(self, etype, code, value):
-        # struct input_event on 64-bit: time (2 x long), type u16, code u16,
-        # value s32. Timestamp left at 0 (kernel fills it in).
+        # struct input_event on 64-bit: time (2x long), type u16, code u16, value
+        # s32; timestamp left at 0, kernel fills it in
         ev = struct.pack("llHHi", 0, 0, etype, code, value)
         os.write(self.fd, ev)
 
@@ -234,9 +235,7 @@ class UInput:
             pass
 
 
-# ---------------------------------------------------------------------------
-# Backends
-# ---------------------------------------------------------------------------
+# --- backends ---
 def wait_for_device(timeout=30):
     """CEC device can appear a little after boot (HDMI hotplug). Wait briefly."""
     deadline = time.time() + timeout
@@ -249,7 +248,7 @@ def wait_for_device(timeout=30):
 
 def run_libcec(ui, keymap):
     # cec-client acts as a Playback device, becomes active source, and prints
-    # "key pressed: <name> (<code>) ..." lines we parse.
+    # "key pressed: <name> (<code>) ..." lines to parse
     cec_num = re.sub(r"\D", "", os.path.basename(CEC_DEV)) or "0"
     cmd = ["cec-client", "-t", "p", "-o", OSD_NAME, "-d", "8", CEC_DEV]
     log("starting backend: cec-client (libcec) on", CEC_DEV)
@@ -258,11 +257,12 @@ def run_libcec(ui, keymap):
         stderr=subprocess.STDOUT, bufsize=1, universal_newlines=True,
     )
     try:
-        # Become active source so the TV routes remote keys to us.
+        # become active source so the TV routes remote keys here
         proc.stdin.write("as\n")
         proc.stdin.flush()
     except Exception:
         pass
+    LIBCEC["proc"] = proc
 
     keyre = re.compile(r"key pressed:\s*(.+?)\s*\((0x[0-9a-fA-F]+|\d+)\)")
     for line in proc.stdout:
@@ -271,14 +271,15 @@ def run_libcec(ui, keymap):
             continue
         name = normalize(m.group(1))
         dispatch(ui, keymap, name)
+    LIBCEC["proc"] = None
     rc = proc.wait()
     log("cec-client exited rc", rc)
     return rc
 
 
 def run_cecctl(ui, keymap):
-    # Kernel-native fallback. First claim a Playback logical address so the TV
-    # will address remote keys to us, then monitor traffic.
+    # kernel-native fallback: claim a Playback logical address so the TV
+    # addresses remote keys here, then monitor traffic
     log("starting backend: cec-ctl (v4l-utils) on", CEC_DEV)
     try:
         subprocess.run(
@@ -293,7 +294,7 @@ def run_cecctl(ui, keymap):
         stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
         bufsize=1, universal_newlines=True,
     )
-    # Lines look like:  "\tui-cmd: select (0x00)"  (inside USER_CONTROL_PRESSED)
+    # lines look like "\tui-cmd: select (0x00)" inside USER_CONTROL_PRESSED
     uire = re.compile(r"ui-cmd:\s*([a-z0-9\-]+)", re.IGNORECASE)
     pressed = False
     for line in proc.stdout:
@@ -326,7 +327,129 @@ def dispatch(ui, keymap, name):
     log("cec", name, "->", keyname)
 
 
-# ---------------------------------------------------------------------------
+# --- display wake/blank requests ---
+def libcec_send(lines):
+    """Commands through the running cec-client; False when that backend is not up."""
+    proc = LIBCEC["proc"]
+    if proc is None or proc.poll() is not None:
+        return False
+    with LIBCEC_LOCK:
+        try:
+            for ln in lines:
+                proc.stdin.write(ln + "\n")
+                proc.stdin.flush()
+                time.sleep(1)
+            return True
+        except Exception:
+            return False
+
+
+def cecctl(*args):
+    try:
+        r = subprocess.run(["cec-ctl", "-d", CEC_DEV] + list(args), timeout=10,
+                           stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                           universal_newlines=True)
+        return r.returncode == 0, r.stdout
+    except Exception as e:
+        return False, str(e)
+
+
+def phys_addr():
+    ok, out = cecctl()
+    m = re.search(r"Physical Address\s*:\s*([0-9a-fA-F.]+)", out)
+    return m.group(1) if ok and m else None
+
+
+def cec_wake():
+    if libcec_send(["on 0", "as"]):
+        return True
+    # adapter has no address while HPD is low (display just re-enabled): retry briefly
+    for _ in range(5):
+        pa = phys_addr()
+        if pa and pa.lower() != "f.f.f.f":
+            ok, _ = cecctl("--to", "0", "--image-view-on")
+            cecctl("--active-source", "phys-addr=" + pa)
+            if ok:
+                return True
+        time.sleep(2)
+    return False
+
+
+def cec_standby():
+    if libcec_send(["standby 0"]):
+        return True
+    ok, _ = cecctl("--to", "0", "--standby")
+    return ok
+
+
+def seat_uid():
+    try:
+        with open(SEAT_FILE) as f:
+            for line in f:
+                if line.startswith("ACTIVE_UID="):
+                    return int(line.split("=", 1)[1])
+    except (OSError, ValueError):
+        pass
+    return None
+
+
+def handle_request(req, last):
+    now = time.monotonic()
+    if req == "wake":
+        if os.path.exists(WAKE_OFF_FLAG):
+            return "off"
+        if now - last.get(req, -1e9) < DEBOUNCE_S:
+            return "debounced"
+        last[req] = now
+        return "sent" if cec_wake() else "failed"
+    if req == "blank":
+        if not os.path.exists(BLANK_FLAG):
+            return "off"
+        if now - last.get(req, -1e9) < DEBOUNCE_S:
+            return "debounced"
+        last[req] = now
+        return "sent" if cec_standby() else "failed"
+    return "bad"
+
+
+def wake_server():
+    """Stream socket; peer must be root or the active seat0 user (SO_PEERCRED)."""
+    try:
+        os.unlink(WAKE_SOCK)
+    except FileNotFoundError:
+        pass
+    except OSError as e:
+        log("wake socket:", e)
+        return
+    try:
+        srv = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        srv.bind(WAKE_SOCK)
+        os.chmod(WAKE_SOCK, 0o666)
+        srv.listen(4)
+    except OSError as e:
+        log("wake socket unavailable:", e)
+        return
+    log("wake socket:", WAKE_SOCK)
+    last = {}
+    while True:
+        conn, _ = srv.accept()
+        with conn:
+            try:
+                conn.settimeout(2)
+                cred = conn.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED,
+                                       struct.calcsize("3i"))
+                _, uid, _ = struct.unpack("3i", cred)
+                req = conn.recv(16).decode("ascii", "replace").strip()
+                if uid != 0 and uid != seat_uid():
+                    res = "denied"
+                else:
+                    res = handle_request(req, last)
+                log("display", req[:8], "uid", uid, "->", res)
+                conn.sendall(res.encode() + b"\n")
+            except OSError:
+                pass
+
+
 def main():
     signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
 
@@ -353,14 +476,15 @@ def main():
         log("cannot open", UINPUT_DEV, "(need root/udev perms). exiting.")
         return 0
 
+    threading.Thread(target=wake_server, daemon=True).start()
     try:
         while True:
             if have_libcec:
                 run_libcec(ui, keymap)
             elif have_cecctl:
                 run_cecctl(ui, keymap)
-            # Backend died (HDMI unplug, adapter reset). Retry after a pause,
-            # but bail if the device vanished for good.
+            # backend died (HDMI unplug, adapter reset); retry after a pause,
+            # bail if the device vanished for good
             if not os.path.exists(CEC_DEV):
                 log(CEC_DEV, "gone; exiting.")
                 break

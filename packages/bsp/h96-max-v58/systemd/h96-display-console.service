@@ -1,0 +1,15 @@
+# /etc/systemd/system/h96-display-console.service
+# H96 Max V58: bootloader leaves HDMI in YCbCr on displays that list it; console shows green
+# until desktop sets RGB. One blank cycle at boot lets kernel pick RGB (no-op when RGB).
+[Unit]
+Description=H96 Max V58 console colour: bootloader YCbCr HDMI output reset to RGB
+After=sys-kernel-debug.mount h96-hdmi-audio-detect.service
+Wants=sys-kernel-debug.mount
+Before=display-manager.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/h96-display console-apply
+
+[Install]
+WantedBy=multi-user.target

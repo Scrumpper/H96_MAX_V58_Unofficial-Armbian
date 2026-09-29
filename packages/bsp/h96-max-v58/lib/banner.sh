@@ -1,15 +1,6 @@
 #!/bin/bash
-# /usr/local/lib/h96/banner.sh
-#
-# Shared block-letter header for the H96 Max V58 tools, matching the firmware
-# suite installer. Source it and call h96_banner "S U B T I T L E".
-#
-# The art and the colours live HERE and nowhere else. They were previously
-# pasted into each flasher, which meant changing the wordmark took nine edits.
-#
-# TTY-gated on purpose: most of these scripts also run from systemd units, and
-# block letters plus escape codes in the journal are noise. Not a TTY, no
-# banner, no colour. NO_COLOR is honoured as well.
+# banner.sh: shared block-letter header for H96 tools; source it and call h96_banner "S U B T I T L E".
+# TTY-gated: skips output under systemd/non-TTY and honours NO_COLOR.
 
 h96_banner() {
     [ -t 1 ] || return 0

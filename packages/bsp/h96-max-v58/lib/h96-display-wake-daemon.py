@@ -1,15 +1,14 @@
 #!/usr/bin/env python3
-# h96-display-wake-daemon: watch every input device; when a key or button is
+# h96-display-wake-daemon: watch input devices; when a key or button is
 # pressed while the HDMI connector is connected but not enabled, run
 # h96-display-wake.sh to re-drive the output.
 #
-# Why: this BSP kernel does not re-initialise the HDMI PHY/VOP path after
-# DPMS-off on its own, so a blanked screen never returns on keypress. The
-# desktop still blanks normally; this daemon only acts in the broken state
-# (connected + disabled), so it never prevents blanking.
+# This BSP kernel does not re-initialise the HDMI PHY/VOP path after DPMS-off,
+# so a blanked screen never returns on keypress; this daemon only acts in the
+# broken state (connected + disabled) and never prevents blanking.
 #
-# Cost: blocking select() on the event devices; the sysfs check is rate-limited
-# to once per 3 s and only runs on an actual key/button press.
+# Blocking select() on event devices; sysfs check rate-limited to once per 3s
+# and only on an actual key/button press.
 
 import glob
 import os
@@ -57,7 +56,7 @@ def main():
         now = time.monotonic()
         if now - last_scan >= 60:
             last_scan = now
-            scan(fds)  # pick up keyboards plugged in since the last scan
+            scan(fds)  # pick up keyboards plugged in since last scan
         pressed = False
         for fd in r:
             try:

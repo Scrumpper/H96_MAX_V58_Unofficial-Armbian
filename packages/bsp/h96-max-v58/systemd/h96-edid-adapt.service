@@ -1,8 +1,6 @@
 [Unit]
 Description=H96 Max V58 EDID adapt (inject the attached display's EDID into DRM)
-# Before the display manager so the login greeter already has the full mode
-# list. On a headless image display-manager.service does not exist, which is a
-# valid Before= target regardless.
+# Before the display manager so the login greeter has the full mode list; on a headless image display-manager.service does not exist, which is still a valid Before= target.
 After=systemd-udev-settle.service
 Before=display-manager.service
 ConditionPathExists=/etc/h96/display-autodetect.enabled

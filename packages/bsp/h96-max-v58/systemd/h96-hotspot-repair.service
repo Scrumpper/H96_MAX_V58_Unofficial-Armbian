@@ -1,0 +1,18 @@
+# /etc/systemd/system/h96-hotspot-repair.service
+# H96 Max V58: if a reboot happened while h96-hotspot was on, the client WiFi
+# units are left masked and NM's conf.d is left edited; repair before they
+# start so client WiFi comes up normally in the same boot (some boxes have no
+# other way to reach it). No-op (exit 0, silent) on every normal boot.
+[Unit]
+Description=H96 Max V58 hotspot boot-repair (restore WiFi client mode if left broken)
+After=local-fs.target
+Before=h96-wpa-supplicant-wlan0.service h96-dhcpcd-wlan0.service NetworkManager.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/h96-hotspot repair
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

@@ -1,35 +1,22 @@
 #!/usr/bin/env python3
-# h96-bt-agent -- headless "Just Works" BlueZ pairing agent for the H96 Max V58.
-#
-# WHAT THIS DOES
-#   Registers an org.bluez.Agent1 with capability NoInputNoOutput and makes it
-#   the default agent. That capability forces "Just Works" SSP pairing: no PIN,
-#   no passkey confirmation UI. This agent auto-accepts every pairing and
-#   service-authorization request and marks each freshly paired device Trusted,
-#   so a phone can pair to the box with no keyboard/screen on the box and
-#   reconnect later without re-authorizing.
-#
-#   It is deliberately promiscuous: while it runs, ANY device that finds the
-#   box discoverable can pair. h96-bt-speaker starts it only while the box is in
-#   speaker mode and stops it (and drops discoverable) on `off`.
-#
-# SCOPE
-#   Pairing/authorization only. It does NOT set the adapter discoverable/
-#   pairable (h96-bt-speaker does that via bluetoothctl) and does NOT route
-#   audio (h96-bt-loopback does that in the PipeWire session).
-#
-#   Talks to the SYSTEM bus (org.bluez). Runs as root under h96-bt-speaker.
-#
-# Deployed to /usr/local/lib/h96/h96-bt-agent (0755). Not on $PATH by design.
+# h96-bt-agent: headless "Just Works" BlueZ pairing agent for H96 Max V58.
+# Registers an org.bluez.Agent1 (capability NoInputNoOutput) as default agent,
+# forcing Just Works SSP pairing with no PIN/passkey UI; auto-accepts every
+# pairing and authorization request and marks each device Trusted, so a phone
+# pairs with no keyboard/screen on the box and reconnects without re-auth.
+# Deliberately promiscuous: any device that finds the box discoverable can
+# pair, so h96-bt-speaker starts it only in speaker mode and stops it on `off`.
+# Pairing/authorization only: does not set discoverable/pairable (h96-bt-speaker
+# does that) and does not route audio (h96-bt-loopback does that). Talks to the
+# system bus, runs as root under h96-bt-speaker. Not on $PATH by design.
 
 import sys
 
 AGENT_PATH = "/org/h96/btspeaker/agent"
 CAPABILITY = "NoInputNoOutput"
 
-# Audio-relevant service UUIDs we explicitly want authorized. We accept
-# everything anyway (appliance in speaker mode), but these are the ones that
-# matter for A2DP playback + AVRCP transport controls.
+# audio-relevant service UUIDs for A2DP playback and AVRCP transport controls
+# (everything else is accepted too, since the box is in speaker mode)
 A2DP_SINK   = "0000110b-0000-1000-8000-00805f9b34fb"
 A2DP_SOURCE = "0000110a-0000-1000-8000-00805f9b34fb"
 AVRCP_TG    = "0000110c-0000-1000-8000-00805f9b34fb"
@@ -75,7 +62,7 @@ class Rejected(dbus.DBusException):
 
 
 class Agent(dbus.service.Object):
-    # Signature strings follow the org.bluez Agent1 API.
+    # signature strings follow the org.bluez Agent1 API
 
     @dbus.service.method("org.bluez.Agent1", in_signature="", out_signature="")
     def Release(self):
@@ -83,8 +70,8 @@ class Agent(dbus.service.Object):
 
     @dbus.service.method("org.bluez.Agent1", in_signature="os", out_signature="")
     def AuthorizeService(self, device, uuid):
-        # Accept audio profiles explicitly; accept anything else too while in
-        # speaker mode. Trust the device so it reconnects silently.
+        # accept audio profiles explicitly, and anything else in speaker mode;
+        # trust the device so it reconnects silently
         log("authorize service %s uuid=%s" % (device, uuid))
         set_trusted(device)
         return
@@ -111,7 +98,7 @@ class Agent(dbus.service.Object):
 
     @dbus.service.method("org.bluez.Agent1", in_signature="ou", out_signature="")
     def RequestConfirmation(self, device, passkey):
-        # Just Works: accept without asking.
+        # Just Works: accept without asking
         log("confirm %s passkey=%06u -> accept" % (device, passkey))
         set_trusted(device)
         return

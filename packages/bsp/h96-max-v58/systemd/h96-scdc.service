@@ -1,0 +1,20 @@
+# /etc/systemd/system/h96-scdc.service
+# H96 Max V58: HDMI 2.0 scrambling (modes 340-600 MHz): sink SCDC written over i2c-ddc
+# after each modeset (h96-scdc). Default on; 'h96-display hdmi20 off' stops it.
+[Unit]
+Description=H96 Max V58 HDMI 2.0 scrambling (SCDC over i2c-ddc after each modeset)
+ConditionPathExists=!/etc/h96/display-hdmi20.off
+After=sys-kernel-debug.mount
+Wants=sys-kernel-debug.mount
+Before=display-manager.service
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 /usr/local/sbin/h96-scdc daemon
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

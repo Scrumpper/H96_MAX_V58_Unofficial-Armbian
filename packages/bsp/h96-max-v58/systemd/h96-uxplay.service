@@ -1,6 +1,4 @@
-# h96-uxplay.service - AirPlay screen/video mirroring receiver -> HDMI
-# TEMPLATE. Placeholders __DESKTOP_USER__ __UID__ __HOME__ substituted by
-# h96-cast at 'enable'. Needs X11 DISPLAY + PipeWire session of desktop user.
+# AirPlay screen mirroring receiver to HDMI. Template: placeholders __DESKTOP_USER__ __UID__ __HOME__ substituted by h96-cast at enable; needs X11 DISPLAY + PipeWire session of the desktop user.
 [Unit]
 Description=h96 AirPlay screen mirroring receiver (uxplay -> HDMI)
 Documentation=https://github.com/FDH2/UxPlay

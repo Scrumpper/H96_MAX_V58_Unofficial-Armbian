@@ -1,25 +1,19 @@
 #!/usr/bin/env bash
-# h96-bt-loopback -- route incoming Bluetooth A2DP audio to the local sink.
+# h96-bt-loopback: bridge incoming Bluetooth A2DP audio to the local sink; WirePlumber does not auto-link a raw source, so this makes the box a speaker.
 #
-# WHAT THIS DOES
-#   Runs INSIDE the desktop user's PipeWire session. Watches for A2DP source
-#   nodes that appear when a phone/laptop connects to the box (node.name
-#   "bluez_input.<MAC>.a2dp-source", media.class Audio/Source) and, for each,
-#   starts a pw-loopback that captures from it and plays to the target sink
-#   (the default sink, i.e. HDMI on this box, unless H96_BT_SINK is set).
-#
-#   WirePlumber does not auto-link a raw Audio/Source to a sink, so this bridge
-#   is what actually makes the box a speaker. When the phone disconnects the
-#   source node vanishes and its pw-loopback is torn down.
+# Runs inside the desktop user's PipeWire session. Watches for A2DP source nodes
+# that appear when a phone/laptop connects (node.name "bluez_input.<MAC>.a2dp-source",
+# media.class Audio/Source) and starts a pw-loopback from each to the target sink
+# (default sink, i.e. HDMI on this box, unless H96_BT_SINK is set). Torn down when
+# the source vanishes on disconnect.
 #
 # ENV
 #   H96_BT_SINK   node.name (or serial) of the playback sink. Empty => default
 #                 sink resolved via `pactl get-default-sink` / wpctl.
 #   H96_BT_POLL   poll interval seconds (default 1).
 #
-# Requires a running PipeWire session (XDG_RUNTIME_DIR must point at it) plus
-# pw-loopback, pw-dump, and one of pactl/wpctl. Deployed to
-# /usr/local/lib/h96/h96-bt-loopback (0755). Started/stopped by h96-bt-speaker.
+# Needs a running PipeWire session (XDG_RUNTIME_DIR must point at it) plus
+# pw-loopback, pw-dump, and one of pactl/wpctl. Started/stopped by h96-bt-speaker.
 
 set -uo pipefail
 
@@ -37,16 +31,16 @@ cleanup() {
   for k in "${!PIDS[@]}"; do
     kill "${PIDS[$k]}" 2>/dev/null
   done
-  # Belt and suspenders: kill any stragglers we spawned.
+  # Belt and suspenders: kill any stragglers spawned.
   pkill -P $$ pw-loopback 2>/dev/null
   exit 0
 }
 trap cleanup TERM INT
 
-# --- preflight -------------------------------------------------------------
+# --- preflight ---
 if ! have pw-dump || ! have pw-loopback; then
   log "pw-dump / pw-loopback not found (pipewire-bin missing). Nothing to do."
-  # Idle so the supervising tool can still stop us cleanly.
+  # Idle so the supervising tool can still stop this cleanly.
   while :; do sleep "$POLL"; done
 fi
 
@@ -54,8 +48,7 @@ if ! pw-dump >/dev/null 2>&1; then
   log "cannot reach PipeWire (XDG_RUNTIME_DIR=${XDG_RUNTIME_DIR:-unset}). Waiting."
 fi
 
-# Resolve the playback sink node.name. Prefer explicit override, else the
-# default sink. `pactl get-default-sink` prints the node.name directly.
+# Resolve the playback sink node.name: explicit override, else the default sink.
 resolve_sink() {
   if [ -n "${H96_BT_SINK:-}" ]; then
     printf '%s\n' "$H96_BT_SINK"; return 0
@@ -72,10 +65,9 @@ resolve_sink() {
   printf '%s\n' "$s"
 }
 
-# Emit the node.name of every currently-present A2DP source, one per line.
+# Emit the node.name of each present A2DP source, one per line.
 list_a2dp_sources() {
-  # pw-dump is JSON. Use python3 if available for a robust parse, else a
-  # tolerant grep/sed fallback.
+  # pw-dump is JSON; parse with python3 if available, else a tolerant grep/sed fallback.
   if have python3; then
     pw-dump 2>/dev/null | python3 - <<'PY' 2>/dev/null
 import json, sys
@@ -103,8 +95,7 @@ PY
 
 start_loopback() {
   local src="$1" sink="$2"
-  # Capture from the bluez source, play to the target sink. target.object
-  # accepts a node.name. stream.capture.sink=false => capture from a source.
+  # Capture from the bluez source, play to the target sink; stream.capture.sink=false captures from a source.
   setsid pw-loopback \
     --name="h96-bt-speaker" \
     --capture-props="target.object=$src stream.capture.sink=false node.description=H96-BT-in node.passive=false" \

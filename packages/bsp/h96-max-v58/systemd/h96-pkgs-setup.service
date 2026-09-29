@@ -1,0 +1,13 @@
+[Unit]
+Description=H96 Max V58 offline package setup (v4l-utils, dnsmasq-base)
+After=multi-user.target
+ConditionPathExists=!/var/lib/h96-pkgs-setup-done
+
+[Service]
+Type=oneshot
+# inner timeout below the unit timeout; an unfinished run retries next boot
+ExecStart=/usr/bin/timeout 600 /usr/local/sbin/h96-pkgs-setup.sh
+SuccessExitStatus=124 SIGTERM SIGKILL
+TimeoutStartSec=660
+StandardOutput=journal
+StandardError=journal

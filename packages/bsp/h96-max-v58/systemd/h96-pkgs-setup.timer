@@ -1,0 +1,9 @@
+[Unit]
+Description=H96 Max V58 offline package setup (once per boot, off the boot path)
+
+[Timer]
+OnBootSec=30
+AccuracySec=1s
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,12 @@
+[Unit]
+Description=H96 reconnect Bluetooth headset stereo (A2DP) link after it drops
+After=bluetooth.service
+PartOf=bluetooth.service
+
+[Service]
+ExecStart=/usr/bin/python3 /usr/local/lib/h96/h96-bt-a2dp-heal.py
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=bluetooth.service

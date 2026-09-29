@@ -1,0 +1,7 @@
+[Desktop Entry]
+Type=Application
+Name=H96 CEC display wake
+Comment=Wakes TV over HDMI-CEC when display wakes; h96-cec wake on|off
+Exec=/usr/local/lib/h96/h96-cec-wake
+NoDisplay=true
+X-KDE-autostart-phase=2

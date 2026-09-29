@@ -1,7 +1,4 @@
-# h96-gmediarender.service - UPnP/DLNA renderer -> HDMI (open Cast substitute)
-# TEMPLATE. Placeholders __DESKTOP_USER__ __UID__ __HOME__ substituted by
-# h96-cast at 'enable'. No open Google Cast receiver exists; DLNA is the
-# open "push media to box" path.
+# UPnP/DLNA renderer to HDMI (open Cast substitute, no open Google Cast receiver exists). Template: placeholders __DESKTOP_USER__ __UID__ __HOME__ substituted by h96-cast at enable.
 [Unit]
 Description=h96 DLNA/UPnP media renderer (gmediarender -> HDMI)
 Documentation=https://github.com/hzeller/gmrender-resurrect

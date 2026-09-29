@@ -1,7 +1,4 @@
-# h96-shairport.service - AirPlay audio receiver -> HDMI/PipeWire
-# TEMPLATE. Placeholders __DESKTOP_USER__ __UID__ __HOME__ substituted by
-# h96-cast at 'enable' (recommended). If build injects this file directly,
-# substitute placeholders in [4z] write_one, or let h96-cast rewrite it.
+# AirPlay audio receiver to HDMI/PipeWire. Template: placeholders __DESKTOP_USER__ __UID__ __HOME__ substituted by h96-cast at enable.
 [Unit]
 Description=h96 AirPlay audio receiver (shairport-sync -> HDMI/PipeWire)
 Documentation=man:shairport-sync(1)

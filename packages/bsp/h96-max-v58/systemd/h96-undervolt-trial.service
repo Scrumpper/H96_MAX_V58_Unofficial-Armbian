@@ -1,0 +1,36 @@
+[Unit]
+Description=H96 Max V58 undervolt trial guard (gives the trial boot a test window, then auto-reverts if still unconfirmed)
+Documentation=man:h96-undervolt
+# Runs only when a trial is armed (h96-undervolt sets the flag; `h96-undervolt confirm` clears it).
+# Flag states: armed = first trial boot, promotes to tested and leaves the window open for confirm; tested = a further boot without confirm restores the stock tree and clears the flag.
+ConditionPathExists=/var/lib/h96-undervolt-trial
+# Early, before anything heavy runs, but after the root filesystem is writable.
+DefaultDependencies=no
+After=local-fs.target
+Before=sysinit.target
+Conflicts=shutdown.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=no
+# Never reboots itself: the running kernel already loaded the trial tree, and forcing a reboot during early boot risks a boot loop; a restore takes effect on the next boot.
+ExecStart=/bin/sh -c '\
+  FLAG=/var/lib/h96-undervolt-trial; \
+  STATE=/var/lib/h96-undervolt-state; \
+  DTB=/boot/dtb/rockchip/rk3588-h96-max-v58-panthor.dtb; \
+  STOCK="$DTB".stock-backup; \
+  st=$(cat "$FLAG" 2>/dev/null); \
+  if [ "$st" = "armed" ]; then \
+    echo tested > "$FLAG" && sync; \
+    echo "h96-undervolt: trial boot - the modified voltage is ACTIVE now. Run h96-undervolt confirm to keep it, or it reverts on the next reboot."; \
+  elif [ -f "$STOCK" ]; then \
+    cp "$STOCK" "$DTB" && rm -f "$FLAG" "$STATE" && sync; \
+    echo "h96-undervolt: trial was not confirmed, stock voltages restored for next boot."; \
+  else \
+    echo "h96-undervolt: trial armed but no stock backup present, cannot auto-revert."; \
+  fi'
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=sysinit.target

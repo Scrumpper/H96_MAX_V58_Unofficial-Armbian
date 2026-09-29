@@ -1,0 +1,9 @@
+# /etc/udev/rules.d/99-h96-hdmi-audio.rules
+# Re-run HDMI detect (h96-display detect: display modes + sink audio + CEC address)
+# on genuine HDMI hotplug only. HOTPLUG=1 separates cable / HPD events from plain
+# modeset "change" events. Replaces 98-h96-edid-adapt.rules (retired).
+# RUN+= fires on every matching event, not only card0's first unit
+# activation (SYSTEMD_WANTS alone misses a later hotplug, e.g. TV -> receiver
+# swap). --no-block skips the i2c wait in the udev worker; the service
+# serialises (flock) and debounces repeat triggers. Name kept from v6.1.
+ACTION=="change", SUBSYSTEM=="drm", KERNEL=="card0", ENV{HOTPLUG}=="1", TAG+="systemd", ENV{SYSTEMD_WANTS}+="h96-hdmi-audio-detect.service", RUN+="/usr/bin/systemctl --no-block start h96-hdmi-audio-detect.service"

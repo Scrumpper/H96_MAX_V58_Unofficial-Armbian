@@ -1,0 +1,107 @@
+#!/usr/bin/env python3
+# h96-cec-wake: session watcher for HDMI-CEC display wake (XDG autostart, X11).
+# Polls DPMS level and input idle time once a second through libXext/libXss and
+# asks h96-cecd (root, owns /dev/cec0) over its socket to act:
+#   wake   display back to On from Standby/Suspend/Off, or input after IDLE_MIN idle
+#          (TV put in standby by its own remote while display stayed on)
+#   blank  display went to Off
+# Policy (enabled flags, debounce) lives in h96-cecd; no daemon = no-op.
+import ctypes
+import ctypes.util
+import os
+import socket
+import sys
+import time
+
+SOCK = os.environ.get("H96_CEC_WAKE_SOCK", "/run/h96-cec/wake.sock")
+IDLE_MS = int(float(os.environ.get("H96_CEC_WAKE_IDLE_MIN", "10")) * 60000)
+POLL_S = 1.0
+DPMS_ON, DPMS_OFF = 0, 3
+
+
+class XssInfo(ctypes.Structure):
+    _fields_ = [("window", ctypes.c_ulong), ("state", ctypes.c_int), ("kind", ctypes.c_int),
+                ("til_or_since", ctypes.c_ulong), ("idle", ctypes.c_ulong),
+                ("event_mask", ctypes.c_ulong)]
+
+
+def load(name):
+    path = ctypes.util.find_library(name) or f"lib{name}.so.6"
+    return ctypes.CDLL(path)
+
+
+def log(*a):
+    print("h96-cec-wake:", *a, file=sys.stderr, flush=True)
+
+
+def send(req):
+    try:
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as s:
+            s.settimeout(0.5)
+            s.connect(SOCK)
+            s.sendall(req.encode())
+            try:
+                return s.recv(32).decode("ascii", "replace").strip() or "?"
+            except socket.timeout:
+                return "queued"
+    except OSError:
+        return "no daemon"
+
+
+def main():
+    x11 = load("X11")
+    xext = load("Xext")
+    try:
+        xss = ctypes.CDLL(ctypes.util.find_library("Xss") or "libXss.so.1")
+    except OSError:
+        xss = None
+    x11.XOpenDisplay.restype = ctypes.c_void_p
+    x11.XOpenDisplay.argtypes = [ctypes.c_char_p]
+    x11.XDefaultRootWindow.restype = ctypes.c_ulong
+    x11.XDefaultRootWindow.argtypes = [ctypes.c_void_p]
+    xext.DPMSInfo.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_ushort),
+                              ctypes.POINTER(ctypes.c_ubyte)]
+    xext.DPMSCapable.argtypes = [ctypes.c_void_p]
+
+    dpy = x11.XOpenDisplay(None)
+    if not dpy:
+        log("no X display; exiting")
+        return 0
+    if not xext.DPMSCapable(dpy):
+        log("display has no DPMS; exiting")
+        return 0
+    root = x11.XDefaultRootWindow(dpy)
+    info = None
+    if xss:
+        xss.XScreenSaverAllocInfo.restype = ctypes.POINTER(XssInfo)
+        xss.XScreenSaverQueryInfo.argtypes = [ctypes.c_void_p, ctypes.c_ulong,
+                                              ctypes.POINTER(XssInfo)]
+        info = xss.XScreenSaverAllocInfo()
+
+    level, state = ctypes.c_ushort(), ctypes.c_ubyte()
+
+    def sample():
+        xext.DPMSInfo(dpy, ctypes.byref(level), ctypes.byref(state))
+        idle = -1
+        if info and xss.XScreenSaverQueryInfo(dpy, root, info):
+            idle = info.contents.idle
+        return level.value, idle
+
+    prev_level, prev_idle = sample()
+    while True:
+        time.sleep(POLL_S)
+        lvl, idle = sample()
+        req = None
+        if prev_level != DPMS_ON and lvl == DPMS_ON:
+            req, why = "wake", "display on"
+        elif lvl == DPMS_ON and 0 <= idle < prev_idle and prev_idle >= IDLE_MS:
+            req, why = "wake", f"input after {prev_idle // 60000} min idle"
+        elif prev_level != DPMS_OFF and lvl == DPMS_OFF:
+            req, why = "blank", "display off"
+        if req:
+            log(why, "->", req, send(req))
+        prev_level, prev_idle = lvl, idle
+
+
+if __name__ == "__main__":
+    sys.exit(main())
