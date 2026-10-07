@@ -102,7 +102,7 @@ cat <<TXT
   runtime $ver.
 
   NOTE on Python: Rockchip publishes rknn-toolkit-lite2 wheels only up to
-  CPython 3.12. This image is Debian forky/sid with Python $(python3 -V 2>&1 | awk '{print $2}'),
+  CPython 3.12. This image is Ubuntu 26.04 with Python $(python3 -V 2>&1 | awk '{print $2}'),
   so those wheels will NOT install against the system interpreter. Use the C API,
   or bring your own CPython <= 3.12 (venv, conda or a container).
 
