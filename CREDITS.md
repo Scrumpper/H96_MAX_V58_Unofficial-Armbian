@@ -2,7 +2,7 @@
 
 This board support builds on work of others.
 
-- **Armbian**: build framework and Debian/Ubuntu-based OS this port targets.
+- **Armbian**: build framework and Ubuntu-based OS this port targets.
   <https://github.com/armbian/build>
 - **Linux kernel** and **Rockchip** RK3588 BSP: base device tree in
   this repo is derived from Rockchip's vendor sources.

@@ -891,7 +891,7 @@ v0.9.8, validates that download is aarch64 shared object before installing
 anything, and `--uninstall` removes it cleanly.
 
 **Known limitation, stated.** Rockchip publishes `rknn-toolkit-lite2` wheels only
-up to CPython 3.12. This image is Debian forky/sid with Python 3.14, so **those wheels will
+up to CPython 3.12. This image is Ubuntu 26.04 with Python 3.14, so **those wheels will
 not install against system interpreter**. C API works (`dlopen` and `rknn_init`
 confirmed present); Python convenience layer needs CPython ≤ 3.12 you bring yourself.
 Model conversion (`.onnx`/`.pt` → `.rknn`) has always run on PC, not on box.
