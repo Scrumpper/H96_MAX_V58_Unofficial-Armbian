@@ -1,0 +1,54 @@
+# CI workflow
+
+Workflow file: `.github/workflows/ci.yml`. Runs on push to `main` and `armbian-*` branches, on every pull request and on manual dispatch. All jobs use GitHub-hosted arm64 runners (`ubuntu-24.04-arm`). Workflow token is read-only (`contents: read`). No secrets, no release steps, no pushes, no tags. Outputs go to workflow run artifacts only.
+
+## Jobs
+
+| Job | Gate | Script it calls | Fails when |
+|-----|------|-----------------|------------|
+| `docs` | Style rules | `tools/docs/check-docs.py` | Any style issue in tracked `*.md` |
+| `docs` | Article pass | `tools/docs/strip-articles.py --check` | Any article left in prose, or dangling internal link |
+| `docs` | Privacy grep | Built-in generic regex, allowlist `.github/privacy-allow.txt` | LAN address, home path or webmail address in tracked text, other than allowlisted test vectors |
+| `lint` | Shell lint | `shellcheck -S error` over `*.sh` and files with sh/bash shebang | Any error-level finding (warnings printed, not gating) |
+| `lint` | Python syntax | `python3 -m py_compile` over `*.py` and files with python shebang | Any syntax error |
+| `lint` | Self-tests | `tools/h96-selftest.py self-test`, plus `tests/` when present | Any failed check |
+| `kit-oldest-python` | Backup kit syntax | `compile()` under Python 3.7 over `h96-backup*`, `h96-restore*` and `h96-migrate-kit/` Python files | Any syntax error on oldest supported interpreter, or no kit files found |
+| `debs` | Packaging PII | Generic regex over `build/` and `tools/ci/` | LAN address or home path |
+| `debs` | Deb build | `tools/ci/kernel-debs-smoke.sh` driving `build/build-kernel-debs.sh` | Builder exit status nonzero |
+| `debs` | Lintian | `lintian --fail-on error,warning` over both built debs | Any error or warning tag outside suppress list |
+| `dtb` | Overlay compile | `dtc -@` over `patch/dt/h96-max-v58.dtso` and every overlay `.dts` | Any compile error, or malformed `h96-max-v58.delete` line |
+| `dtb` | Tree diff | `tools/dtb/build-dtb.sh` on pinned base DTB, then `tools/dtb/dt-tree-diff.sh` against pinned reference DTB | Pinned checksum mismatch, or residual difference beyond phandle renumbering and allowed lines |
+
+Jobs `docs`, `lint`, `debs` and `dtb` run inside `ubuntu:26.04` container on arm64 runner, so Python, shellcheck, dtc, dpkg and lintian match image userland (Ubuntu 26.04). Job `kit-oldest-python` runs inside `python:3.7-slim`: backups from v5.0.1 onward must restore, and 3.7 is kit interpreter floor.
+
+## Deb packaging smoke test
+
+Kernel binaries are pinned build outputs, not CI products, and are not in this repository. `tools/ci/kernel-debs-smoke.sh` feeds `build/build-kernel-debs.sh` placeholder inputs (text Image, one-line System.map, config with matching `CONFIG_LOCALVERSION`, modules tarball with one placeholder file, board overlay compiled as DTB stand-in) with `PIN=0`. Resulting `h96-kernel-*` and `h96-dtb-*` debs exercise package layout, control fields, maintainer scripts and lintian; they are not installable kernels. Builder refuses root, so job runs it as `nobody`.
+
+Lintian suppress list, set in job `env` as `H96_LINTIAN_SUPPRESS`:
+
+| Tag | Reason |
+|-----|--------|
+| `aliased-location` | Modules install under `/lib/modules`, same path as 7.x images. Move to `/usr/lib/modules` (`MODPREFIX`) is pending; drop this entry with that change |
+| `initial-upload-closes-no-bugs` | Packages are not uploaded to Debian archive, so changelog has no bug to close |
+
+Same two tags are only tags lintian reports on debs built from published v7.1 kernel payload.
+
+## DTB tree diff
+
+Tree diff needs `dtb/pinned/rk3588-h96-max-v58.dtb` (vendor base), `dtb/pinned/rk3588-h96-max-v58-panthor.dtb` (published reference) and `dtb/pinned/SHA256SUMS`. Vendor DTB binaries are not committed yet, so step prints `::notice::` and passes while they are absent; overlay compile step runs either way. Setting `H96_CI_STRICT: "1"` in workflow `env` turns absent pinned inputs into failure; set it in same change that commits them.
+
+## Artifacts
+
+| Name | Content | Retention |
+|------|---------|-----------|
+| `kernel-debs-smoke` | Placeholder-input debs and `SHA256SUMS` from `out/debs/` | 14 days |
+| `dtb-tree-diff` | Compiled overlays, and with pinned inputs present, built DTB, decompiled trees and diff from `out/dtb/` | 14 days |
+
+## Out of scope
+
+Kernel build, image build, userland deb build, chroot install test, signing, release assets, tags.
+
+## Local run
+
+Each `run:` block is plain bash, run from repository root with `bash -eo pipefail`. Blocks call `apt-get` as root, since jobs run as root inside containers; outside container, remove those lines (tools must already be installed). Steps named `safe directory` write `safe.directory` into global git config; for local run, point `GIT_CONFIG_GLOBAL` at temporary file first. Closest local equivalent: run each job inside `ubuntu:26.04` container with repository mounted.

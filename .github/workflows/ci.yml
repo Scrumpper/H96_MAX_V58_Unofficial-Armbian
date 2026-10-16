@@ -1,0 +1,271 @@
+# CI gates for H96 MAX V58 image repo: docs, lint, kit syntax, deb packaging with lintian, DTB.
+# No secrets, no releases, no pushes; outputs go to workflow run artifacts only.
+name: ci
+
+on:
+  push:
+    branches: [main, "armbian-*"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # 1 makes DTB tree-diff fail when pinned DTB inputs are absent
+  H96_CI_STRICT: "0"
+  DEBIAN_FRONTEND: noninteractive
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  docs:
+    name: docs gates and privacy grep
+    runs-on: ubuntu-24.04-arm
+    # target release userland, so interpreter and tools match image base
+    container: ubuntu:26.04
+    timeout-minutes: 15
+    steps:
+      - name: tools
+        run: |
+          set -euo pipefail
+          apt-get update -qq
+          apt-get install -y -qq --no-install-recommends ca-certificates git python3 >/dev/null
+          python3 --version
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: safe directory
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+      - name: check-docs
+        run: |
+          set -euo pipefail
+          mapfile -t docs < <(git ls-files -- '*.md')
+          python3 tools/docs/check-docs.py "${docs[@]}"
+      - name: strip-articles check
+        run: |
+          set -euo pipefail
+          mapfile -t docs < <(git ls-files -- '*.md')
+          python3 tools/docs/strip-articles.py --check "${docs[@]}"
+      - name: privacy grep
+        run: |
+          set -euo pipefail
+          # generic patterns only; private denylist stays in local pre-commit gate
+          pat='(192\.168|10\.[0-9]{1,3}|172\.(1[6-9]|2[0-9]|3[01]))\.[0-9]{1,3}\.[0-9]{1,3}|/home/[a-z_][a-z0-9_-]*/|[A-Za-z0-9._%+-]+@(gmail|yahoo|hotmail|outlook|proton(mail)?|icloud)\.[a-z]+'
+          t=${RUNNER_TEMP:-/tmp}
+          # GNU grep; git grep backtracks for minutes on this pattern
+          git ls-files -z -- . ':!.github/workflows/ci.yml' ':!.github/privacy-allow.txt' | xargs -0 -r grep -noIHE "$pat" > "$t/hits.txt" || true
+          # allow entries are path:match pairs for synthetic test vectors
+          sed -E 's/^([^:]*):[0-9]+:/\1:/' "$t/hits.txt" | grep -vxFf .github/privacy-allow.txt > "$t/left.txt" || true
+          if [ -s "$t/left.txt" ]; then
+            cat "$t/left.txt"
+            echo "::error::privacy pattern matched (see lines above)"
+            exit 1
+          fi
+          echo "privacy grep clean ($(wc -l < "$t/hits.txt") allowlisted hits)"
+
+  lint:
+    name: shellcheck, py_compile, self-tests
+    runs-on: ubuntu-24.04-arm
+    container: ubuntu:26.04
+    timeout-minutes: 15
+    steps:
+      - name: tools
+        run: |
+          set -euo pipefail
+          apt-get update -qq
+          apt-get install -y -qq --no-install-recommends ca-certificates git python3 shellcheck >/dev/null
+          python3 --version
+          shellcheck --version | sed -n 2p
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: safe directory
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+      - name: list scripts
+        run: |
+          set -euo pipefail
+          t=${RUNNER_TEMP:-/tmp}
+          : > "$t/sh.list"; : > "$t/py.list"
+          git ls-files -z | while IFS= read -r -d '' f; do
+            [ -f "$f" ] || continue
+            case "$f" in
+              *.sh) echo "$f" >> "$t/sh.list"; continue ;;
+              *.py) echo "$f" >> "$t/py.list"; continue ;;
+            esac
+            first=$(head -n1 "$f" 2>/dev/null | tr -d '\0' || true)
+            case "$first" in
+              '#!'*python*) echo "$f" >> "$t/py.list" ;;
+              '#!'*/sh*|'#!'*bash*|'#!'*dash*|'#!'*'env sh'*) echo "$f" >> "$t/sh.list" ;;
+            esac
+          done
+          echo "shell scripts: $(wc -l < "$t/sh.list")  python files: $(wc -l < "$t/py.list")"
+          [ -s "$t/sh.list" ] && [ -s "$t/py.list" ] || { echo "::error::script discovery found nothing"; exit 1; }
+      - name: shellcheck
+        run: |
+          set -euo pipefail
+          t=${RUNNER_TEMP:-/tmp}
+          # severity error gates; warnings are printed for review
+          xargs -d '\n' -a "$t/sh.list" shellcheck -S warning -f gcc || true
+          xargs -d '\n' -a "$t/sh.list" shellcheck -S error
+          echo "shellcheck -S error clean: $(wc -l < "$t/sh.list") files"
+      - name: py_compile
+        run: |
+          set -euo pipefail
+          t=${RUNNER_TEMP:-/tmp}
+          # cache prefix keeps .pyc files out of the checkout
+          export PYTHONPYCACHEPREFIX="$t/pyc"
+          xargs -d '\n' -a "$t/py.list" python3 -m py_compile
+          echo "py_compile ok: $(wc -l < "$t/py.list") files"
+      - name: self-tests
+        run: |
+          set -euo pipefail
+          python3 tools/h96-selftest.py self-test
+          if [ -d tests ]; then python3 -m unittest discover -s tests -v; fi
+
+  kit-oldest-python:
+    name: backup kit syntax on oldest supported Python
+    runs-on: ubuntu-24.04-arm
+    # backups from v5.0.1 onward must restore; 3.7 is kit interpreter floor
+    container: python:3.7-slim
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: compile kit under oldest interpreter
+        run: |
+          set -euo pipefail
+          python3 --version
+          # no git in image; checkout may be a tarball, so match by name
+          mapfile -t kit < <(find . -path ./.git -prune -o -type f \
+            \( -name 'h96-backup*' -o -name 'h96-restore*' -o -path '*/h96-migrate-kit/*' \) -print \
+            | while IFS= read -r f; do head -n1 "$f" | grep -q python && echo "$f"; done | sort)
+          if [ "${#kit[@]}" -eq 0 ]; then
+            echo "::error::no backup kit Python files found"
+            exit 1
+          fi
+          printf '%s\n' "${kit[@]}"
+          # compile() only: no .pyc writes, no import side effects
+          python3 -c 'import sys
+          for f in sys.argv[1:]:
+              compile(open(f, "rb").read(), f, "exec")
+          print("compile ok:", len(sys.argv) - 1, "files")' "${kit[@]}"
+
+  debs:
+    name: kernel deb packaging and lintian
+    runs-on: ubuntu-24.04-arm
+    container: ubuntu:26.04
+    timeout-minutes: 20
+    env:
+      # aliased-location: modules install under /lib/modules like 7.x images; MODPREFIX=/usr/lib/modules move pending
+      # initial-upload-closes-no-bugs: packages are not uploaded to Debian, no bug tracker to close
+      H96_LINTIAN_SUPPRESS: aliased-location,initial-upload-closes-no-bugs
+    steps:
+      - name: build tools
+        run: |
+          set -euo pipefail
+          apt-get update -qq
+          apt-get install -y -qq --no-install-recommends \
+            ca-certificates git dpkg-dev device-tree-compiler lintian python3 >/dev/null
+          . /etc/os-release; echo "container: $PRETTY_NAME $(dpkg --print-architecture)"
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: PII regex over packaging sources
+        run: |
+          set -euo pipefail
+          pat='(192\.168|10\.[0-9]{1,3}|172\.(1[6-9]|2[0-9]|3[01]))\.[0-9]{1,3}\.[0-9]{1,3}|/home/[a-z_][a-z0-9_-]*/'
+          if grep -rnIE "$pat" build tools/ci; then echo "::error::PII pattern in packaging sources"; exit 1; fi
+          echo "build/ and tools/ci/ clean"
+      - name: build kernel and DTB debs from placeholder inputs
+        run: |
+          set -euo pipefail
+          # builder refuses root; run as nobody, output outside checkout
+          install -d -m 0777 /tmp/debs
+          setpriv --reuid=65534 --regid=65534 --clear-groups env HOME=/tmp \
+            bash tools/ci/kernel-debs-smoke.sh /tmp/debs
+          mkdir -p out/debs
+          cp /tmp/debs/*.deb /tmp/debs/SHA256SUMS out/debs/
+          ls -l out/debs
+      - name: lintian
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          debs=(out/debs/*.deb)
+          [ "${#debs[@]}" -eq 2 ] || { echo "::error::expected 2 debs, found ${#debs[@]}"; exit 1; }
+          lintian --version
+          lintian --fail-on error,warning --display-info --tag-display-limit 0 \
+            --suppress-tags "$H96_LINTIAN_SUPPRESS" "${debs[@]}"
+          echo "lintian clean on ${#debs[@]} debs (suppressed: $H96_LINTIAN_SUPPRESS)"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: kernel-debs-smoke
+          path: out/debs/
+          if-no-files-found: ignore
+          retention-days: 14
+
+  dtb:
+    name: DTB overlay build and tree-diff gate
+    runs-on: ubuntu-24.04-arm
+    container: ubuntu:26.04
+    timeout-minutes: 15
+    env:
+      # pinned inputs: vendor base DTB and published reference DTB, checked by SHA256SUMS
+      H96_DT_PINNED: dtb/pinned
+      H96_DT_BASE: dtb/pinned/rk3588-h96-max-v58.dtb
+      H96_DT_REF: dtb/pinned/rk3588-h96-max-v58-panthor.dtb
+    steps:
+      - name: tools
+        run: |
+          set -euo pipefail
+          apt-get update -qq
+          # device-tree-compiler provides dtc, fdtput and fdtoverlay
+          apt-get install -y -qq --no-install-recommends device-tree-compiler python3 >/dev/null
+          dtc --version
+          command -v fdtput fdtoverlay
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: overlay compile and delete list syntax
+        run: |
+          set -euo pipefail
+          mkdir -p out/dtb
+          dtc -@ -I dts -O dtb -o out/dtb/h96-max-v58.dtbo patch/dt/h96-max-v58.dtso
+          for f in patch/overlays/*.dts packages/bsp/h96-max-v58/overlays/*.dts; do
+            dtc -@ -q -I dts -O dtb -o "out/dtb/$(basename "${f%.dts}").dtbo" "$f"
+          done
+          # each delete line: absolute node path, one property name
+          bad=$(grep -v '^[[:space:]]*\(#\|$\)' patch/dt/h96-max-v58.delete \
+            | awk 'NF != 2 || $1 !~ /^\// { print }')
+          [ -z "$bad" ] || { echo "::error::malformed delete lines:"; echo "$bad"; exit 1; }
+          sha256sum out/dtb/*.dtbo
+      - name: build DTB and run tree-diff gate
+        run: |
+          set -euo pipefail
+          missing=
+          for f in "$H96_DT_BASE" "$H96_DT_REF" "$H96_DT_PINNED/SHA256SUMS"; do
+            [ -f "$f" ] || missing="$missing $f"
+          done
+          if [ -n "$missing" ]; then
+            # vendor DTB binaries are not committed yet; local gate runs build-dtb.sh against them
+            echo "::notice::pinned DTB inputs absent:$missing; tree-diff skipped"
+            [ "$H96_CI_STRICT" = 1 ] && exit 1 || exit 0
+          fi
+          (cd "$H96_DT_PINNED" && sha256sum -c SHA256SUMS)
+          sh tools/dtb/build-dtb.sh "$H96_DT_BASE" out/dtb/candidate.dtb
+          sh tools/dtb/dt-tree-diff.sh "$H96_DT_REF" out/dtb/candidate.dtb out/dtb
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: dtb-tree-diff
+          path: out/dtb/
+          if-no-files-found: ignore
+          retention-days: 14
