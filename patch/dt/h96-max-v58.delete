@@ -1,0 +1,8 @@
+# Property deletions overlay cannot express (fdtoverlay only adds or replaces).
+# Format: <node path> <property>. Applied with fdtput -d to copy of base.
+# DEVICE-TREE-CHANGES section 1: vendor mali_kbase properties, not part of Panthor binding.
+/gpu@fb000000 mem-supply
+/gpu@fb000000 upthreshold
+/gpu@fb000000 downdifferential
+# DEVICE-TREE-CHANGES section 4: uart9 (Bluetooth UART) DMA reference dropped.
+/serial@febc0000 dmas

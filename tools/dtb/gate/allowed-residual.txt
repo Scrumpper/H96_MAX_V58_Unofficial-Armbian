@@ -1,0 +1,5 @@
+# Lines allowed to differ after phandle renumbering is verified.
+# New __symbols__ entries from overlay labels (dtc -@). Additions only;
+# no existing label changes target.
++ /__symbols__: gpu_panthor_opp_table = "/gpu@fb000000/opp-table";
++ /__symbols__: i2c_ddc = "/i2c-ddc";
