@@ -65,8 +65,8 @@ Kernel stays on Rockchip BSP line rk-6.1-rkr7.2 with H96 patch series. Vendor U-
 
 Payload stages into `/usr/lib/h96-kernel/<krel>/` (Image, System.map, config, DTB) and `/lib/modules/<krel>/`.
 Packages contain nothing under `/boot`. Postinst runs `depmod` for its release only; no `/etc/kernel` hooks,
-no initramfs tools. Prerm refuses removal of running kernel's package. Separate boot staging tool, part of try-once kernel
-slot, copies files into `/boot`; that tool is not written yet.
+no initramfs tools. Prerm refuses removal of running kernel's package. Separate boot staging tool, part of
+try-once kernel slot, copies files into `/boot`; that tool is not written yet.
 
 ```
 MAINT='Name <email>' IMAGE=Image SYSMAP=System.map CONFIG=config MODTAR=modules.tar.gz DTB=board.dtb \
@@ -90,8 +90,7 @@ tools/dtb/dt-tree-diff.sh rk3588-h96-max-v58-panthor.dtb out/candidate.dtb out/g
 Base is vendor DTB from image (`rk3588-h96-max-v58.dtb`). Gate passes when residual lines equal
 `tools/dtb/gate/allowed-residual.txt` after phandle renumbering is removed. Renumbering check covers changed lines
 only: each changed phandle value must resolve to same node path in both trees. Unchanged lines are not resolved
-again. Vendor DTB
-binaries are not in repo. Overlay uses vendor labels and full vendor arrays, so it applies to vendor base only.
+again. Vendor DTB binaries are not in repo. Overlay uses vendor labels and full vendor arrays, so it applies to vendor base only.
 Board DTB is outside kernel tree; kernel patch series covers kernel sources only.
 
 ### h96-selftest

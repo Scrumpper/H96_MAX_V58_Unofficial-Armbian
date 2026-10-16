@@ -51,6 +51,10 @@ for p in "$OUT" "$WORK"; do
     case "$(realpath -m "$p")/" in /boot/*) die "refusing path under /boot: $p";; esac
 done
 command -v dpkg-deb >/dev/null || die "dpkg-deb missing"
+# names joined into payload paths: no traversal, MODPREFIX absolute
+case "$KREL" in ''|*/*|*..*) die "bad KREL: $KREL";; esac
+case "$FDTFILE" in ''|/*|*..*) die "bad FDTFILE: $FDTFILE";; esac
+case "$MODPREFIX" in ''|[!/]*|*..*) die "bad MODPREFIX: $MODPREFIX";; esac
 case "$MAINT" in
     '') die "set MAINT='Name <email>'";;
     *' <'*@*'>') ;;
@@ -72,7 +76,8 @@ grep -q "^CONFIG_LOCALVERSION=\"-${KREL#*-}\"" "$CONFIG" || die "config LOCALVER
 
 KPKG=h96-kernel-$KREL
 DPKG=h96-dtb-$KREL
-rm -rf "$WORK"; mkdir -p "$WORK" "$OUT"
+# clear only this script's trees; caller WORK may hold other files
+rm -rf "${WORK:?}/$KPKG" "${WORK:?}/$DPKG"; mkdir -p "$WORK" "$OUT"
 
 doc_files() { # pkg root
     local d="$2/usr/share/doc/$1"

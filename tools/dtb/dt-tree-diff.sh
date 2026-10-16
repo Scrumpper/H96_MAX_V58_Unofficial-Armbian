@@ -7,7 +7,9 @@ set -eu
 here=$(cd "$(dirname "$0")" && pwd)
 ref=${1:?reference dtb}
 cand=${2:?candidate dtb}
-out=${3:-$(mktemp -d)}
+out=$(realpath -m "${3:-$(mktemp -d)}")
+# refuse /boot itself and anything below it
+case "$out" in /boot|/boot/*) echo "refusing to write under /boot" >&2; exit 2;; esac
 mkdir -p "$out"
 dtc -q -I dtb -O dts -s -o "$out/reference.sorted.dts" "$ref"
 dtc -q -I dtb -O dts -s -o "$out/candidate.sorted.dts" "$cand"
