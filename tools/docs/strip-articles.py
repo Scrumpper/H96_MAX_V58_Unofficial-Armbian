@@ -40,8 +40,7 @@ PREFIX = r"(?:#{1,6} |[-*] (?:\[[ x]\] )?|\d+\. |> |\| )?(?:\*\*|\*|\(|\")?"
 LINE_START = re.compile(r"^\s*" + PREFIX + r"$")
 # a table cell opens a sentence wherever it sits on the line
 CELL_START = re.compile(r"\|\s+(?:\*\*|\*|\(|\")?$")
-# a sentence end, possibly closing bold or a bracket first, then the space, then
-# possibly opening bold or a bracket for the next sentence
+# sentence end, optional closing/opening bold or bracket around the space
 AFTER_STOP = re.compile(r"[.!?](?:\*\*|\*|\)|\")?\s+(?:\*\*|\*|\(|\")?$")
 
 ART = re.compile(r"\b(the|a|an|The|A|An)\b(?= [^\s.,;:)\]}])")
@@ -51,8 +50,7 @@ KEEP_PHRASES = re.compile(r"\b[Aa] few\b|\ba Changelog\b|\b[Nn]/[Aa]\b")
 kept_caps = []
 
 
-# a bold label that opens the line, with no full stop of its own, still starts
-# the sentence that follows it: "**Cluster scheduling** The kernel enables..."
+# leading bold label without full stop still opens the next sentence
 LEAD_BOLD = re.compile(r"^\s*(?:[-*] |\d+\. |> )?\*\*[^*]+\*\*\s+$")
 
 
@@ -130,9 +128,7 @@ def process(path):
             if len(samples) < 6:
                 samples.append((n, line.strip()[:110], new.strip()[:110]))
         out.append(new)
-    # Hard-wrapped prose can end a line on the article, where no space follows
-    # it, so the pass above never saw it. Take it off the line end here, and
-    # when it opened a sentence, capitalise the first word of the next line.
+    # article at end of hard-wrapped line; capitalise next line if it opened a sentence
     END_ART = re.compile(r"(^|\s)(the|a|an|The|A|An)$")
     fenced = False
     for i in range(len(out) - 1):
