@@ -27,55 +27,58 @@ Docs say "built from pinned inputs" until two independent builds of same inputs 
 
 ## Feature set
 
-| ID | Feature | Tier |
-|----|---------|------|
-| F1 | Kernel and DTB as dpkg packages (`h96-kernel-<krel>`, `h96-dtb-<krel>`) | core |
-| F2 | Try-once kernel slot with watchdog fallback | core |
-| F3 | Signed update channel (`h96 update`) | core |
-| F4 | h96-* userland as dpkg packages | core |
-| F5 | Build-time install, foreign boot package purge, BSP successor | core |
-| F6 | DTB from overlay source with tree-diff gate | core |
-| F7 | `h96-selftest` | core |
-| F8 | Backup and restore 2.6 (schema 4) | core |
-| F9 | CI on GitHub-hosted arm64 runners | core |
-| F10 | Release staging tool, emit-only by default | core |
-| F11 | Workaround retirements with evidence | core |
-| F12 | Uniform `h96 status` and `on`, `off`, `status` exit codes | core |
-| F13 | Bluetooth attach on first boot | core |
-| F14 | External game library mount unit | stretch |
-| F15 | Frame-time bench harness | stretch |
-| F16 | NetworkManager WiFi opt-in | stretch, held for 8.1 |
-| F17 | rk-6.12 scouting kernel | stretch, findings only |
+| Feature | Tier |
+|---------|------|
+| Kernel and DTB as dpkg packages (`h96-kernel-<krel>`, `h96-dtb-<krel>`) | core |
+| Try-once kernel slot with watchdog fallback | core |
+| Signed update channel (`h96 update`) | core |
+| h96-* userland as dpkg packages | core |
+| Build-time install, foreign boot package purge, BSP successor | core |
+| DTB from overlay source with tree-diff gate | core |
+| `h96-selftest` | core |
+| Backup and restore 2.6 (schema 4) | core |
+| CI on GitHub-hosted arm64 runners | core |
+| Release staging tool, emit-only by default | core |
+| Workaround retirements with evidence | core |
+| Uniform `h96 status` and `on`, `off`, `status` exit codes | core |
+| Bluetooth attach on first boot | core |
+| External game library mount unit | stretch |
+| Frame-time bench harness | stretch |
+| NetworkManager WiFi opt-in | stretch, held for 8.1 |
+| rk-6.12 scouting kernel | stretch, findings only |
 
 Kernel stays on Rockchip BSP line rk-6.1-rkr7.2 with H96 patch series. Vendor U-Boot, loader blobs and
 `armbianEnv.txt` keys stay as on v7.2. Every path that writes `/boot` goes through boot-guard checks.
 
 ## Files on this branch
 
-| Path | Contents | Feature |
-|------|----------|---------|
-| `build/build-kernel-debs.sh` | Builds `h96-kernel-<krel>` and `h96-dtb-<krel>` from kernel build outputs | F1 |
-| `patch/dt/h96-max-v58.dtso` | H96 board changes as one device-tree overlay | F6 |
-| `patch/dt/h96-max-v58.delete` | Four property deletions overlay cannot express | F6 |
-| `tools/dtb/build-dtb.sh` | Applies delete list and overlay to vendor base DTB | F6 |
-| `tools/dtb/dt-tree-diff.sh`, `tools/dtb/gate/` | Tree-diff gate against reference DTB | F6 |
-| `tools/h96-selftest.py` | Read-only health checks: `boot`, `hw`, `invariants`, `report`, `self-test` | F7 |
+| Path | Contents | Area |
+|------|----------|------|
+| `build/build-kernel-debs.sh` | Builds `h96-kernel-<krel>` and `h96-dtb-<krel>` from kernel build outputs | Kernel packages |
+| `patch/dt/h96-max-v58.dtso` | H96 board changes as one device-tree overlay | DTB overlay |
+| `patch/dt/h96-max-v58.delete` | Four property deletions overlay cannot express | DTB overlay |
+| `tools/dtb/build-dtb.sh` | Applies delete list and overlay to vendor base DTB | DTB overlay |
+| `tools/dtb/dt-tree-diff.sh`, `tools/dtb/gate/` | Tree-diff gate against reference DTB | DTB overlay |
+| `tools/h96-selftest.py` | Read-only health checks: `boot`, `hw`, `invariants`, `report`, `self-test` | h96-selftest |
 
 ### Kernel packages
 
 Payload stages into `/usr/lib/h96-kernel/<krel>/` (Image, System.map, config, DTB) and `/lib/modules/<krel>/`.
 Packages contain nothing under `/boot`. Postinst runs `depmod` for its release only; no `/etc/kernel` hooks,
-no initramfs tools. Prerm refuses removal of running kernel's package. Separate boot staging tool (F2) copies
-files into `/boot`; that tool is not written yet.
+no initramfs tools. Prerm refuses removal of running kernel's package. Separate boot staging tool, part of try-once kernel
+slot, copies files into `/boot`; that tool is not written yet.
 
 ```
-IMAGE=Image SYSMAP=System.map CONFIG=config MODTAR=modules.tar.gz DTB=board.dtb \
+MAINT='Name <email>' IMAGE=Image SYSMAP=System.map CONFIG=config MODTAR=modules.tar.gz DTB=board.dtb \
     build/build-kernel-debs.sh out
 ```
 
-Default inputs are pinned by sha256 to published v7.1 kernel (`6.1.172-h96v58-7.1`) and v7.2 DTB. `PIN=0`
-skips pins for other inputs. `Installed-Size` follows file sizes, so output does not depend on filesystem.
-`HEAVY=0` runs `dpkg-deb` without shared job lock.
+Inputs have no defaults; every input path and `MAINT` must be set, or script stops. Default `KREL`
+(`6.1.172-h96v58-7.1`) and `PKGVER` (`7.1.0-1`) repack published v7.1 kernel unchanged; that default is repack
+test only, not 8.0 kernel. With `PIN=1` (default) script checks each input against sha256 of published v7.1
+kernel outputs and v7.2 DTB; `PIN=0` skips that check for other inputs. `Installed-Size` follows file sizes, so
+output does not depend on filesystem. `dpkg-deb` runs directly by default; `HEAVY=1` with `HEAVY_LOCK=<lock file>`
+and `HEAVY_MEM=<size>` runs it under `flock` and `systemd-run` memory cap.
 
 ### DTB overlay
 
@@ -84,8 +87,10 @@ tools/dtb/build-dtb.sh rk3588-h96-max-v58.dtb out/candidate.dtb
 tools/dtb/dt-tree-diff.sh rk3588-h96-max-v58-panthor.dtb out/candidate.dtb out/gate
 ```
 
-Base is vendor DTB from image (`rk3588-h96-max-v58.dtb`). Gate passes when only phandle numbers differ
-(each checked to resolve to same node path) plus lines in `tools/dtb/gate/allowed-residual.txt`. Vendor DTB
+Base is vendor DTB from image (`rk3588-h96-max-v58.dtb`). Gate passes when residual lines equal
+`tools/dtb/gate/allowed-residual.txt` after phandle renumbering is removed. Renumbering check covers changed lines
+only: each changed phandle value must resolve to same node path in both trees. Unchanged lines are not resolved
+again. Vendor DTB
 binaries are not in repo. Overlay uses vendor labels and full vendor arrays, so it applies to vendor base only.
 Board DTB is outside kernel tree; kernel patch series covers kernel sources only.
 
@@ -99,16 +104,16 @@ Python standard library only, syntax kept to Python 3.11. Writes nothing except 
 Each package keeps internal evidence (commands, output, sha256) outside repo. "Verified" below means command
 output exists for claim; nothing in this list has been booted on hardware unless stated.
 
-| Package | Feature | Status | Verified | Open |
-|---------|---------|--------|----------|------|
-| Kernel patch series | F1 | Done | Rockchip rk-6.1-rkr7.2 plus 20 commits reproduces v7.1 kernel tree file for file; each commit compiles | Intermediate commits not built into Image or booted; series stays internal until commit messages are cleaned |
-| Kernel packages | F1 | Done | Payload sha-identical to v7.1 build outputs; 35 of 35 package checks pass in scratch dpkg root; no `/boot` path; two builds byte-identical on ext4 and tmpfs | Module path `/lib/modules` or `/usr/lib/modules`; install on v7.2 box; boot test; overlay `.dtbo` set not in DTB package |
-| DTB overlay | F6 | Done | Overlay build reproduces v7.2 DTB; gate passes; negative tests fail as designed | Boot test under test `fdtfile` name |
-| Userland packages | F4 | Open, not on branch | 8 packages build twice identically; scratch dpkg install, remove and purge clean | Blocking issue: first-boot GPU setup unit can point `/boot/Image` at missing file on 8.0 kernel; conffile and diversion issues; lintian not clean; chroot install not done |
-| h96-selftest | F7 | Done for `boot`, `hw`, `invariants`, `report` | Runs on Python 3.11 (amd64, arm64); read-only run on v7.2 box with no file changes | `media`, `menus`, `soak` stubs; runs after reboots and upgrade |
-| CI workflow | F9 | Open, not on branch | Jobs dry-run in containers; DTB gate job passes with overlay files | Lint and docs jobs fail on current repo; lintian gate not run against userland packages; arm64 runner not confirmed |
-| U-Boot bench | F2 | Read-only part done | Boot-mode register, watchdog register decode, load addresses read from image | Live bench runs need owner present; elapsed-time readout needs redesign |
-| Backup and restore 2.6 | F8 | Done on laptop | Published restore 2.5 handles schema 4 archive with one warning; proposed 2.6 matches 2.5 on all schema 1 to 3 archives | Run on v7.2 box; Python 3.7 compile check; GUI category gap |
+| Package | Status | Verified | Open |
+|---------|--------|----------|------|
+| Kernel patch series | Done | Rockchip rk-6.1-rkr7.2 plus 20 commits reproduces v7.1 kernel tree file for file; each commit compiles | Intermediate commits not built into Image or booted; series stays internal until commit messages are cleaned |
+| Kernel packages | Done | Payload sha-identical to v7.1 build outputs; 35 of 35 package checks pass in scratch dpkg root; no `/boot` path; two builds byte-identical on ext4 and tmpfs | Module path `/lib/modules` or `/usr/lib/modules`; install on v7.2 box; boot test; overlay `.dtbo` set not in DTB package |
+| DTB overlay | Done | Overlay build matches v7.2 DTB tree apart from 2 renumbered phandles and 2 new labels; gate passes; `/boot` output guard refuses `/boot` and paths below it; negative tests fail as designed | Boot test under test `fdtfile` name |
+| Userland packages | Open, not on branch | 8 packages build twice identically; scratch dpkg install, remove and purge clean | Blocking issue: first-boot GPU setup unit can point `/boot/Image` at missing file on 8.0 kernel; conffile and diversion issues; lintian not clean; chroot install not done |
+| h96-selftest | Done for `boot`, `hw`, `invariants`, `report` | Runs on Python 3.11 (amd64, arm64); read-only run on v7.2 box with no file changes | `media`, `menus`, `soak` stubs; runs after reboots and upgrade |
+| CI workflow | Open, not on branch | Jobs dry-run in containers; DTB gate job passes with overlay files | Lint and docs jobs fail on current repo; lintian gate not run against userland packages; arm64 runner not confirmed |
+| U-Boot bench | Read-only part done | Boot-mode register, watchdog register decode, load addresses read from image | Live bench runs need owner present; elapsed-time readout needs redesign |
+| Backup and restore 2.6 | Done off box | Published restore 2.5 handles schema 4 archive with one warning; proposed 2.6 matches 2.5 on all schema 1 to 3 archives | Run on v7.2 box; Python 3.7 compile check; GUI category gap |
 
 ## Milestones
 

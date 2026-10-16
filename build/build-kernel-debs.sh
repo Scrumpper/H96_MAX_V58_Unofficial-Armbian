@@ -2,7 +2,7 @@
 # shellcheck disable=SC2034  # SHA_* pins read through ${!want}
 # Builds h96-kernel-<krel> and h96-dtb-<krel> debs from pinned kernel build outputs.
 # Payload stages into /usr/lib/h96-kernel/<krel>/ and /lib/modules/<krel>/; nothing under /boot.
-# Usage: IMAGE=.. SYSMAP=.. CONFIG=.. MODTAR=.. DTB=.. build-kernel-debs.sh [OUTDIR]
+# Usage: MAINT='Name <email>' IMAGE=.. SYSMAP=.. CONFIG=.. MODTAR=.. DTB=.. build-kernel-debs.sh [OUTDIR]
 # Re-runnable; output depends only on inputs and SOURCE_DATE_EPOCH.
 set -euo pipefail
 
@@ -11,7 +11,8 @@ PKGVER=${PKGVER:-7.1.0-1}
 MODPREFIX=${MODPREFIX:-/lib/modules}
 STAGEPREFIX=/usr/lib/h96-kernel
 FDTFILE=${FDTFILE:-rockchip/rk3588-h96-max-v58-panthor.dtb}
-MAINT=${MAINT:-Scrumpper <Scrumpper@users.noreply.github.com>}
+# Maintainer field; required, no default
+MAINT=${MAINT:-}
 export SOURCE_DATE_EPOCH=${SOURCE_DATE_EPOCH:-1791244800}
 
 # inputs: kernel Image, System.map, .config, modules tarball (<krel>/kernel/...), board DTB
@@ -21,7 +22,7 @@ CONFIG=${CONFIG:-}
 MODTAR=${MODTAR:-}
 DTB=${DTB:-}
 
-# published v7.1 payload pins; PIN=0 skips (other krel or payload)
+# default KREL repacks published v7.1 payload (test only); PIN=0 skips pins for other inputs
 PIN=${PIN:-1}
 SHA_IMAGE=1ac355a2c289f5fe419c0bccdf6fc8df759782fda2888fdd1e180744a3a4678e
 SHA_SYSMAP=196975ae6999198a065e4259aa266e922b3bd756b89ea17987aec4dfbe6de1d0
@@ -31,14 +32,15 @@ SHA_DTB=f3ca55ce08fae47f351558964b4b040c9229852ba74241b01de2bb47ce2da6ea
 
 OUT=${1:-out}
 if [ -z "${WORK:-}" ]; then WORK=$(mktemp -d); trap 'rm -rf "$WORK"' EXIT; fi
-# HEAVY=1 runs dpkg-deb under shared heavy-job lock and memory cap; HEAVY=0 runs it directly
-HEAVY=${HEAVY:-1}
+# HEAVY=1 runs dpkg-deb under flock HEAVY_LOCK and systemd-run MemoryMax=HEAVY_MEM
+HEAVY=${HEAVY:-0}
+HEAVY_LOCK=${HEAVY_LOCK:-}
+HEAVY_MEM=${HEAVY_MEM:-}
 
 die() { echo "ERROR: $*" >&2; exit 1; }
 heavy() {
     if [ "$HEAVY" = 1 ]; then
-        mkdir -p "$HOME/.cache"
-        flock "$HOME/.cache/h96-heavy.lock" systemd-run --user --scope --quiet -p MemoryMax=12G nice -n 10 "$@"
+        flock "$HEAVY_LOCK" systemd-run --user --scope --quiet -p "MemoryMax=$HEAVY_MEM" nice -n 10 "$@"
     else
         "$@"
     fi
@@ -49,6 +51,14 @@ for p in "$OUT" "$WORK"; do
     case "$(realpath -m "$p")/" in /boot/*) die "refusing path under /boot: $p";; esac
 done
 command -v dpkg-deb >/dev/null || die "dpkg-deb missing"
+case "$MAINT" in
+    '') die "set MAINT='Name <email>'";;
+    *' <'*@*'>') ;;
+    *) die "MAINT not in 'Name <email>' form: $MAINT";;
+esac
+if [ "$HEAVY" = 1 ]; then
+    [ -n "$HEAVY_LOCK" ] && [ -n "$HEAVY_MEM" ] || die "HEAVY=1 needs HEAVY_LOCK and HEAVY_MEM"
+fi
 
 for v in IMAGE SYSMAP CONFIG MODTAR DTB; do [ -n "${!v}" ] && [ -f "${!v}" ] || die "$v not set or not found: ${!v}"; done
 if [ "$PIN" = 1 ]; then

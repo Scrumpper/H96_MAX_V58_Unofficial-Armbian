@@ -8,10 +8,11 @@ here=$(cd "$(dirname "$0")" && pwd)
 src=${H96_DT_SRC:-$here/../../patch/dt}
 base=${1:?base dtb}
 out=${2:?output dtb}
-outdir=$(realpath -m "$(dirname "$out")")
-case "$outdir/" in /boot/*) echo "refusing to write under /boot" >&2; exit 2;; esac
+out=$(realpath -m "$out")
+outdir=$(dirname "$out")
+# refuse /boot itself and anything below it
+case "$out" in /boot|/boot/*) echo "refusing to write under /boot" >&2; exit 2;; esac
 mkdir -p "$outdir"
-out=$outdir/$(basename "$out")
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
 
