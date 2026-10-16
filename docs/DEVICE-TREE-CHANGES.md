@@ -42,7 +42,7 @@ nothing with Ethernet (they run simultaneously):
 - Kernel log level pinned low: `loglevel=3`, `printk = 3 4 1 7`.
 
 ## 5. IR receiver (overlay, not baked)
-IR is shipped as **separate overlay** (`patch/overlays/h96-max-v58-gpio-ir.dts`)
+IR is provided as **separate overlay** (`patch/overlays/h96-max-v58-gpio-ir.dts`)
 rather than in base DTS, so remotes can be learned in userspace with
 `ir-keytable` and no per-remote DTB rebuild. It switches pin from vendor
 `remotectl`/PWM3 driver to mainline `gpio-ir-receiver` on **GPIO0_D4**.
@@ -67,7 +67,7 @@ So fix is kernel boot argument instead, added to `extraargs` in
 drm.edid_firmware=HDMI-A-1:edid/h96-1080p-audio.bin
 ```
 
-**Use 256-byte EDID shipped in this repo at
+**Use 256-byte EDID included in this repo at
 `packages/bsp/h96-max-v58/edid/h96-1080p-audio.bin`, not one of kernel's
 built-in blobs.** All of those are 128 bytes with no CTA/CEA extension block, and
 sink presenting no CTA block is treated as DVI, which disables HDMI audio entirely

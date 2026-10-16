@@ -1,6 +1,6 @@
 # Media feature suite + USB controllers (v4.1, plus v5.0, v5.0.1 and v6.0 additions)
 
-All OPT-IN. Image ships tools + configs only; each tool installs its
+All OPT-IN. Image includes tools + configs only; each tool installs its
 packages on demand and activates services on first `enable`. Nothing auto-starts.
 Sources under `packages/bsp/h96-max-v58/` (tools/, lib/, systemd/, udev/, mpv/,
 wireplumber/, pipewire/, etc-h96/, modules-load.d/).
@@ -34,7 +34,7 @@ wireplumber/, pipewire/, etc-h96/, modules-load.d/).
   it (rkmpp hw decode + hw encode) to /srv/h96-transcode/out and moves original to
   done/. Box-measured ~7.5x realtime at 1080p (30 s clip in ~4 s) with CPU idle. NO
   extra packages - it reuses image's rkmpp ffmpeg + /dev/mpp_service, so it adds no
-  weight. Ships DISABLED: `sudo h96-transcode-server enable`. Settings in
+  weight. Installed DISABLED: `sudo h96-transcode-server enable`. Settings in
   /etc/h96/transcode.conf (codec hevc/h264/mjpeg, bitrate, container, optional scale).
 
 ## Hardware cursor during GPU compositing (v6.0)
@@ -93,7 +93,7 @@ Use:
 ## Android in container: h96-waydroid (v5.0)
 
 `h96-waydroid` runs full Android system in LXC container that shares host
-kernel (Waydroid 1.6.2). It is OPT-IN like everything else here: image ships
+kernel (Waydroid 1.6.2). It is OPT-IN like everything else here: image includes
 command, nothing else.
 
 Why it needs v5.0 kernel:
@@ -140,7 +140,7 @@ multi-gigabyte download.
 
 Note on earlier claim in these docs: official LineageOS 20 image was described here
 as carrying no Panfrost and software rendering through SwiftShader. That was wrong, and
-cause was our own configuration: `init` forced `ro.hardware.egl=swiftshader` and deleted
+cause was local test configuration: `init` forced `ro.hardware.egl=swiftshader` and deleted
 `drm_device` before measurement. Upstream enables ARM drivers in
 `waydroid_arm64/BoardConfig.mk` (`BOARD_MESA3D_GALLIUM_DRIVERS += ... panfrost lima`,
 `BOARD_MESA3D_VULKAN_DRIVERS += ... panfrost`), not in root `BoardConfig.mk`, which

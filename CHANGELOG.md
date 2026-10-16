@@ -11,7 +11,7 @@ v6.2 over v6.1. Kernel: HDMI-CEC, HDMI 2.0 modes through GPIO DDC bus, colour-fo
 Kernel release string moves to `6.1.115-h96v58v2`. Image, modules and device tree are rebuilt and arrive only by reflash; v6.1.1 hotfix cannot deliver these changes.
 
 - VOP2 window power-domain tracking, extended from v6.1: cursor no longer vanishes after mode change and cursor hide in one frame.
-- HDMI-CEC on HDMI0: `/dev/cec0` exists. TV remote controls box; box puts TV in standby and wakes it. Verified on Sony TV. `h96-cec` ships off.
+- HDMI-CEC on HDMI0: `/dev/cec0` exists. TV remote controls box; box puts TV in standby and wakes it. Verified on Sony TV. `h96-cec` is installed off.
 - HDMI0 DDC on GPIO I2C bus, since on-chip DDC controller never completes transfers. Kernel reads EDID natively and drives HDMI 2.0 SCDC scrambling. Verified: 2560x1440 at 120 and 144 Hz, 3840x2160 at 60 Hz.
 - Plane colour conversion re-applied on colour-format switch without modeset: switching between RGB and YCbCr no longer leaves green cast.
 - HDMI audio channel allocation derived while ELD bypass is on: groundwork for multichannel output. Multichannel is not verified; no AV receiver tested.
@@ -39,9 +39,9 @@ Two ways to get it:
   - Godot 4 titles: OpenGL renderer and GL 3.3 report, found from game's `.pck` header. Godot's Vulkan renderer freezes on splash on PanVK; Panfrost reports GL 3.1.
   - Unity titles, found from player next to game: 64-bit players that carry Vulkan renderer start with `-force-vulkan` and overlay for Vulkan titles; other Unity 5 and later players get GL 4.5 report, since their OpenGL core context asks for more than Panfrost's 3.1 and title stops with `GLXBadFBConfig`; 32-bit Unity players start with Steam overlay off, as title stops when overlay attaches. Profile key `unity=vulkan|gl`.
   - If handler fails, tool behaves as Valve wrote it.
-- Title profiles, one Steam app id per line: `/usr/local/share/h96/titles.conf` (shipped), `/etc/h96/titles.conf` (local), and `~/.config/steam-arm/titles.conf` in client home. Keys: `overlay`, `mangohud`, `godot`, `unity`, `env`, `args`, `gl32`, `vk32`. Launch options `STEAM_ARM_OVERLAY=x86|vulkan|off` and `STEAM_ARM_PRELOAD_KEEP=a,b` override profiles.
+- Title profiles, one Steam app id per line: `/usr/local/share/h96/titles.conf` (packaged), `/etc/h96/titles.conf` (local), and `~/.config/steam-arm/titles.conf` in client home. Keys: `overlay`, `mangohud`, `godot`, `unity`, `env`, `args`, `gl32`, `vk32`. Launch options `STEAM_ARM_OVERLAY=x86|vulkan|off` and `STEAM_ARM_PRELOAD_KEEP=a,b` override profiles.
 - Steam ARM 1.2 handler rules: 32-bit titles lose `-vulkan` and `-force-vulkan`, since FEX forwards Vulkan for 64-bit code only (profile key `vk32=keep` keeps them); titles started through start script (Source engine style) are detected by binary script starts; profile key `gl32=off` runs title not detected as 64-bit on emulated x86 Mesa instead of forwarded host Mesa; profile `args` count for Unity and Godot renderer rules; Source 2 titles logged. Component checklist appears as desktop dialog when installer starts with no controlling terminal.
-- arm64 Steam overlay Vulkan layer, which client ships but does not register, registered behind `STEAM_ARM_VK_OVERLAY`; handler sets it only for titles profiled `overlay=vulkan`.
+- arm64 Steam overlay Vulkan layer, which client includes but does not register, registered behind `STEAM_ARM_VK_OVERLAY`; handler sets it only for titles profiled `overlay=vulkan`.
 - Direct3D 8 titles under Proton run through DXVK's `d3d8`: launcher sets `PROTON_DXVK_D3D8=1`. Proton's default for Direct3D 8, wined3d on OpenGL, draws them wrong on Mali driver. Launch option `PROTON_DXVK_D3D8=0 %command%` restores default.
 - Launcher removes shared-memory segments no process maps from `/dev/shm`, at start and every minute. Steam overlay's 26 MB frame buffers stay mapped by `steamwebhelper` after game ends; with no game running, sweep frees their pages within about 2 minutes (hole punched, files and mappings kept).
 - `desktop-mode` component: menu entry "Steam ARM (Desktop mode)", opens client in its desktop interface, for signing in.
@@ -66,13 +66,13 @@ Two ways to get it:
 
 ### Fixed
 
-- Native Steam installer stopped at RootFS step when earlier RootFS download was left behind (FEX's fetcher asked to overwrite it and aborted). Leftover download is removed before fetch. Shipped title profile list is empty; handler's engine rules cover Unity titles on Vulkan.
+- Native Steam installer stopped at RootFS step when earlier RootFS download was left behind (FEX's fetcher asked to overwrite it and aborted). Leftover download is removed before fetch. Packaged title profile list is empty; handler's engine rules cover Unity titles on Vulkan.
 - `h96-restore` created missing folders in desktop account's home owned by root, and restored symlinks as root: Steam and other programs then failed to write there. Folders and symlinks restore owned by desktop account.
 - Console text green on displays whose EDID lists YCbCr: loader left HDMI in YCbCr and kernel kept it until desktop login. `h96-display-console.service` blanks console once at boot (about 2 s) when output is YCbCr; kernel then selects RGB.
 - Enabling mSBC removed Bluetooth headset profile: codec allow-list in `30-h96-bluetooth.conf` did not name HFP codecs, which PipeWire 1.6 loads as plugins, so negotiated mSBC codec was never found (`failed to get HFP codec 2`). Allow-list removed.
 - Choppy Bluetooth audio: at PipeWire's 512-sample cycle (10.7 ms) Bluetooth encoder and h96 EQ filter chain missed their deadline now and then (xruns). While Bluetooth headset plays, it now forces 2048-sample cycle (43 ms); other outputs keep low latency.
 - Bluetooth headsets powered off or disconnected after audio stopped: sink suspended after 5 s idle, and headset then dropped link on its own timer. Bluetooth sinks no longer suspend (A2DP stream stays open with silence; costs some headset battery). BlueZ reconnects faster (`FastConnectable`) and retries dropped headset 15 times with backoff to 60 s (`/etc/bluetooth/main.conf`, original kept as `main.conf.orig`).
-- Bluetooth headsets showed no audio device or microphone, and sound streams started after it (Remote Play among them) got no output: h96 EQ filter chain reads `/etc/h96/eq/active.txt`, which only `h96-audio-eq` writes. PipeWire 1.6 stops filter graph when that file is missing, and failed node stalls WirePlumber, so no later device or stream is set up. Image now ships flat `active.txt` (0 dB).
+- Bluetooth headsets showed no audio device or microphone, and sound streams started after it (Remote Play among them) got no output: h96 EQ filter chain reads `/etc/h96/eq/active.txt`, which only `h96-audio-eq` writes. PipeWire 1.6 stops filter graph when that file is missing, and failed node stalls WirePlumber, so no later device or stream is set up. Image now includes flat `active.txt` (0 dB).
 - Titles drew on CPU renderer (llvmpipe) after fresh install. Client downloads Valve's FEX tool at first title start, after launcher applied its settings, so GL and Vulkan forwarding stayed off until next client start. Launcher now applies them within one second of tool appearing or being replaced, and covers `/run/gfx/main`, where current runtimes mount graphics libraries.
 - Steam overlay UI (`gameoverlayui`) crashed on every start: client's helper programs load libraries from client's own directory, which launcher now puts on library path.
 - Client's desktop windows had no title bar until next login: setup now tells KWin to reload its window rules after writing frame rule.
@@ -125,7 +125,7 @@ Two ways to get it:
 
 ## v6.1 (2026-09-20)
 
-v6.1 over v6.0. Ships as new image only. Kernel release string changes, so moving to it
+v6.1 over v6.0. Published as new image only. Kernel release string changes, so moving to it
 is reflash, not `apt upgrade`. One device tree node changes: watchdog is enabled, and
 every v6.0 feature and command is retained.
 
@@ -203,7 +203,7 @@ directory in one filename order and `/etc/sysctl.conf` joins that order as `99-s
 **Kernel release `6.1.115-h96v58v1`.** Suffix names board and kernel revision number
 that moves independently of image version, so kernel is identifiable from `uname -r`
 alone. Module set is rebuilt against it with `CONFIG_MODVERSIONS=y` as in v6.0, so module
-built for v6.0 release is refused rather than loaded. Two kernel debug options are off in this build that were on in v6.0, `SLUB_DEBUG` and `SCHEDSTATS`; neither is used by anything image ships, and `perf sched` and `/proc/schedstat` lose their scheduler statistics as result. This build adds `CONFIG_LOCKUP_DETECTOR=y`, `CONFIG_SOFTLOCKUP_DETECTOR=y` and `CONFIG_BOOTPARAM_SOFTLOCKUP_PANIC=y`: CPU that makes no scheduling progress for 20 seconds is reported and kernel panics.
+built for v6.0 release is refused rather than loaded. Two kernel debug options are off in this build that were on in v6.0, `SLUB_DEBUG` and `SCHEDSTATS`; neither is used by anything image includes, and `perf sched` and `/proc/schedstat` lose their scheduler statistics as result. This build adds `CONFIG_LOCKUP_DETECTOR=y`, `CONFIG_SOFTLOCKUP_DETECTOR=y` and `CONFIG_BOOTPARAM_SOFTLOCKUP_PANIC=y`: CPU that makes no scheduling progress for 20 seconds is reported and kernel panics.
 
 **Hang recovery.** During acceptance testing of v6.1 image one boot stopped 86 seconds in,
 with box powered and no record of cause, and box needed power cycle. v6.1 adds
@@ -251,12 +251,12 @@ colour, chartreuse `#9cc865`; texture in both is darker and sparser, with scatte
 blocks. `q` closes backup window when no text field has focus.
 
 This project is not affiliated with, endorsed by or sponsored by Valve Corporation. Steam,
-Proton, Steam Deck and Steam Frame are trademarks of Valve Corporation. No Valve artwork ships in image.
+Proton, Steam Deck and Steam Frame are trademarks of Valve Corporation. Image contains no Valve artwork.
 
 
 ## v6.0 (2026-09-07)
 
-v6.0 over v5.0.1. Ships as new image only. Kernel Image changes, so moving to it is
+v6.0 over v5.0.1. Published as new image only. Kernel Image changes, so moving to it is
 reflash, not `apt upgrade`. Device tree is unchanged since v4.3. Every v5.0 feature and
 command is retained.
 
@@ -309,7 +309,7 @@ correctness fix; benchmarking found no measurable change in throughput, and none
   `--traceable-functions` with symbol list from `/proc/kallsyms`, since this kernel has no
   ftrace function list. BTF is data that BPF tools read; machine code is same with or
   without it, and kernel Image grows by 7 MB. Armbian's own rk35xx kernel configuration
-  ships with BTF on. VOP2 cursor fix ships in this repo as
+  has BTF on. VOP2 cursor fix is in this repo as
   `patch/kernel/h96-vop2-cursor.patch`, built with `config/linux-rk35xx-vendor.config`.
 - **Known kernel-log item.** At boot kernel prints two `WARNING` traces from
   `pinctrl-rockchip.c` (`rockchip_pmx_gpio_set_direction`, `pin 143 already requested by
@@ -326,7 +326,7 @@ correctness fix; benchmarking found no measurable change in throughput, and none
   `/lib/modules/6.1.115-h96`. Full module set (3110 modules) is built from same
   source and configuration as kernel Image, with `CONFIG_MODVERSIONS=y`: every module
   carries symbol versions, and loader rejects module built against different kernel
-  layout instead of loading it unchecked. Earlier releases shipped module set built against
+  layout instead of loading it unchecked. Earlier releases included module set built against
   pre-PSI configuration; those modules loaded on 6.1.115 kernels because vermagic
   string matched, and only modules in use had been checked by inspection. Bcmdhd
   WiFi module and every other module now carry matching symbol versions, and kernel's
@@ -362,7 +362,7 @@ correctness fix; benchmarking found no measurable change in throughput, and none
 
 ## v5.0.1
 
-v5.0.1 over v5.0. Ships as new image and as fix-script for running box (no reflash).
+v5.0.1 over v5.0. Published as new image and as fix-script for running box (no reflash).
 Kernel Image and device tree unchanged since v4.3.
 
 - mpv cursor over fullscreen video fixed. `/etc/mpv/mpv.conf` sets `cursor-autohide=no` and
@@ -383,7 +383,7 @@ Kernel Image and device tree unchanged since v4.3.
 ## v5.0
 
 Kernel rebuild, two new opt-in tools, and stability pass over
-v4.2.1. Shipped as one full image; flasher still slims it to headless, no-GPU, or
+v4.2.1. Published as one full image; flasher still slims it to headless, no-GPU, or
 bare-server build on demand.
 
 Released image is **console only**: no desktop and no user account. Desktop is
@@ -428,7 +428,7 @@ Reflashing wipes existing desktop install.
   Correction to earlier claim in this changelog: official LineageOS 20 image was
   described as carrying no Panfrost and software rendering through SwiftShader. That was
   wrong. Tool's own `init` was forcing `ro.hardware.egl=swiftshader` and deleting
-  `drm_device`, so measurement described our configuration, not image. Upstream
+  `drm_device`, so measurement described test configuration, not image. Upstream
   enables ARM drivers in `waydroid_arm64/BoardConfig.mk`
   (`BOARD_MESA3D_GALLIUM_DRIVERS += ... panfrost lima`, `BOARD_MESA3D_VULKAN_DRIVERS +=
   ... panfrost`), not in the root `BoardConfig.mk`, which lists only llvmpipe, virgl and
@@ -464,7 +464,7 @@ Reflashing wipes existing desktop install.
   command index.
 
 - **Two units that failed every boot are fixed**, so `systemctl --failed` now reports zero.
-  `h96-rfcomm` shipped 0 byte `rfcomm.ko` and its self-heal guard tested `-f`, which
+  `h96-rfcomm` installed 0 byte `rfcomm.ko` and its self-heal guard tested `-f`, which
   passes for empty file; it now tests `-s`. `systemd-modules-load` requested `brcmfmac`
   alongside `bcmdhd`, which owns WiFi chip, and `rknpu`, which is built in.
 
@@ -486,7 +486,7 @@ Reflashing wipes existing desktop install.
 
 - **`h96-emulators` GPU verification, four bugs fixed.**
   1. `gpu_probe()` only tested that Panfrost ICD **file** existed inside sandbox.
-     That file ships with `org.freedesktop.Platform.GL.default`, so it is present for every
+     That file comes with `org.freedesktop.Platform.GL.default`, so it is present for every
      app using that extension: check could never return "software" and verified nothing.
      It reported PPSSPP as hardware while PPSSPP's default OpenGL backend was failing with
      `EGL_BAD_ALLOC` and never opening window. Probe reads renderer string now
@@ -520,7 +520,7 @@ Reflashing wipes existing desktop install.
 - **zram self-heals.** Swap came up disabled on fresh flash despite being configured.
   Self-heal unit re-establishes it at boot.
 
-- **KDE screen locker is off by default.** `/etc/skel/.config/kscreenlockerrc` ships
+- **KDE screen locker is off by default.** `/etc/skel/.config/kscreenlockerrc` is included
   `Autolock=false`, `LockOnResume=false`, `Timeout=0`, so TV box does not lock itself.
 
 - **Image builder no longer leaks orphan inodes.** It issued blind `mkdir` per path
@@ -547,7 +547,7 @@ category, or `h96 <command>` to open that command's help. Otherwise identical to
 ## v4.2
 
 Efficiency delta on v4.1. Same kernel (6.1.115), device tree, and hardware enablement.
-Shipped as one full image; flasher slims it to headless, no-GPU, or bare-server build
+Published as one full image; flasher slims it to headless, no-GPU, or bare-server build
 on demand.
 
 - **Faster boot.** Bluetooth attach was moved off boot-critical path with
@@ -565,7 +565,7 @@ on demand.
 
 ## v4.1
 
-Shipped as three pre-built image variants, all booting to text console:
+Published as three pre-built image variants, all booting to text console:
 
 - **v4.1** (full): KDE Plasma is not pre-installed. Install it on demand through
   `armbian-config`; first launch of Plasma applies H96 desktop settings.
@@ -578,9 +578,9 @@ smaller than earlier releases: about 1.22 GB (full), 1.01 GB (nodesktop), and
 0.91 GB (nodesktop-nogpu).
 
 1. Bluetooth headset MICROPHONE now works. Every earlier release could play audio
-   to Bluetooth headset but never capture its mic: stock kernel shipped no RFCOMM,
+   to Bluetooth headset but never capture its mic: stock kernel had no RFCOMM,
    so Hands-Free profile could not open and Bluetooth was pinned to A2DP-only.
-   v4.1 ships `rfcomm.ko` built for this exact kernel (6.1.115), loads it before
+   v4.1 includes `rfcomm.ko` built for this exact kernel (6.1.115), loads it before
    BlueZ, and re-enables Hands-Free / Headset roles. Headset mic shows up as
    input source under "Headset Head Unit" profile; apps that record can switch to
    it. Codec is CVSD (call quality, narrowband). Wideband mSBC negotiates with
@@ -617,11 +617,11 @@ smaller than earlier releases: about 1.22 GB (full), 1.01 GB (nodesktop), and
 
 6. USB game-controller dongles. Base kernel had no xpad driver, so X-input
    controllers and 2.4GHz pad dongles did nothing over USB; only D-input / HID pads
-   worked. v4.1 ships xpad built for this kernel with updated device table and
+   worked. v4.1 includes xpad built for this kernel with updated device table and
    vendor-wide matches for common controller makers, autoloaded, plus udev
    catch-all that binds any X-input dongle even if its USB id is not in table.
 
-7. Media feature suite. All OPT-IN: image ships command only; each tool
+7. Media feature suite. All OPT-IN: image includes command only; each tool
    installs its packages and activates on first use, so fresh flash carries no
    extra weight and nothing auto-starts.
    - h96-cec: control box with TV remote over HDMI-CEC.
@@ -687,7 +687,7 @@ root-only. Hardware decode initialization fails for non-root processes
 shown in UI. Root processes are unaffected. Prior validations of video stack ran
 as root over SSH and did not encounter failure. Present in every release to date.
 
-v4.0 ships udev rule setting DMA heaps to `root:video 0660`. Desktop users are in
+v4.0 includes udev rule setting DMA heaps to `root:video 0660`. Desktop users are in
 `video` group by default. Measured on hardware: same user and file changed from
 `Failed to init MPP context: -1` to `Using hardware decoding (rkmpp-copy)`. CPU during
 YouTube playback in browser-to-mpv path changed from 64% of one core to 15%.
@@ -700,7 +700,7 @@ echo 'SUBSYSTEM=="dma_heap", KERNEL=="system*", GROUP="video", MODE="0660"' | \
 ```
 
 Note: `--vo=gpu --hwdec=rkmpp` (zero-copy display) does not engage on this X11/mpv stack
-and results in software decode. Shipped `rkmpp-copy` profile remains in use.
+and results in software decode. Packaged `rkmpp-copy` profile remains in use.
 
 ### 1b. Hardware video was broken on every fresh flash
 
@@ -715,7 +715,7 @@ ffmpeg: error while loading shared libraries: libXv.so.1
 ```
 
 **Cause.** `h96-video-setup.sh` installs mpv/ffmpeg runtime libraries from offline
-repo in `/opt/h96-pkgs`, deliberately scoped to that repo alone. Repo shipped
+repo in `/opt/h96-pkgs`, deliberately scoped to that repo alone. Repo carried
 `libfontconfig1` **without its dependency `fontconfig-config`**. apt installs atomically, so
 that single unsatisfiable package caused apt to drop **all thirty** packages with no error surfaced. Script
 correctly noticed and refused to mark itself done, then retried every boot and failed
@@ -779,7 +779,7 @@ this box's limits, and sets it through existing one-boot trial and `keep`
 confirmation. On any read or parse failure current mode is left unchanged. Measured
 on hardware: 256-byte read takes 1.5 s at 2 kHz bit-banged clock and does not disturb
 running display; 5 consecutive reads were byte-identical. Reader source:
-`packages/bsp/h96-max-v58/src/ddc-edid-read.c` (image ships it precompiled).
+`packages/bsp/h96-max-v58/src/ddc-edid-read.c` (image includes it precompiled).
 
 ### 2c. Screen wake: HDMI re-drive on keypress
 
@@ -845,13 +845,13 @@ are rewritten each tick). Measured at 1 s refresh: 0.66% of one core, 20 MB resi
 
 ### 5. Desktop lock screens could not authenticate
 
-Armbian base rootfs ships `/etc/shadow` owned `root:root`. Required ownership is
+Armbian base rootfs has `/etc/shadow` owned `root:root`. Required ownership is
 `root:shadow`: PAM helper `unix_chkpwd` is setgid `shadow` and reads file via
 group permission. Display managers run as root and read file directly, so login
 worked. Lock screens (Plasma, GNOME, XFCE) run as logged-in user, authenticate
 through `unix_chkpwd`, and reject correct password. `useradd` and `chpasswd` preserve
 existing group on rewrite, so ownership does not correct itself. Present in every
-release to date. v4.0 images ship with group set to `shadow`.
+release to date. v4.0 images come with group set to `shadow`.
 
 **On any earlier release**, apply: `sudo chgrp shadow /etc/shadow`. Takes effect
 immediately.
@@ -880,7 +880,7 @@ on reboot).
 
 ### 6b. Inference runtime is NOT bundled, deliberately
 
-`librknnrt.so` is proprietary. It ships under Rockchip's **"RKNN SDK License"**, whose
+`librknnrt.so` is proprietary. It is distributed under Rockchip's **"RKNN SDK License"**, whose
 clause 1.2 permits reproducing copies **"on internal basis only"**. This image is
 published publicly under GPL-2.0, so it cannot carry that binary, and build now
 **fails on purpose** if file is ever found inside image.
@@ -923,7 +923,7 @@ present, and bundled ffmpeg already carrying `h264_rkmpp`, `hevc_rkmpp` and
 `mjpeg_rkmpp`.
 
 This matters more than it sounds: **bundled ffmpeg has no `libx264`**, so before now
-box had no working encode path at all despite shipping silicon for it.
+box had no working encode path at all despite having silicon for it.
 
 New command **`h96-encode`**. Measured on H96 Max V58: 1080p encoded **faster than
 180 fps** on both H.264 and HEVC, faster than test's one-second timing granularity
@@ -1090,7 +1090,7 @@ One plausible fix was tested and **refuted cleanly**: raising DDC completion tim
 changed nothing: EDID still read 0 bytes, timeouts unchanged. Giveaway was that i2c
 interrupt still arrived ~109 µs *after* timeout at **both** deadlines: constant offset
 from deadline rather than from transfer start means that interrupt is generated by
-timeout handler's own controller reset, not by late completion. Do not ship `HZ`: 54
+timeout handler's own controller reset, not by late completion. Do not publish `HZ`: 54
 timeouts at 1.013 s each add roughly 55 seconds to boot.
 
 So v3.4's approach stands: forced mode, and HDMI audio works. But measuring **fresh
@@ -1130,12 +1130,12 @@ fresh v4.0 flash: `PHY: enabled  Mode: HDMI`, HDMI PCM present, 0 failed units.
 **Consequence:** `drm.edid_firmware=` argument is currently no-op and could be dropped
 with identical behaviour, minus two error lines in `dmesg`. It has deliberately **not** been
 changed in v4.0: audio works today, and altering working boot path to tidy up log noise is
-not worth risk. Noted here so next person does not "fix" it by shipping built-in
+not worth risk. Noted here so next person does not "fix" it by building it in
 EDID name, which is precisely what broke audio in v3.3.
 
 ### 8. Widevine L3 setup, opt-in (browser DRM)
 
-Google ships no Widevine CDM for generic ARM64 Linux, so browser DRM streams
+Google provides no Widevine CDM for generic ARM64 Linux, so browser DRM streams
 (Discovery+, Netflix, Prime, Disney+) cannot play on this image by default.
 `sudo h96-widevine-setup` fetches AsahiLinux `widevine-installer` (MIT), which
 downloads Chrome (LaCrOS) image from Google (about 150 MB), extracts ARM64
@@ -1175,7 +1175,7 @@ Measured on hardware, same board and display, changing only this argument:
 | ELD                                 | `SAD_Count=0`                   | zeros                      | `SAD_Count=1`, LPCM 2ch |
 | HDMI audio                          | **none**                        | works                      | works                   |
 
-**Fix.** This repo now ships 256-byte EDID that declares 1080p60 plus HDMI VSDB and
+**Fix.** This repo now includes 256-byte EDID that declares 1080p60 plus HDMI VSDB and
 LPCM audio descriptor:
 
 ```

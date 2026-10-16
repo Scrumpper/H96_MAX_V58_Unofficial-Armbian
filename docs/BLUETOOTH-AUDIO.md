@@ -43,7 +43,7 @@ Controller advertises transparent SCO and eSCO, and mSBC carries over HCI UART a
 (measured: mSBC link active, voice packets flowing, test signal picked up). Earlier builds
 kept mSBC off because enabling it removed headset profile; cause was `bluez5.codecs`
 allow-list, which did not name HFP codecs PipeWire 1.6 loads as plugins. No allow-list
-ships now, so every Classic Bluetooth (A2DP and HFP) codec PipeWire has installed is
+is in place now, so every Classic Bluetooth (A2DP and HFP) codec PipeWire has installed is
 offered. LE Audio (BAP) roles are not offered.
 
 Classic Bluetooth cannot run A2DP output and mic at once.
@@ -66,7 +66,7 @@ headset stays connected (many headsets close A2DP when WirePlumber restarts, and
 reconnects profiles only after full link loss). `tmpfiles.d/h96-eq.conf` restores flat
 EQ file at boot if missing.
 
-`/etc/h96/eq/active.txt` must exist (flat file ships since v6.2): PipeWire 1.6
+`/etc/h96/eq/active.txt` must exist (flat file included since v6.2): PipeWire 1.6
 stops h96 EQ filter chain without it, and failed node stalls WirePlumber, so
 Bluetooth headsets get no audio device at all.
 
@@ -74,7 +74,7 @@ Bluetooth headsets get no audio device at all.
 
 No `bluez5.codecs` list: PipeWire offers LDAC, aptX HD, aptX, aptX LL, AAC, AAC-ELD, SBC-XQ,
 SBC, FastStream and Opus, and picks best one headset supports. AAC needs
-`libspa-codec-bluez5-aac.so` plugin, shipped only in `libspa-0.2-modules-extra`
+`libspa-codec-bluez5-aac.so` plugin, packaged only in `libspa-0.2-modules-extra`
 package (FDK-AAC, split out of base PipeWire for licensing). Package is not in
 image's offline repo; release image installs it through `h96-online-extras` once box
 reaches network, and by hand it needs network too:
