@@ -53,6 +53,8 @@ ALLOWLIST = [
     ("bsp-probe-rkvenc-opp", "ignore", r"(rkvenc_init:\d+: failed to add venc devfreq|mpp_rkvenc2 [0-9a-f]+\.rkvenc-core: failed to init.?opp)"),
     ("bsp-probe-npu-debugfs", "ignore", r"^debugfs: Directory '[0-9a-f]+\.npu-rknpu' with parent 'vdd_npu_s0' already present"),
     ("bsp-probe-sdhci-hs200", "ignore", r"^sdhci-dwcmshc [0-9a-f]+\.mmc: Can't reduce the clock below 52MHz in HS200/HS400"),
+    # MPP client probe deferral, repeats until each codec core binds
+    ("bsp-probe-mpp-defer", "ignore", r"^mpp_platform: client \d+ driver is not ready!?$"),
     # hot-unplug of a USB pad
     ("usb-pad-unplug", "ignore", r"^xpad \S+: xpad_try_sending_next_out_packet - usb_submit_urb failed with result -19"),
     # runtime items that are known and open on 7.2
@@ -1128,7 +1130,8 @@ def cmd_selftest(args):
 
     ok(classify("rk806 spi2.0: no sleep-setting state")[0] == "bsp-probe-rk806", "allowlist matches rk806 probe")
     ok(classify("spa.alsa: hdmi:0p: recover from error state SETUP") == ("row24-hdmi0p-recover", "warn"), "allowlist marks row24 as warn")
-    ok(classify("mpp_platform: client 18 driver is not ready!") == (None, None), "unknown mpp line is outside allowlist")
+    ok(classify("mpp_platform: client 18 driver is not ready!") == ("bsp-probe-mpp-defer", "ignore"), "allowlist matches mpp probe deferral")
+    ok(classify("mpp_platform: client 18 driver probe failed") == (None, None), "other mpp line is outside allowlist")
     ok(classify("rk806 spi2.0: no power-off pinctrl state")[0] == "bsp-probe-rk806", "allowlist matches rk806 power-off pinctrl")
     ok(classify("Unable to handle kernel NULL pointer dereference") == (None, None), "NULL deref is outside allowlist")
     r = budget_results("t", "x", [("k", "rk806 spi2.0: no sleep-setting state"), ("k", "new error 12"), ("k", "new error 13")])
