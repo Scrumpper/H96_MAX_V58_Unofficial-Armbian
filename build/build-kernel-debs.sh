@@ -8,7 +8,7 @@ set -euo pipefail
 
 KREL=${KREL:-6.1.172-h96v58-8.0}
 # default PKGVER belongs to pinned inputs below; new inputs need a new version
-PKGVER=${PKGVER:-8.0.0~r8}
+PKGVER=${PKGVER:-8.0.0~r9}
 MODPREFIX=${MODPREFIX:-/usr/lib/modules}
 STAGEPREFIX=/usr/lib/h96-kernel
 FDTFILE=${FDTFILE:-rockchip/rk3588-h96-max-v58-panthor.dtb}

@@ -17,7 +17,8 @@ Dated 2026-10-17. Nothing here is published as image yet; current release stays 
 
 8.0 is platform release. It adds no new media or gaming features.
 
-- Kernel, DTB and h96-* userland become dpkg packages built from pinned inputs and installed into rootfs at image build time.
+- Kernel, DTB and h96-* userland become dpkg packages built from pinned inputs and installed into rootfs at image
+  build time.
 - Updates arrive as owner-signed bundles. Kernels stage into try-once boot slot with hardware watchdog fallback.
 - `h96-selftest` runs same checks on every release candidate that owner and users can run.
 - Workarounds whose root cause is fixed are retired, each with one evidence line.
@@ -78,9 +79,10 @@ Inputs have no defaults; every input path and `MAINT` must be set, or script sto
 `6.1.172-h96v58-8.0`; default `MODPREFIX` is `/usr/lib/modules` (merged `/usr` path, lintian clean). With `PIN=1`
 (default) script checks each input against sha256 of 8.0 kernel build outputs and overlay DTB; `PIN=0` skips that
 check for other inputs. Default `PKGVER` belongs to pinned inputs. Version carries build round after `~`, so every
-pre-release sorts below `8.0.0`; version is never reused for different content, so new inputs take new version. `Installed-Size` follows file sizes, so
-output does not depend on filesystem. `dpkg-deb` runs directly by default; `HEAVY=1` with `HEAVY_LOCK=<lock file>`
-and `HEAVY_MEM=<size>` runs it under `flock` and `systemd-run` memory cap.
+pre-release sorts below `8.0.0`; version is never reused for different content, so new inputs take new version.
+`Installed-Size` follows file sizes, so output does not depend on filesystem. `dpkg-deb` runs directly by default;
+`HEAVY=1` with `HEAVY_LOCK=<lock file>` and `HEAVY_MEM=<size>` runs it under `flock` and `systemd-run` memory cap. CI
+smoke debs use version `0~ci`, never release version.
 
 ### DTB overlay
 
@@ -93,7 +95,8 @@ Base is vendor DTB from image (`rk3588-h96-max-v58.dtb`). Gate passes when resid
 `tools/dtb/gate/allowed-residual.txt` after phandle renumbering is removed. Renumbering check covers changed lines
 only: each changed phandle value must resolve to same node path in both trees. Unchanged lines are not resolved
 again. Vendor base DTB and v7.2 reference DTB sit in `dtb/pinned/`, checked by `SHA256SUMS`; CI runs tree diff on
-them with `H96_CI_STRICT` set, so missing or changed inputs fail job. Overlay uses vendor labels and full vendor arrays, so it applies to vendor base only.
+them with `H96_CI_STRICT` set, so missing or changed inputs fail job. Overlay uses vendor labels and full vendor
+arrays, so it applies to vendor base only.
 Board DTB is outside kernel tree; kernel patch series covers kernel sources only.
 
 ### h96-selftest

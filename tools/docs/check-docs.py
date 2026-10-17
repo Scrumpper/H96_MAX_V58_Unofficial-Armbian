@@ -4,7 +4,8 @@
     check-docs.py FILE.md ...
 
 Checks prose outside fenced code, inline code, URLs and link targets:
-dashes, sentence-opening articles, ship/our/we, filler words, internal revision labels,
+dashes, sentence-opening articles, ship/our/we, filler words, internal revision labels
+(allowed in package Version fields only),
 LAN addresses, home paths and webmail addresses, unbalanced code fences,
 dangling internal links. Private name denylist stays in local pre-commit gate.
 """
@@ -21,13 +22,15 @@ RULES = [
     ("ship wording", re.compile(r"\bship(s|ped|ping)?\b", re.I)),
     ("our/we", re.compile(r"\b(our|ours|we|we're|we've|us)\b", re.I)),
     ("filler word", re.compile(r"\b(real|really|actual|actually|very|simply|just)\b", re.I)),
-    ("internal revision label", re.compile(r"\bv\d+(\.\d+)*[-_ ]?r\d+[a-z]?\b|\br[1-9][a-c]?\b(?![-\w])")),
+    ("internal revision label", re.compile(r"\bv\d+(\.\d+)*[-_ ]?r\d+[a-z]?\b|\br[1-9]\d*[a-c]?\b(?![-\w])")),
     ("LAN address / home path / email", re.compile(
         r"(192\.168|10\.\d{1,3}|172\.(1[6-9]|2\d|3[01]))\.\d{1,3}\.\d{1,3}|/home/\w+"
         r"|[\w.%+-]+@(gmail|yahoo|hotmail|outlook|proton(mail)?|icloud)\.[a-z]+")),
 ]
 # proper names that contain a flagged word
 ALLOW = re.compile(r"ravu-lite-ar-r4|Keep a Changelog|Real-?time|realtime|Real-ESRGAN", re.I)
+# package Version field may carry build round (owner rule: rN in versions)
+VERSION_FIELD = re.compile(r"\bVersion:\s*\d+(\.\d+)*~r\d+\b")
 
 
 def slug(h):
@@ -44,7 +47,7 @@ for path in FILES:
             fenced = not fenced; fences += 1; continue
         if fenced:
             continue
-        prose = ALLOW.sub(" ", PROTECT.sub(" ", line))
+        prose = VERSION_FIELD.sub(" ", ALLOW.sub(" ", PROTECT.sub(" ", line)))
         for name, rx in RULES:
             for m in rx.finditer(prose):
                 hits.append((n, name, m.group(0).strip(), line.strip()[:100]))
