@@ -15,7 +15,7 @@ Workflow file: `.github/workflows/ci.yml`. Runs on push to `main` and `armbian-*
 | `kit-oldest-python` | Backup kit syntax | `compile()` under Python 3.7 over `h96-backup*`, `h96-restore*` and `h96-migrate-kit/` Python files | Any syntax error on oldest supported interpreter, or no kit files found |
 | `debs` | Packaging PII | Generic regex over `build/` and `tools/ci/` | LAN address or home path |
 | `debs` | Deb build | `tools/ci/kernel-debs-smoke.sh` driving `build/build-kernel-debs.sh` | Builder exit status nonzero |
-| `debs` | Lintian | `lintian --fail-on error,warning` over both built debs | Any error or warning tag outside suppress list |
+| `debs` | Lintian | `lintian --fail-on error,warning` over both built debs, no suppressed tags | Any error or warning tag |
 | `dtb` | Overlay compile | `dtc -@` over `patch/dt/h96-max-v58.dtso` and every overlay `.dts` | Any compile error, or malformed `h96-max-v58.delete` line |
 | `dtb` | Tree diff | `tools/dtb/build-dtb.sh` on pinned base DTB, then `tools/dtb/dt-tree-diff.sh` against pinned reference DTB | Pinned checksum mismatch, or residual difference beyond phandle renumbering and allowed lines |
 
@@ -25,18 +25,11 @@ Jobs `docs`, `lint`, `debs` and `dtb` run inside `ubuntu:26.04` container on arm
 
 Kernel binaries are pinned build outputs, not CI products, and are not in this repository. `tools/ci/kernel-debs-smoke.sh` feeds `build/build-kernel-debs.sh` placeholder inputs (text Image, one-line System.map, config with matching `CONFIG_LOCALVERSION`, modules tarball with one placeholder file, board overlay compiled as DTB stand-in) with `PIN=0`. Resulting `h96-kernel-*` and `h96-dtb-*` debs exercise package layout, control fields, maintainer scripts and lintian; they are not installable kernels. Builder refuses root, so job runs it as `nobody`.
 
-Lintian suppress list, set in job `env` as `H96_LINTIAN_SUPPRESS`:
-
-| Tag | Reason |
-|-----|--------|
-| `aliased-location` | Modules install under `/lib/modules`, same path as 7.x images. Move to `/usr/lib/modules` (`MODPREFIX`) is pending; drop this entry with that change |
-| `initial-upload-closes-no-bugs` | Packages are not uploaded to Debian archive, so changelog has no bug to close |
-
-Same two tags are only tags lintian reports on debs built from published v7.1 kernel payload.
+Lintian runs with no suppressed tags and no override files. Modules install under `/usr/lib/modules` (`MODPREFIX` default), so `aliased-location` does not fire. Package version is native (no Debian revision), so changelog is `changelog.gz` and `initial-upload-closes-no-bugs` does not fire.
 
 ## DTB tree diff
 
-Tree diff needs `dtb/pinned/rk3588-h96-max-v58.dtb` (vendor base), `dtb/pinned/rk3588-h96-max-v58-panthor.dtb` (published reference) and `dtb/pinned/SHA256SUMS`. Vendor DTB binaries are not committed yet, so step prints `::notice::` and passes while they are absent; overlay compile step runs either way. Setting `H96_CI_STRICT: "1"` in workflow `env` turns absent pinned inputs into failure; set it in same change that commits them.
+Tree diff reads `dtb/pinned/rk3588-h96-max-v58.dtb` (vendor base), `dtb/pinned/rk3588-h96-max-v58-panthor.dtb` (published v7.2 reference) and `dtb/pinned/SHA256SUMS`, all committed. Workflow `env` sets `H96_CI_STRICT: "1"`, so absent pinned inputs or checksum mismatch fail job. With `H96_CI_STRICT: "0"`, absent inputs print `::notice::` and skip tree diff; overlay compile step runs either way.
 
 ## Artifacts
 

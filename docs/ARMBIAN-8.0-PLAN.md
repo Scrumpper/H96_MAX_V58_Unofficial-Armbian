@@ -1,7 +1,7 @@
 # Armbian 8.0 plan and status
 
 Status of 8.0 work for H96 MAX V58 (RK3588). Planning document, not release note.
-Dated 2026-10-16. Nothing here is published as image yet; current release stays v7.2.
+Dated 2026-10-17. Nothing here is published as image yet; current release stays v7.2.
 
 ## Contents
 
@@ -59,11 +59,12 @@ Kernel stays on Rockchip BSP line rk-6.1-rkr7.2 with H96 patch series. Vendor U-
 | `patch/dt/h96-max-v58.delete` | Four property deletions overlay cannot express | DTB overlay |
 | `tools/dtb/build-dtb.sh` | Applies delete list and overlay to vendor base DTB | DTB overlay |
 | `tools/dtb/dt-tree-diff.sh`, `tools/dtb/gate/` | Tree-diff gate against reference DTB | DTB overlay |
+| `dtb/pinned/` | Vendor base DTB, published v7.2 reference DTB, `SHA256SUMS` | DTB overlay, CI |
 | `tools/h96-selftest.py` | Read-only health checks: `boot`, `hw`, `invariants`, `report`, `self-test` | h96-selftest |
 
 ### Kernel packages
 
-Payload stages into `/usr/lib/h96-kernel/<krel>/` (Image, System.map, config, DTB) and `/lib/modules/<krel>/`.
+Payload stages into `/usr/lib/h96-kernel/<krel>/` (Image, System.map, config, DTB) and `/usr/lib/modules/<krel>/`.
 Packages contain nothing under `/boot`. Postinst runs `depmod` for its release only; no `/etc/kernel` hooks,
 no initramfs tools. Prerm refuses removal of running kernel's package. Separate boot staging tool, part of
 try-once kernel slot, copies files into `/boot`; that tool is not written yet.
@@ -73,10 +74,11 @@ MAINT='Name <email>' IMAGE=Image SYSMAP=System.map CONFIG=config MODTAR=modules.
     build/build-kernel-debs.sh out
 ```
 
-Inputs have no defaults; every input path and `MAINT` must be set, or script stops. Default `KREL`
-(`6.1.172-h96v58-7.1`) and `PKGVER` (`7.1.0-1`) repack published v7.1 kernel unchanged; that default is repack
-test only, not 8.0 kernel. With `PIN=1` (default) script checks each input against sha256 of published v7.1
-kernel outputs and v7.2 DTB; `PIN=0` skips that check for other inputs. `Installed-Size` follows file sizes, so
+Inputs have no defaults; every input path and `MAINT` must be set, or script stops. Default `KREL` is
+`6.1.172-h96v58-8.0`; default `MODPREFIX` is `/usr/lib/modules` (merged `/usr` path, lintian clean). With `PIN=1`
+(default) script checks each input against sha256 of 8.0 kernel build outputs and overlay DTB; `PIN=0` skips that
+check for other inputs. Default `PKGVER` belongs to pinned inputs. Version carries build round after `~`, so every
+pre-release sorts below `8.0.0`; version is never reused for different content, so new inputs take new version. `Installed-Size` follows file sizes, so
 output does not depend on filesystem. `dpkg-deb` runs directly by default; `HEAVY=1` with `HEAVY_LOCK=<lock file>`
 and `HEAVY_MEM=<size>` runs it under `flock` and `systemd-run` memory cap.
 
@@ -90,7 +92,8 @@ tools/dtb/dt-tree-diff.sh rk3588-h96-max-v58-panthor.dtb out/candidate.dtb out/g
 Base is vendor DTB from image (`rk3588-h96-max-v58.dtb`). Gate passes when residual lines equal
 `tools/dtb/gate/allowed-residual.txt` after phandle renumbering is removed. Renumbering check covers changed lines
 only: each changed phandle value must resolve to same node path in both trees. Unchanged lines are not resolved
-again. Vendor DTB binaries are not in repo. Overlay uses vendor labels and full vendor arrays, so it applies to vendor base only.
+again. Vendor base DTB and v7.2 reference DTB sit in `dtb/pinned/`, checked by `SHA256SUMS`; CI runs tree diff on
+them with `H96_CI_STRICT` set, so missing or changed inputs fail job. Overlay uses vendor labels and full vendor arrays, so it applies to vendor base only.
 Board DTB is outside kernel tree; kernel patch series covers kernel sources only.
 
 ### h96-selftest
@@ -105,8 +108,8 @@ output exists for claim; nothing in this list has been booted on hardware unless
 
 | Package | Status | Verified | Open |
 |---------|--------|----------|------|
-| Kernel patch series | Done | Rockchip rk-6.1-rkr7.2 plus 20 commits reproduces v7.1 kernel tree file for file; each commit compiles | Intermediate commits not built into Image or booted; series stays internal until commit messages are cleaned |
-| Kernel packages | Done | Payload sha-identical to v7.1 build outputs; 35 of 35 package checks pass in scratch dpkg root; no `/boot` path; two builds byte-identical on ext4 and tmpfs | Module path `/lib/modules` or `/usr/lib/modules`; install on v7.2 box; boot test; overlay `.dtbo` set not in DTB package |
+| Kernel patch series | Done | Rockchip rk-6.1-rkr7.2 plus 20 commits reproduces v7.1 kernel tree file for file; each commit compiles; commit messages carry no internal labels; kernel `6.1.172-h96v58-8.0` built from series with pinned GCC 16.1.0 toolchain, symbol map equal to v7.1 apart from embedded config size | Intermediate commits not built into Image or booted; 8.0 kernel not booted |
+| Kernel packages | Done | 8.0 payload sha-identical to 8.0 build outputs and overlay DTB; modules under `/usr/lib/modules`; 37 of 37 package checks pass in scratch dpkg root; no `/boot` path; lintian clean with no suppressed tags; two builds byte-identical on ext4 and tmpfs | Install on v7.2 box; boot test; overlay `.dtbo` set not in DTB package |
 | DTB overlay | Done | Overlay build matches v7.2 DTB tree apart from 2 renumbered phandles and 2 new labels; gate passes; `/boot` output guard refuses `/boot` and paths below it; negative tests fail as designed | Boot test under test `fdtfile` name |
 | Userland packages | Open, not on branch | 8 packages build twice identically; scratch dpkg install, remove and purge clean | Blocking issue: first-boot GPU setup unit can point `/boot/Image` at missing file on 8.0 kernel; conffile and diversion issues; lintian not clean; chroot install not done |
 | h96-selftest | Done for `boot`, `hw`, `invariants`, `report` | Runs on Python 3.11 (amd64, arm64); read-only run on v7.2 box with no file changes | `media`, `menus`, `soak` stubs; runs after reboots and upgrade |
@@ -133,10 +136,11 @@ for owner.
 
 ## Owner decisions pending
 
-- Kernel build host and toolchain, or repack of v7.1 kernel unchanged.
-- Module install path for kernel package (`/lib/modules` or `/usr/lib/modules`).
-- Package version scheme and Maintainer field.
-- Whether vendor base DTB and v7.2 reference DTB may be committed as pinned CI inputs.
+Decided 2026-10-17: kernel rebuilt in container with pinned GCC 16.1.0 as `6.1.172-h96v58-8.0`; modules under
+`/usr/lib/modules`; package version carries build round after `~` and is never reused; Maintainer
+`Scrumpper <190908034+Scrumpper@users.noreply.github.com>`; vendor base DTB and v7.2 reference DTB committed as pinned
+CI inputs. Still open:
+
 - Userland paths under `/usr/local` and `/opt` with lintian overrides, or moved paths.
 - Update signing key and its location.
 - Dates for live U-Boot bench, kernel and DTB test boots, and fresh flash.

@@ -1,14 +1,15 @@
 #!/bin/bash
 # shellcheck disable=SC2034  # SHA_* pins read through ${!want}
 # Builds h96-kernel-<krel> and h96-dtb-<krel> debs from pinned kernel build outputs.
-# Payload stages into /usr/lib/h96-kernel/<krel>/ and /lib/modules/<krel>/; nothing under /boot.
+# Payload stages into /usr/lib/h96-kernel/<krel>/ and /usr/lib/modules/<krel>/; nothing under /boot.
 # Usage: MAINT='Name <email>' IMAGE=.. SYSMAP=.. CONFIG=.. MODTAR=.. DTB=.. build-kernel-debs.sh [OUTDIR]
 # Re-runnable; output depends only on inputs and SOURCE_DATE_EPOCH.
 set -euo pipefail
 
-KREL=${KREL:-6.1.172-h96v58-7.1}
-PKGVER=${PKGVER:-7.1.0-1}
-MODPREFIX=${MODPREFIX:-/lib/modules}
+KREL=${KREL:-6.1.172-h96v58-8.0}
+# default PKGVER belongs to pinned inputs below; new inputs need a new version
+PKGVER=${PKGVER:-8.0.0~r8}
+MODPREFIX=${MODPREFIX:-/usr/lib/modules}
 STAGEPREFIX=/usr/lib/h96-kernel
 FDTFILE=${FDTFILE:-rockchip/rk3588-h96-max-v58-panthor.dtb}
 # Maintainer field; required, no default
@@ -22,13 +23,13 @@ CONFIG=${CONFIG:-}
 MODTAR=${MODTAR:-}
 DTB=${DTB:-}
 
-# default KREL repacks published v7.1 payload (test only); PIN=0 skips pins for other inputs
+# pins: 8.0 kernel build outputs and overlay DTB; PIN=0 skips pins for other inputs
 PIN=${PIN:-1}
-SHA_IMAGE=1ac355a2c289f5fe419c0bccdf6fc8df759782fda2888fdd1e180744a3a4678e
-SHA_SYSMAP=196975ae6999198a065e4259aa266e922b3bd756b89ea17987aec4dfbe6de1d0
-SHA_CONFIG=d475b71460e0946b9e4a615a32cf89b173e487a483747198406f0cd0a4f29ea9
-SHA_MODTAR=befb804af7ed78ac339b2659f5354fcd36ef3231cc18fbd4a28569fa7b8e2016
-SHA_DTB=f3ca55ce08fae47f351558964b4b040c9229852ba74241b01de2bb47ce2da6ea
+SHA_IMAGE=6fbe2fee96d1dbc920d7957877ccb2b140c32a927d647615d877a840af64e8bc
+SHA_SYSMAP=6d8e615f4e8376088bd9145a59c9ae3f48f3715a287826ae8ff19c7ce430f976
+SHA_CONFIG=b94f0167acfc532645470821d7acf56360aaf8a93c6fd513406328083f633e19
+SHA_MODTAR=a9c2f2c972697937d23a160daff70b021cc7e22c154ddd1a407d351babce3e49
+SHA_DTB=4891450dbe1ffee7257e268ecca06c91857623a6025ff6a79ba02e31d2363253
 
 OUT=${1:-out}
 if [ -z "${WORK:-}" ]; then WORK=$(mktemp -d); trap 'rm -rf "$WORK"' EXIT; fi
@@ -93,9 +94,12 @@ License: GPL-2
  On Debian systems, full text of GNU General Public License version 2
  is in /usr/share/common-licenses/GPL-2.
 EOF
+    # native version (no Debian revision) takes changelog.gz
+    local cl=changelog.gz
+    case "$PKGVER" in *-*) cl=changelog.Debian.gz;; esac
     printf '%s (%s) unstable; urgency=medium\n\n  * Kernel %s, staged files only.\n\n -- %s  %s\n' \
         "$1" "$PKGVER" "$KREL" "$MAINT" "$(date -u -R -d "@$SOURCE_DATE_EPOCH")" \
-        | gzip -9n > "$d/changelog.Debian.gz"
+        | gzip -9n > "$d/$cl"
 }
 
 inst_size() { # root; KiB per file rounded up, 1 per other entry, as dpkg-gencontrol
