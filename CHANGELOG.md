@@ -24,9 +24,10 @@
 - Steam: installer comes from `steam-arm-setup` package (`/usr/share/steam-arm-setup`); `h96-steam` front end and links in `/usr/lib/h96/steam` from `h96-gaming`. Next beta build carries Steam ARM 3.0; `h96-gaming` depends on `steam-arm-setup (>= 3.0)`.
 - `h96-tools` depends on `python3-tk`: `h96-backup-gui` opens without online install.
 - Release identity names `v8.0`: `/etc/h96-release`, console banner (`/etc/issue`, `/etc/issue.net`), os-release `VARIANT`; `h96-backup` records `source_version` `v8.0`. `h96-restore` restores `v8.0` and earlier beta archives natively.
-- `h96-wol` changes NetworkManager profile only when profile is saved on disk; automatic in-memory wired profile stays unsaved (earlier builds wrote it to `/etc/netplan/90-NM-<uuid>.yaml`). `h96-wol.service`, installed off and enabled by `h96-wol on`, sets wake-on-LAN at each boot. `status` runs no `netplan generate`.
+- `h96-wol` changes NetworkManager profile only when profile is saved on disk; automatic in-memory wired profile stays unsaved (earlier builds wrote it to `/etc/netplan/90-NM-<uuid>.yaml`). `h96-wol.service`, installed off and enabled by `h96-wol on`, sets wake-on-LAN each time `eth0` appears, so boot never waits for absent `eth0`. `status` runs no `netplan generate` and prints `wol: on` or `wol: off` first: `ethtool` Wake-on value as root, boot unit state otherwise. `h96-backup` records wake-on-LAN from that line (earlier beta builds recorded `on` as `off`).
 - `h96-restore`: wake-on-LAN is own category `wol`, applied only when `--only` names it; `system` no longer changes network state. `h96-backup-gui` restore tab lists it unticked, also after `[ All ]`.
-- `h96-backup-gui` opens at most 1000x700, stays resizable and sends no maximize request (earlier builds maximized on screens below 1200 px height).
+- `h96-backup-gui` opens at most 1000x700, stays resizable and sends no maximize request (earlier builds maximized on screens below 1200 px height). Restore tab details wrap to window width; category list scrolls only when window height runs out.
+- Manual page of each command carries whole COMMANDS.md paragraph (earlier builds cut it at first line).
 - COMMANDS.md undervolt section lists `h96-undervolt revert --force` and kernel switch refusals.
 - `h96-mpv-kiosk` menu entry removed: without file or URL it started nothing. Command runs from text console with file or URL.
 - Upgrade from earlier beta build keeps runtime-written detection files (HDMI sink EDID, ALSA HDMI settings, WirePlumber IEC958 settings); dpkg prints no directory removal warning.
