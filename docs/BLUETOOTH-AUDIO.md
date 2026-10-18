@@ -53,8 +53,10 @@ switches to Handsfree (mono call quality) while app records, and returns to
 A2DP stereo when recording stops. `pipewire/95-h96-silence-source.conf` adds
 "Silence (no microphone)" input, so KDE audio applet shows its input selector (hidden
 with single input) and headset mic can be confirmed as default. Since 8.0 silence input
-ranks above every output monitor and below every microphone, so it becomes input when
-headset mic leaves, not HDMI output monitor.
+ranks above output monitors of non-pro sinks (HDMI included) and below Bluetooth mics and
+non-pro capture devices 0 to 27, so it becomes input when headset mic leaves, not HDMI
+output monitor. Card switched to pro-audio profile outranks silence input with its output
+monitor.
 
 Bluetooth sinks force 2048-sample audio cycle while playing (`node.force-quantum`): at 512
 samples encoder and h96 EQ filter chain miss deadlines (xruns), heard as choppy audio. They

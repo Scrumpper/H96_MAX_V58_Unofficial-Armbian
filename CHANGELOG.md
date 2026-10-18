@@ -21,8 +21,17 @@
 
 - Eight packages, version `8.0.0~rN`: `h96-base` (release identity, `h96` command, first-boot units, apt policy), `h96-boot` (boot chain guards, apt pins, EDID, hang recovery), `h96-net` (BCM43752 WiFi units, hotspot, Wake-on-LAN), `h96-audio` (PipeWire, WirePlumber, HDMI audio, Bluetooth), `h96-desktop` (X11 display, LightDM, KDE and GNOME setup), `h96-media` (mpv configuration, video stack, NPU, CEC, casting), `h96-tools` (backup and restore, perf, undervolt, LEDs, VFD), `h96-gaming` (pad rules, DXVK, box64, Steam ARM wrapper).
 - Packaged files leave `/usr/local` and `/opt`: commands in `/usr/bin` and `/usr/sbin`, helpers and payloads in `/usr/lib/h96` (video stack in `/usr/lib/h96/video`, gaming files in `/usr/lib/h96/gaming`), units in `/usr/lib/systemd/system`, udev rules in `/usr/lib/udev/rules.d`, settings in `/etc/h96`. Signed offline apt repository stays at `/opt/h96-pkgs` as image data.
-- Steam: installer comes from `steam-arm-setup` package (`/usr/share/steam-arm-setup`); `h96-steam` front end and links in `/usr/lib/h96/steam` from `h96-gaming`. Next beta build carries Steam ARM 3.0.
+- Steam: installer comes from `steam-arm-setup` package (`/usr/share/steam-arm-setup`); `h96-steam` front end and links in `/usr/lib/h96/steam` from `h96-gaming`. Next beta build carries Steam ARM 3.0; `h96-gaming` depends on `steam-arm-setup (>= 3.0)`.
+- `h96-tools` depends on `python3-tk`: `h96-backup-gui` opens without online install.
+- `h96-mpv-kiosk` menu entry removed: without file or URL it started nothing. Command runs from text console with file or URL.
+- Upgrade from earlier beta build keeps runtime-written detection files (HDMI sink EDID, ALSA HDMI settings, WirePlumber IEC958 settings); dpkg prints no directory removal warning.
 - Maintainer `Scrumpper <190908034+Scrumpper@users.noreply.github.com>`. Lintian clean; overrides only for tags that cannot be fixed, each with reason.
+
+### Audio
+
+- "Silence (no microphone)" input ranks above output monitors of non-pro sinks and below Bluetooth mics and non-pro capture devices 0 to 27 (UCM and mono-fallback profiles included). When last microphone leaves, input falls to silence, not HDMI output monitor. Card switched to pro-audio profile outranks silence input with its output monitor.
+- HDMI sink `priority.session` 1200 (v7.2: 2000): still ahead of S/PDIF, Bluetooth and USB sinks, below silence input.
+- Desktop setup (`h96-desktop-fixup.sh`, run on first KDE or GNOME install) no longer rewrites packaged HDMI audio rule, so priorities above hold on desktop installs. Polkit admin rule, Xorg display file and FEX Steam pad dedup rule written by setup scripts equal packaged copies.
 
 ### GPU and desktop
 
@@ -32,14 +41,14 @@
 
 ### Tools and CI
 
-- `tools/h96-selftest.py`: read-only health checks (`boot`, `hw`, `invariants`, `report`, `self-test`).
+- `tools/h96-selftest.py`: read-only health checks (`boot`, `hw`, `invariants`, `report`, `self-test`). Boot budget allowlist covers bluetoothd LE privacy reject and adv monitor power-down race.
 - CI on GitHub-hosted arm64 runners: docs gates, shell and Python lint, backup kit on Python 3.7, kernel deb packaging with lintian, DTB overlay tree diff. See `docs/CI.md`.
 - Flash steps add read-back check: `rkdeveloptool rl` of written range, sha256 equal to image before reset. See README, Flashing.
 
 ### Known in beta
 
 - Boot 1 journal is volatile, so boot 1 errors are not kept after first reboot.
-- `dpkg -V` lists files rewritten at runtime (HDMI sink EDID, ALSA HDMI settings, WirePlumber IEC958 settings).
+- `dpkg -V` lists `/etc/mpv/passthrough.conf` and `/etc/mpv/hdr.conf` once `h96-audio-passthrough` or `h96-hdr` rewrites them. Files rewritten by audio detection (HDMI sink EDID, ALSA HDMI settings, WirePlumber IEC958 settings) are copied at install and stay outside `dpkg -V`.
 - Try-once kernel slot and signed update bundles are not in beta. Rollback: reflash v7.2 image.
 
 ## v6.2 (2026-09-26)

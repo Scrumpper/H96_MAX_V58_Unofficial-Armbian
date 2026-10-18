@@ -8,7 +8,7 @@ set -euo pipefail
 
 KREL=${KREL:-6.1.172-h96v58-8.0}
 # default versions belong to pinned inputs and maintainer scripts below; new content needs a new version
-# kernel deb: r11 maintainer scripts; dtb deb: content unchanged since r10. Explicit PKGVER sets both.
+# kernel and DTB debs carry own versions (DTB content changes less often). Explicit PKGVER sets both.
 [ -z "${PKGVER:-}" ] || DTB_PKGVER=${DTB_PKGVER:-$PKGVER}
 PKGVER=${PKGVER:-8.0.0~r11}
 DTB_PKGVER=${DTB_PKGVER:-8.0.0~r10}
