@@ -46,6 +46,8 @@ ALLOWLIST = [
     ("bsp-probe-rkvdec-shared-niu", "ignore", r"^mpp_rkvdec2 [0-9a-f]+\.rkvdec-core: shared_niu_[ah] is not found"),
     ("bsp-probe-remotectl", "ignore", r"^\.\. rk pwm remotectl v[\d.]+ init"),
     ("bt-le-cmd-enosys", "ignore", r"^Bluetooth: hci\d+: Opcode 0x2037 failed: -38"),
+    # bluetoothd: controller rejects LE privacy mode at power-on
+    ("bt-privacy-rejected", "ignore", r"^Failed to set privacy: Rejected \(0x0b\)$"),
     ("bsp-probe-gmac", "ignore", r"^rk_gmac-dwmac [0-9a-f]+\.ethernet: (cannot get clock|Can not read property: rx_delay|set rx_delay to)"),
     ("bsp-probe-vop2-opp", "ignore", r"^rockchip-vop2 [0-9a-f]+\.vop: failed to init opp info"),
     ("bsp-probe-dfi", "ignore", r"^rockchip-dfi [0-9a-f]+\.dfi: Failed to get pclk_ddr_mon"),
@@ -1158,6 +1160,8 @@ def cmd_selftest(args):
     ok(classify("mpp_platform: client 18 driver probe failed") == (None, None), "other mpp line is outside allowlist")
     ok(classify("rk806 spi2.0: no power-off pinctrl state")[0] == "bsp-probe-rk806", "allowlist matches rk806 power-off pinctrl")
     ok(classify("Unable to handle kernel NULL pointer dereference") == (None, None), "NULL deref is outside allowlist")
+    ok(classify("Failed to set privacy: Rejected (0x0b)") == ("bt-privacy-rejected", "ignore"), "allowlist matches bluetoothd privacy reject")
+    ok(classify("Failed to set privacy: Failed (0x03)") == (None, None), "other privacy failure is outside allowlist")
     r = budget_results("t", "x", [("k", "rk806 spi2.0: no sleep-setting state"), ("k", "new error 12"), ("k", "new error 13")])
     ok(r[0].status == FAIL and "2 outside" in r[0].evidence and "1 distinct" in r[0].evidence, "budget counts unknown lines and groups digits")
 
