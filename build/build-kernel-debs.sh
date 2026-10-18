@@ -7,8 +7,11 @@
 set -euo pipefail
 
 KREL=${KREL:-6.1.172-h96v58-8.0}
-# default PKGVER belongs to pinned inputs below; new inputs need a new version
-PKGVER=${PKGVER:-8.0.0~r10}
+# default versions belong to pinned inputs and maintainer scripts below; new content needs a new version
+# kernel deb: r11 maintainer scripts; dtb deb: content unchanged since r10. Explicit PKGVER sets both.
+[ -z "${PKGVER:-}" ] || DTB_PKGVER=${DTB_PKGVER:-$PKGVER}
+PKGVER=${PKGVER:-8.0.0~r11}
+DTB_PKGVER=${DTB_PKGVER:-8.0.0~r10}
 MODPREFIX=${MODPREFIX:-/usr/lib/modules}
 STAGEPREFIX=/usr/lib/h96-kernel
 FDTFILE=${FDTFILE:-rockchip/rk3588-h96-max-v58-panthor.dtb}
@@ -80,7 +83,7 @@ DPKG=h96-dtb-$KREL
 # clear only this script's trees; caller WORK may hold other files
 rm -rf "${WORK:?}/$KPKG" "${WORK:?}/$DPKG"; mkdir -p "$WORK" "$OUT"
 
-doc_files() { # pkg root
+doc_files() { # pkg root version
     local d="$2/usr/share/doc/$1"
     mkdir -p "$d"
     cat > "$d/copyright" <<EOF
@@ -96,9 +99,9 @@ License: GPL-2
 EOF
     # native version (no Debian revision) takes changelog.gz
     local cl=changelog.gz
-    case "$PKGVER" in *-*) cl=changelog.Debian.gz;; esac
+    case "$3" in *-*) cl=changelog.Debian.gz;; esac
     printf '%s (%s) unstable; urgency=medium\n\n  * Kernel %s, staged files only.\n\n -- %s  %s\n' \
-        "$1" "$PKGVER" "$KREL" "$MAINT" "$(date -u -R -d "@$SOURCE_DATE_EPOCH")" \
+        "$1" "$3" "$KREL" "$MAINT" "$(date -u -R -d "@$SOURCE_DATE_EPOCH")" \
         | gzip -9n > "$d/$cl"
 }
 
@@ -132,7 +135,7 @@ for g in alias alias.bin builtin.alias.bin builtin.bin dep dep.bin devname softd
 done
 find "$KR$MODPREFIX/$KREL" -maxdepth 1 \( -name build -o -name source \) -exec rm -f {} +
 (cd "$KS" && sha256sum Image System.map config > SHA256SUMS.kernel)
-doc_files "$KPKG" "$KR"
+doc_files "$KPKG" "$KR" "$PKGVER"
 
 cat > "$KR/DEBIAN/postinst" <<EOF
 #!/bin/sh
@@ -140,21 +143,38 @@ cat > "$KR/DEBIAN/postinst" <<EOF
 set -e
 if [ "\$1" = configure ]; then
     depmod -a -b "\${DPKG_ROOT:-/}" -F "\${DPKG_ROOT:-}$STAGEPREFIX/$KREL/System.map" $KREL
-    # hint only; switching is a separate admin step
+    # hint only, skipped when $KREL already boots by default or is on trial; switching is a separate admin step
     if [ -z "\${DPKG_ROOT:-}" ]; then
-        echo "$KPKG: staged in $STAGEPREFIX/$KREL; boot files unchanged"
-        echo "$KPKG: to boot it once with fallback: h96-kernel-switch try $KREL (package h96-kernel-switch)"
+        roles=""
+        if command -v h96-kernel-switch >/dev/null 2>&1; then
+            roles=\$(h96-kernel-switch in-use $KREL 2>/dev/null || true)
+        elif [ "\$(uname -r)" = $KREL ]; then
+            roles=default
+        fi
+        case " \$roles " in
+        *" default "*|*" trial "*) ;;
+        *)
+            echo "$KPKG: staged in $STAGEPREFIX/$KREL; boot files unchanged"
+            echo "$KPKG: to boot it once with fallback: h96-kernel-switch try $KREL (package h96-kernel-switch)"
+            ;;
+        esac
     fi
 fi
 exit 0
 EOF
 cat > "$KR/DEBIAN/prerm" <<EOF
 #!/bin/sh
-# refuses removal of running kernel's modules unless H96_KERNEL_FORCE_REMOVE=1
+# refuses removal of modules of running, default, trial or rollback kernel unless H96_KERNEL_FORCE_REMOVE=1
 set -e
-if [ "\$1" = remove ] && [ -z "\${DPKG_ROOT:-}" ] && [ "\$(uname -r)" = $KREL ] && [ "\${H96_KERNEL_FORCE_REMOVE:-0}" != 1 ]; then
-    echo "$KPKG: $KREL is running kernel; removal refused (H96_KERNEL_FORCE_REMOVE=1 overrides)" >&2
-    exit 1
+if [ "\$1" = remove ] && [ -z "\${DPKG_ROOT:-}" ] && [ "\${H96_KERNEL_FORCE_REMOVE:-0}" != 1 ]; then
+    if [ "\$(uname -r)" = $KREL ]; then
+        echo "$KPKG: $KREL is running kernel; removal refused (H96_KERNEL_FORCE_REMOVE=1 overrides)" >&2
+        exit 1
+    fi
+    if command -v h96-kernel-switch >/dev/null 2>&1 && roles=\$(h96-kernel-switch in-use $KREL 2>/dev/null); then
+        echo "$KPKG: $KREL is \$roles kernel in boot files; removal refused (H96_KERNEL_FORCE_REMOVE=1 overrides)" >&2
+        exit 1
+    fi
 fi
 exit 0
 EOF
@@ -207,12 +227,12 @@ DS=$DR$STAGEPREFIX/$KREL/dtb
 mkdir -p "$DS/$(dirname "$FDTFILE")" "$DR/DEBIAN"
 cp "$DTB" "$DS/$FDTFILE"
 (cd "$DS" && sha256sum "$FDTFILE" > SHA256SUMS.dtb)
-doc_files "$DPKG" "$DR"
+doc_files "$DPKG" "$DR" "$DTB_PKGVER"
 finish_pkg "$DR"
 DSIZE=$(inst_size "$DR")
 cat > "$DR/DEBIAN/control" <<EOF
 Package: $DPKG
-Version: $PKGVER
+Version: $DTB_PKGVER
 Section: kernel
 Priority: optional
 Architecture: arm64
@@ -229,7 +249,7 @@ touch -d "@$SOURCE_DATE_EPOCH" "$DR/DEBIAN/control" "$DR/DEBIAN"
 
 ARCH=arm64
 KDEB=$OUT/${KPKG}_${PKGVER}_$ARCH.deb
-DDEB=$OUT/${DPKG}_${PKGVER}_$ARCH.deb
+DDEB=$OUT/${DPKG}_${DTB_PKGVER}_$ARCH.deb
 heavy dpkg-deb --root-owner-group -Zxz --build "$KR" "$KDEB"
 heavy dpkg-deb --root-owner-group -Zxz --build "$DR" "$DDEB"
 (cd "$OUT" && sha256sum "$(basename "$KDEB")" "$(basename "$DDEB")" > SHA256SUMS)

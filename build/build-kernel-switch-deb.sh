@@ -6,7 +6,7 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SRC=$HERE/packages/h96-kernel-switch
 OUT=${1:?usage: $0 OUTDIR}
 P=h96-kernel-switch
-export SOURCE_DATE_EPOCH=${SOURCE_DATE_EPOCH:-1792324800}
+export SOURCE_DATE_EPOCH=${SOURCE_DATE_EPOCH:-1792346400}
 case "$(realpath -m "$OUT")/" in /boot/*) echo "ERROR: refusing OUTDIR under /boot" >&2; exit 1 ;; esac
 [ "$(id -u)" != 0 ] || { echo "ERROR: run as normal user" >&2; exit 1; }
 mkdir -p "$OUT"

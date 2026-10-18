@@ -82,8 +82,10 @@ MAINT='Name <email>' IMAGE=Image SYSMAP=System.map CONFIG=config MODTAR=modules.
 Inputs have no defaults; every input path and `MAINT` must be set, or script stops. Default `KREL` is
 `6.1.172-h96v58-8.0`; default `MODPREFIX` is `/usr/lib/modules` (merged `/usr` path, lintian clean). With `PIN=1`
 (default) script checks each input against sha256 of 8.0 kernel build outputs and overlay DTB; `PIN=0` skips that
-check for other inputs. Default `PKGVER` belongs to pinned inputs. Version carries build round after `~`, so every
-pre-release sorts below `8.0.0`; version is never reused for different content, so new inputs take new version.
+check for other inputs. Default `PKGVER` (kernel package) and `DTB_PKGVER` (DTB package) belong to pinned inputs
+and maintainer scripts; package whose content did not change keeps its version, and explicit `PKGVER` without
+`DTB_PKGVER` sets both. Version carries build round after `~`, so every pre-release sorts below `8.0.0`; version
+is never reused for different content, so new content takes new version.
 `Installed-Size` follows file sizes, so output does not depend on filesystem. `dpkg-deb` runs directly by default;
 `HEAVY=1` with `HEAVY_LOCK=<lock file>` and `HEAVY_MEM=<size>` runs it under `flock` and `systemd-run` memory cap. CI
 smoke debs use version `0~ci`, never release version.

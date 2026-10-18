@@ -1,7 +1,7 @@
 #!/bin/bash
 # h96-kernel-switch: boot a staged kernel as guarded trial, confirm or roll back.
-# Writes in /boot: versioned Image/uInitrd/DTB copies, Image and uInitrd links, DTB link when DTB differs.
-# Never touches extlinux, boot.scr, boot.cmd or armbianEnv.txt.
+# Image, uInitrd and (once it differs) board DTB link through /boot/h96ks/cur into one generation directory;
+# one rename of h96ks/cur switches all three. Never touches extlinux, boot.scr, boot.cmd or armbianEnv.txt.
 set -euo pipefail
 umask 022
 export LC_ALL=C
@@ -10,8 +10,10 @@ ME=h96-kernel-switch
 R=${H96KS_ROOT:-}  # stub root for tests; empty on live system
 TEST=0
 [ -n "$R" ] && TEST=1
-if [ "$TEST" = 0 ]; then unset H96KS_UNAME H96KS_BOOTID H96KS_HEALTHY H96KS_AVAIL_KB H96KS_DIE_AT; fi
+if [ "$TEST" = 0 ]; then unset H96KS_UNAME H96KS_BOOTID H96KS_HEALTHY H96KS_AVAIL_KB H96KS_DIE_AT H96KS_CUTLOG; fi
 BOOT=$R/boot
+GD=h96ks           # generation directories, relative to /boot
+CUR=$GD/cur        # link to active generation
 STAGE=$R/usr/lib/h96-kernel
 MODS=$R/usr/lib/modules
 ST=$R/var/lib/h96-kernel-switch
@@ -19,17 +21,19 @@ TRIAL=$ST/trial
 LAST=$ST/last
 RESERVE_KB=${H96KS_RESERVE_KB:-16384}
 TMPSFX=.h96ks-tmp
-KEYS="PHASE KREL AUTO PENDING ABOOT DTBN PREV_IMG PREV_INI PREV_DTB NEW_IMG NEW_INI NEW_DTB"
+KEYS="PHASE KREL MODE AUTO PENDING ABOOT PREV NEW"
 
 usage() {
     cat <<EOF
-usage: $ME list | status
+usage: $ME list | status | default
        $ME try KREL [--auto-confirm] [--keep-dtb]
-       $ME confirm | rollback | prune KREL
+       $ME confirm | rollback | prune KREL | in-use KREL
        $ME guard | auto-confirm        (run by systemd units)
-try:      copy staged KREL into /boot under versioned names, point links at it, arm boot guard
+try:      copy staged KREL into new /boot generation, point h96ks/cur at it, arm boot guard
 confirm:  keep KREL as default; run during trial boot
 rollback: cancel pending trial, or return to kernel that was default before last confirm
+default:  print release that boot files start
+in-use:   print roles of KREL in boot files (default, trial, trial-previous, rollback-target); rc 1 when none
 EOF
 }
 
@@ -48,8 +52,12 @@ healthy() {
     if [ "$TEST" = 1 ]; then [ "${H96KS_HEALTHY:-1}" = 1 ]; return; fi
     systemctl is-active -q multi-user.target
 }
-# power cut simulation for tests
-cut() { if [ "$TEST" = 1 ] && [ "${H96KS_DIE_AT:-}" = "$1" ]; then echo "test: power cut at $1" >&2; exit 99; fi; }
+# power cut simulation and cut point trace for tests
+cutpoint() {
+    [ "$TEST" = 1 ] || return 0
+    [ -z "${H96KS_CUTLOG:-}" ] || echo "$1" >> "$H96KS_CUTLOG"
+    if [ "${H96KS_DIE_AT:-}" = "$1" ]; then echo "test: power cut at $1" >&2; exit 99; fi
+}
 fsync_dir() { sync "$1" 2>/dev/null || sync; }
 safe() { [[ $1 =~ ^[A-Za-z0-9][A-Za-z0-9._+-]*$ ]] && [[ $1 != *..* ]]; }
 safe_path() { [[ $1 =~ ^[A-Za-z0-9][A-Za-z0-9._+/-]*$ ]] && [[ $1 != *..* ]] && [[ $1 != */ ]]; }
@@ -70,7 +78,7 @@ st_load() {  # file
         [ -z "$v" ] || safe_path "$v" || return 2
         printf -v "T_$k" '%s' "$v"
     done < "$1"
-    case "$T_PHASE" in copying|switching|armed|trial|done) ;; *) return 2 ;; esac
+    case "$T_PHASE" in armed|trial|commit|done) ;; *) return 2 ;; esac
     return 0
 }
 st_save() {  # file KEY=VALUE...
@@ -83,9 +91,8 @@ st_save() {  # file KEY=VALUE...
     fsync_dir "$ST"
 }
 trial_save() {  # phase [pending]
-    st_save "$TRIAL" "PHASE=$1" "KREL=$T_KREL" "AUTO=$T_AUTO" "PENDING=${2:-}" "ABOOT=$T_ABOOT" "DTBN=$T_DTBN" \
-        "PREV_IMG=$T_PREV_IMG" "PREV_INI=$T_PREV_INI" "PREV_DTB=$T_PREV_DTB" \
-        "NEW_IMG=$T_NEW_IMG" "NEW_INI=$T_NEW_INI" "NEW_DTB=$T_NEW_DTB"
+    st_save "$TRIAL" "PHASE=$1" "KREL=$T_KREL" "MODE=$T_MODE" "AUTO=$T_AUTO" "PENDING=${2:-}" "ABOOT=$T_ABOOT" \
+        "PREV=$T_PREV" "NEW=$T_NEW"
     T_PHASE=$1 T_PENDING=${2:-}
 }
 trial_clear() { rm -f "$TRIAL"; fsync_dir "$ST"; }
@@ -98,33 +105,71 @@ relink() {
     mv -Tf "$t" "$l"
     fsync_dir "$(dirname "$l")"
 }
-# point Image, uInitrd and optional DTB link at one set; DTB first, Image last
-set_links() {  # img ini dtb
-    [ -z "$3" ] || relink "dtb/$T_DTBN" "$3"
-    cut "$4-a"
-    relink uInitrd "$2"
-    cut "$4-b"
-    relink Image "$1"
+clean_tmp() {
+    [ -d "$BOOT" ] || return 0
+    find "$BOOT" -xdev -name ".*$TMPSFX" -prune -exec rm -rf {} + 2>/dev/null || true
+    fsync_dir "$BOOT"
+}
+
+# generations: /boot/h96ks/<krel>.g<n>/{Image,uInitrd,fdt}, never changed once renamed into place
+gen_krel() { echo "${1%.g*}"; }
+gen_ok() { safe "$1" && [ -f "$BOOT/$GD/$1/Image" ] && [ -f "$BOOT/$GD/$1/uInitrd" ] && [ -f "$BOOT/$GD/$1/fdt" ]; }
+gen_cmp() { cmp -s "$2" "$1/Image" && cmp -s "$3" "$1/uInitrd" && cmp -s "$4" "$1/fdt"; }  # dir img ini fdt
+gen_same() { gen_cmp "$BOOT/$GD/$1" "$2" "$3" "$4"; }  # gen img ini fdt
+cur_gen() {
+    local g
+    g=$(readlink "$BOOT/$CUR" 2>/dev/null) || return 1
+    safe "$g" || return 1
+    echo "$g"
+}
+gens_of() {  # krel: generation names of exactly this release
+    local g
+    for g in "$BOOT/$GD/$1".g*; do
+        [ -d "$g" ] || continue
+        g=$(basename "$g")
+        [[ ${g#"$1".g} =~ ^[0-9]+$ ]] && echo "$g"
+    done
+    return 0
+}
+new_gen_name() {  # krel
+    local n=1
+    while [ -e "$BOOT/$GD/$1.g$n" ]; do n=$((n + 1)); done
+    echo "$1.g$n"
+}
+# mkgen NAME IMG INI FDT link|copy: temp dir, read-back, rename into place
+mkgen() {
+    local t="$BOOT/$GD/.$1$TMPSFX"
+    rm -rf "$t"
+    mkdir -p "$t"
+    if [ "$5" = link ]; then
+        if ! ln "$(realpath "$2")" "$t/Image" || ! ln "$(realpath "$3")" "$t/uInitrd"; then die "hard link inside $BOOT failed"; fi
+    else
+        cp "$2" "$t/Image"
+        cp "$3" "$t/uInitrd"
+        chmod 0644 "$t/Image" "$t/uInitrd"
+    fi
+    cp "$4" "$t/fdt"
+    chmod 0644 "$t/fdt"
+    sync "$t/Image" "$t/uInitrd" "$t/fdt" 2>/dev/null || sync
+    gen_cmp "$t" "$2" "$3" "$4" || die "read-back of $1 failed"
+    fsync_dir "$t"
+    mv -T "$t" "$BOOT/$GD/$1"
+    fsync_dir "$BOOT/$GD"
+}
+flip() {  # gen why: one rename switches every name that links through h96ks/cur
+    if gen_ok "$1"; then
+        relink "$CUR" "$1"
+        log "$2: $CUR -> $1"
+    else
+        log "$2: generation $1 missing, links left as found: $(links_now)"
+        echo "$(date -Is) gen-missing $1" >> "$ST/result"
+    fi
 }
 links_now() {
     local d=""
-    [ -z "$T_DTBN" ] || [ ! -L "$BOOT/dtb/$T_DTBN" ] || d=$(readlink "$BOOT/dtb/$T_DTBN")
-    echo "Image=$(readlink "$BOOT/Image" 2>/dev/null) uInitrd=$(readlink "$BOOT/uInitrd" 2>/dev/null) dtb=$d"
+    [ -z "${DTBN:-}" ] || d=$(readlink "$BOOT/dtb/$DTBN" 2>/dev/null || echo plain)
+    echo "Image=$(readlink "$BOOT/Image" 2>/dev/null) uInitrd=$(readlink "$BOOT/uInitrd" 2>/dev/null) dtb=$d cur=$(readlink "$BOOT/$CUR" 2>/dev/null)"
 }
-prev_ok() {  # prev targets present
-    [ -f "$BOOT/$T_PREV_IMG" ] && [ -f "$BOOT/$T_PREV_INI" ] &&
-        { [ -z "$T_PREV_DTB" ] || [ -f "$BOOT/dtb/$(dirname "$T_DTBN")/$T_PREV_DTB" ]; }
-}
-revert_links() {  # why
-    if prev_ok; then
-        set_links "$T_PREV_IMG" "$T_PREV_INI" "$T_PREV_DTB" revert
-        log "$1: links on previous set: $(links_now)"
-    else
-        log "$1: previous files missing, links left as found: $(links_now)"
-        echo "$(date -Is) prev-missing $T_KREL" >> "$ST/result"
-    fi
-}
-clean_tmp() { find "$BOOT" -xdev -name ".*$TMPSFX" -exec rm -f {} + 2>/dev/null || true; fsync_dir "$BOOT"; }
 
 fdtfile() {
     local f
@@ -133,32 +178,43 @@ fdtfile() {
     safe_path "$f" || die "unsafe fdtfile: $f"
     echo "$f"
 }
-link_target() {  # NAME: plain target name of /boot link
+# DTB link target: relative path from DTB directory to h96ks/cur/fdt, inside /boot
+dtb_rel() {
+    local d pb
+    pb=$(realpath "$BOOT")
+    d=$(realpath "$BOOT/dtb/$(dirname "$DTBN")")
+    case "$d/" in "$pb"/*) ;; *) die "$BOOT/dtb/$(dirname "$DTBN") resolves outside $BOOT" ;; esac
+    realpath -s -m --relative-to="$d" "$pb/$CUR/fdt"
+}
+check_link() {  # NAME: Image or uInitrd must be link to plain name or through h96ks/cur
     local t
     [ -L "$BOOT/$1" ] || die "$BOOT/$1 is not a link; tool needs link layout"
     t=$(readlink "$BOOT/$1")
-    safe "$t" || die "$BOOT/$1 points at $t; expected plain file name"
-    [ -f "$BOOT/$t" ] || die "$BOOT/$1 points at missing $t"
-    echo "$t"
+    [ "$t" = "$CUR/$1" ] || safe "$t" || die "$BOOT/$1 points at $t; expected plain file name or $CUR/$1"
+    [ -f "$BOOT/$1" ] || die "$BOOT/$1 points at missing file"
+}
+default_krel() {
+    local t g
+    t=$(readlink "$BOOT/Image" 2>/dev/null) || return 1
+    if [ "$t" = "$CUR/Image" ]; then
+        g=$(cur_gen) || return 1
+        gen_krel "$g"
+    else
+        case "$t" in Image-?*) safe "$t" && echo "${t#Image-}" ;; *) return 1 ;; esac
+    fi
+}
+# release string embedded in uncompressed arm64 Image; empty when not found
+kver() {
+    local v
+    v=$(grep -a -o -m1 'Linux version [^ ]*' "$1" 2>/dev/null) || true
+    v=${v%%$'\n'*}
+    echo "${v#Linux version }"
 }
 avail_kb() {
     if [ -n "${H96KS_AVAIL_KB:-}" ]; then echo "$H96KS_AVAIL_KB"; return; fi
     df -Pk "$BOOT" | awk 'NR==2 {print $4}'
 }
 kb() { echo $(( ($(stat -c %s "$1") + 1023) / 1024 )); }
-# put SRC DST(rel to /boot) PROTECTED...: atomic copy, refuses to replace protected names
-put() {
-    local s=$1 d="$BOOT/$2" t p
-    shift 2
-    if [ -f "$d" ] && cmp -s "$s" "$d"; then return 0; fi
-    for p in "$@"; do [ "$BOOT/$p" != "$d" ] || die "refusing to replace $d: in use by current links"; done
-    t="$(dirname "$d")/.$(basename "$d")$TMPSFX"
-    cp "$s" "$t"
-    chmod 0644 "$t"
-    sync "$t" 2>/dev/null || true
-    mv -f "$t" "$d"
-    fsync_dir "$(dirname "$d")"
-}
 preflight() {
     local e
     for e in "$BOOT/extlinux" "$BOOT/boot/extlinux" "$R/extlinux"; do
@@ -176,8 +232,34 @@ enable_units() {
     systemctl is-enabled -q $ME-guard.service || die "$ME-guard.service not enabled; trial not armed"
 }
 
-W=""
-trap '[ -z "$W" ] || rm -rf "$W"' EXIT
+# move Image, uInitrd (and DTB when $1=1) onto h96ks/cur; every step keeps content each boot name resolves to
+ensure_layout() {
+    local dp="$BOOT/dtb/$DTBN" rel g=""
+    rel=$(dtb_rel)
+    mkdir -p "$BOOT/$GD"
+    if [ "$(readlink "$BOOT/Image")" = "$CUR/Image" ] && [ "$(readlink "$BOOT/uInitrd")" = "$CUR/uInitrd" ] &&
+        { [ "$1" = 0 ] || [ "$(readlink "$dp" 2>/dev/null)" = "$rel" ]; }; then
+        return 0
+    fi
+    g=$(cur_gen) || g=""
+    if [ -z "$g" ] || ! gen_ok "$g" || ! gen_same "$g" "$BOOT/Image" "$BOOT/uInitrd" "$dp"; then
+        g=$(new_gen_name "$(default_krel || echo boot)")
+        mkgen "$g" "$BOOT/Image" "$BOOT/uInitrd" "$dp" link
+        cutpoint conv-gen
+        relink "$CUR" "$g"
+        log "layout: $CUR -> $g (current boot files)"
+    fi
+    cutpoint conv-cur
+    [ "$(readlink "$BOOT/uInitrd")" = "$CUR/uInitrd" ] || relink uInitrd "$CUR/uInitrd"
+    cutpoint conv-ini
+    [ "$(readlink "$BOOT/Image")" = "$CUR/Image" ] || relink Image "$CUR/Image"
+    cutpoint conv-img
+    if [ "$1" = 1 ] && [ "$(readlink "$dp" 2>/dev/null)" != "$rel" ]; then
+        relink "dtb/$DTBN" "$rel"
+        log "layout: $dp -> $rel"
+    fi
+    cutpoint conv-dtb
+}
 
 cmd_try() {
     local K="" auto=0 keepdtb=0 a
@@ -199,33 +281,31 @@ cmd_try() {
     [ -f "$S/Image" ] && [ -f "$S/SHA256SUMS.kernel" ] || die "$K not staged in $STAGE (install h96-kernel-$K)"
     (cd "$S" && sha256sum -c --status SHA256SUMS.kernel) || die "$S fails SHA256SUMS.kernel"
     [ -s "$MODS/$K/modules.dep" ] || die "$MODS/$K/modules.dep missing (depmod not run)"
-    local pimg pini
-    pimg=$(link_target Image)
-    pini=$(link_target uInitrd)
-    [ "$pimg" != "Image-$K" ] || die "$K is already default (Image -> $pimg)"
+    check_link Image
+    check_link uInitrd
+    local dk sv cv
+    dk=$(default_krel) || dk=""
+    [ "$dk" != "$K" ] || die "$K is already default (Image -> $(readlink "$BOOT/Image"))"
     [ "$K" != "$(krun)" ] || die "$K is running; trial boot of same release cannot be told apart from fallback"
-    T_KREL=$K T_AUTO=$auto T_PENDING="" T_ABOOT=$(bootid) T_PREV_IMG=$pimg T_PREV_INI=$pini T_NEW_IMG=Image-$K T_NEW_INI=uInitrd-$K
-    T_DTBN=$(fdtfile) T_PREV_DTB="" T_NEW_DTB=""
-    local bd="$BOOT/dtb/$T_DTBN" sd="$S/dtb/$T_DTBN" ddir dbase adopt=""
-    ddir=$(dirname "$T_DTBN")
-    dbase=$(basename "$T_DTBN")
+    sv=$(kver "$S/Image")
+    [ -z "$sv" ] || [ "$sv" = "$K" ] || die "staged Image reports release $sv, not $K"
+    cv=$(kver "$BOOT/Image")
+    [ "$cv" != "$K" ] || die "$BOOT/Image already reports release $K; trial cannot be told apart from fallback"
+    DTBN=$(fdtfile)
+    local dp="$BOOT/dtb/$DTBN" sd="$S/dtb/$DTBN" fsrc needdtb=0 rel
+    [ -f "$dp" ] || die "$dp missing"
+    if [ -L "$dp" ]; then
+        rel=$(dtb_rel)
+        a=$(readlink "$dp")
+        [ "$a" = "$rel" ] || safe "$a" || die "$dp points at $a; expected plain file name or $rel"
+    fi
     if [ "$keepdtb" = 0 ]; then
         [ -f "$sd" ] || die "$sd missing (install h96-dtb-$K, or pass --keep-dtb)"
         (cd "$S/dtb" && sha256sum -c --status SHA256SUMS.dtb) || die "$S/dtb fails SHA256SUMS.dtb"
-        [ -f "$bd" ] || die "$bd missing"
-        if ! cmp -s "$sd" "$bd"; then
-            T_NEW_DTB=$dbase-$K
-            if [ -L "$bd" ]; then
-                T_PREV_DTB=$(readlink "$bd")
-                safe "$T_PREV_DTB" && [ -f "$BOOT/dtb/$ddir/$T_PREV_DTB" ] || die "$bd points at unusable $T_PREV_DTB"
-            else
-                # first switch: plain DTB becomes link to identical versioned copy
-                adopt=$dbase-${pimg#Image-}
-                safe "$adopt" || die "cannot name copy of current DTB ($adopt)"
-                T_PREV_DTB=$adopt
-            fi
-            [ "$T_PREV_DTB" != "$T_NEW_DTB" ] || die "current DTB link already names $T_NEW_DTB"
-        fi
+        fsrc=$sd
+        cmp -s "$sd" "$dp" || needdtb=1
+    else
+        fsrc=$dp
     fi
     # initramfs for K: mkinitramfs and mkimage only, outside /boot
     mkdir -p "$R/var/tmp"
@@ -240,49 +320,76 @@ cmd_try() {
     mkimage -A "$arch" -O linux -T ramdisk -C gzip -n uInitrd -d "$W/initrd.img-$K" "$W/uInitrd-$K" > "$W/mkimage.txt" ||
         die "mkimage failed"
     [ -s "$W/uInitrd-$K" ] || die "empty uInitrd"
-    # space: every file that will be written, plus reserve
-    local need=0 have
-    cmp -s "$S/Image" "$BOOT/Image-$K" 2>/dev/null || need=$((need + $(kb "$S/Image")))
-    cmp -s "$W/uInitrd-$K" "$BOOT/uInitrd-$K" 2>/dev/null || need=$((need + $(kb "$W/uInitrd-$K")))
-    [ -z "$T_NEW_DTB" ] || need=$((need + $(kb "$sd")))
-    [ -z "$adopt" ] || need=$((need + $(kb "$bd")))
+    clean_tmp
+    # reuse identical generation of K from earlier attempt
+    local ng="" g
+    for g in $(gens_of "$K"); do
+        if gen_ok "$g" && gen_same "$g" "$S/Image" "$W/uInitrd-$K" "$fsrc"; then ng=$g; break; fi
+    done
+    # space: new generation, DTB copy for layout generation (Image, uInitrd hard links), reserve
+    local need have
+    need=$(kb "$dp")
+    [ -n "$ng" ] || need=$((need + $(kb "$S/Image") + $(kb "$W/uInitrd-$K") + $(kb "$fsrc")))
     have=$(avail_kb)
     if [ $((need + RESERVE_KB)) -gt "$have" ]; then
         die "/boot has $have KiB free, needs $need KiB plus $RESERVE_KB KiB reserve; prune old kernels first"
     fi
-    local prot=("$pimg" "$pini")
-    [ -z "$T_PREV_DTB" ] || [ -n "$adopt" ] || prot+=("dtb/$ddir/$T_PREV_DTB")
-    trial_save copying
-    log "try $K: copying (need $need KiB, free $have KiB)"
-    cut copy-0
-    put "$S/Image" "Image-$K" "${prot[@]}"
-    cut copy-1
-    put "$W/uInitrd-$K" "uInitrd-$K" "${prot[@]}"
-    cut copy-2
-    if [ -n "$T_NEW_DTB" ]; then
-        put "$sd" "dtb/$ddir/$T_NEW_DTB" "${prot[@]}"
-        if [ -n "$adopt" ]; then
-            put "$bd" "dtb/$ddir/$adopt" "${prot[@]}"
-            cut adopt
-            relink "dtb/$T_DTBN" "$adopt"
-            log "try $K: $bd now links to identical copy $adopt"
-        fi
+    log "try $K: need $need KiB, free $have KiB"
+    ensure_layout "$needdtb"
+    local pg
+    pg=$(cur_gen) || die "$CUR missing after layout step"
+    gen_ok "$pg" || die "current generation $pg incomplete"
+    if [ -z "$ng" ]; then
+        ng=$(new_gen_name "$K")
+        cutpoint copy-0
+        mkgen "$ng" "$S/Image" "$W/uInitrd-$K" "$fsrc" copy
     fi
-    cut copy-3
-    if ! cmp -s "$S/Image" "$BOOT/Image-$K" || ! cmp -s "$W/uInitrd-$K" "$BOOT/uInitrd-$K"; then die "read-back of copied files failed"; fi
+    cutpoint copy-1
     enable_units
-    trial_save switching
-    cut switch-0
-    set_links "$T_NEW_IMG" "$T_NEW_INI" "$T_NEW_DTB" switch
-    cut switch-1
+    T_KREL=$K T_MODE=trial T_AUTO=$auto T_ABOOT=$(bootid) T_PREV=$pg T_NEW=$ng
     trial_save armed
+    cutpoint switch-0
+    flip "$ng" "try $K"
+    cutpoint switch-1
     log "try $K: armed auto=$auto: $(links_now)"
-    say "next boot starts $K once; previous: $pimg $pini${T_PREV_DTB:+ $T_PREV_DTB}"
+    drop_unused_gens "$K"
+    say "next boot starts $K once; previous generation: $pg"
     if [ "$auto" = 1 ]; then
         say "trial boot confirms itself 180 s after boot when multi-user.target is active"
     else
         say "after reboot run '$ME confirm' to keep $K; reboot without confirm returns to previous kernel"
     fi
+}
+
+# generations named by cur, trial record or last confirm
+gen_refs() {
+    local f refs
+    refs=" $(cur_gen || true) "
+    for f in "$TRIAL" "$LAST"; do
+        if st_load "$f"; then refs="$refs$T_PREV $T_NEW "; fi
+    done
+    echo "$refs"
+}
+# remove generations of KREL that nothing names (earlier attempts)
+drop_unused_gens() {
+    local refs g
+    refs=$(gen_refs)
+    for g in $(gens_of "$1"); do
+        case "$refs" in *" $g "*) continue ;; esac
+        rm -rf "${BOOT:?}/$GD/$g"
+        log "removed unused generation $g"
+    done
+    fsync_dir "$BOOT/$GD"
+}
+
+# commit: cur on NEW, last confirm written, record cleared; guard repeats it after power loss
+commit_finish() {
+    flip "$T_NEW" "$T_MODE $T_KREL"
+    cutpoint commit-1
+    st_save "$LAST" "PHASE=done" "KREL=$T_KREL" "PREV=$T_PREV" "NEW=$T_NEW"
+    cutpoint commit-2
+    trial_clear
+    result "$T_MODE $T_KREL: $(links_now)"
 }
 
 # boot-time resolution of recorded trial
@@ -297,44 +404,35 @@ cmd_guard() {
         log "guard: unreadable trial record moved aside; links left as found: $(links_now)"
         exit 0
     fi
+    clean_tmp
     local K=$T_KREL B
     B=$(bootid)
     case "$T_PHASE" in
-        copying)
-            clean_tmp
-            trial_clear
-            result "incomplete $K: copy interrupted, links never switched"
-            ;;
-        switching)
-            revert_links "guard: switch interrupted"
-            clean_tmp
-            trial_clear
-            result "interrupted $K: links back on previous set"
-            ;;
         armed)
             if [ "$T_ABOOT" = "$B" ]; then
                 log "guard: run in arming boot: no action"
             elif [ "$(krun)" = "$K" ]; then
                 # trial boot: fall back first, so hang or watchdog reset lands on previous kernel
                 trial_save trial "$B"
-                cut guard-0
-                revert_links "guard: trial boot of $K started"
+                cutpoint guard-0
+                flip "$T_PREV" "guard: trial boot of $K started"
                 if [ "$T_AUTO" = 1 ]; then log "guard: auto-confirm due 180 s after boot"; fi
             else
-                revert_links "guard: armed for $K but running $(krun)"
+                flip "$T_PREV" "guard: armed for $K but running $(krun)"
                 trial_clear
                 result "not-booted $K: running $(krun)"
             fi
             ;;
         trial)
             if [ "$T_PENDING" = "$B" ]; then
-                revert_links "guard: rerun in trial boot"
+                flip "$T_PREV" "guard: rerun in trial boot"
             else
-                revert_links "guard: trial boot $T_PENDING ended without confirm"
+                flip "$T_PREV" "guard: trial boot $T_PENDING ended without confirm"
                 trial_clear
                 result "reverted $K: boot $T_PENDING not confirmed"
             fi
             ;;
+        commit) commit_finish ;;
         done) trial_clear ;;
     esac
 }
@@ -352,20 +450,15 @@ cmd_confirm() {
         [ "$mode" = auto ] && { log "auto-confirm: no trial running in this boot"; exit 0; }
         die "no trial of $K running in this boot (phase $T_PHASE, running $(krun))"
     fi
-    if ! { [ -f "$BOOT/$T_NEW_IMG" ] && [ -f "$BOOT/$T_NEW_INI" ] &&
-        { [ -z "$T_NEW_DTB" ] || [ -f "$BOOT/dtb/$(dirname "$T_DTBN")/$T_NEW_DTB" ]; }; }; then die "trial files of $K missing in /boot"; fi
+    gen_ok "$T_NEW" || die "trial generation $T_NEW missing in $BOOT/$GD"
     if [ "$mode" = auto ]; then
         [ "$T_AUTO" = 1 ] || { log "auto-confirm: not chosen for $K"; exit 0; }
         healthy || { log "auto-confirm: multi-user.target not active; $K not confirmed"; exit 0; }
     fi
-    st_save "$LAST" "PHASE=done" "KREL=$K" "DTBN=$T_DTBN" \
-        "PREV_IMG=$T_PREV_IMG" "PREV_INI=$T_PREV_INI" "PREV_DTB=$T_PREV_DTB" \
-        "NEW_IMG=$T_NEW_IMG" "NEW_INI=$T_NEW_INI" "NEW_DTB=$T_NEW_DTB"
-    cut confirm-0
-    set_links "$T_NEW_IMG" "$T_NEW_INI" "$T_NEW_DTB" confirm
-    cut confirm-1
-    trial_clear
-    result "confirmed $K ($mode): $(links_now)"
+    T_MODE=confirmed-$mode
+    trial_save commit "$T_PENDING"
+    cutpoint confirm-0
+    commit_finish
     say "$K confirmed as default"
 }
 
@@ -376,46 +469,31 @@ cmd_rollback() {
     st_load "$TRIAL" || rc=$?
     if [ "$rc" = 0 ]; then
         case "$T_PHASE" in
-            armed|trial|switching)
-                revert_links "rollback: trial of $T_KREL cancelled"
+            armed|trial)
+                flip "$T_PREV" "rollback: trial of $T_KREL cancelled"
                 trial_clear
                 result "cancelled $T_KREL"
-                say "trial of $T_KREL cancelled; links on $T_PREV_IMG"
+                say "trial of $T_KREL cancelled; $CUR -> $T_PREV"
                 return 0 ;;
-            copying)
-                clean_tmp
-                trial_clear
-                result "incomplete $T_KREL: cleared by rollback"
-                say "unfinished copy of $T_KREL cleared; links untouched"
-                return 0 ;;
+            commit) die "unfinished $T_MODE of $T_KREL recorded; run '$ME guard' to finish it first" ;;
         esac
     elif [ "$rc" = 2 ]; then
         die "trial record unreadable; inspect $TRIAL"
     fi
     st_load "$LAST" || die "nothing to roll back (no confirmed switch recorded)"
-    local cur_img cur_ini
-    cur_img=$(link_target Image)
-    cur_ini=$(link_target uInitrd)
-    [ "$cur_img" = "$T_NEW_IMG" ] && [ "$cur_ini" = "$T_NEW_INI" ] ||
-        die "links ($cur_img, $cur_ini) differ from last confirmed set; no rollback"
-    if [ -n "$T_NEW_DTB" ]; then
-        [ "$(readlink "$BOOT/dtb/$T_DTBN" 2>/dev/null)" = "$T_NEW_DTB" ] || die "DTB link differs from last confirmed set"
-    fi
-    prev_ok || die "previous files missing in /boot; no rollback"
+    local cg
+    cg=$(cur_gen) || die "$CUR missing; no rollback"
+    [ "$cg" = "$T_NEW" ] || die "$CUR -> $cg differs from last confirmed generation $T_NEW; no rollback"
+    [ "$(readlink "$BOOT/Image")" = "$CUR/Image" ] && [ "$(readlink "$BOOT/uInitrd")" = "$CUR/uInitrd" ] ||
+        die "Image or uInitrd no longer links through $CUR; no rollback"
+    gen_ok "$T_PREV" || die "previous generation $T_PREV missing; no rollback"
     preflight
-    local to_img=$T_PREV_IMG to_ini=$T_PREV_INI to_dtb=$T_PREV_DTB
-    # switching record: interrupted rollback reverts to current set at next boot
-    T_KREL=${to_img#Image-} T_AUTO=0 T_ABOOT=$(bootid)
-    T_PREV_IMG=$T_NEW_IMG T_PREV_INI=$T_NEW_INI T_PREV_DTB=$T_NEW_DTB
-    T_NEW_IMG=$to_img T_NEW_INI=$to_ini T_NEW_DTB=$to_dtb
-    trial_save switching
-    set_links "$to_img" "$to_ini" "$to_dtb" rollback
-    st_save "$LAST" "PHASE=done" "KREL=$T_KREL" "DTBN=$T_DTBN" \
-        "PREV_IMG=$T_PREV_IMG" "PREV_INI=$T_PREV_INI" "PREV_DTB=$T_PREV_DTB" \
-        "NEW_IMG=$to_img" "NEW_INI=$to_ini" "NEW_DTB=$to_dtb"
-    trial_clear
-    result "rollback to $to_img: $(links_now)"
-    say "links on $to_img; reboot to use it (rollback again returns to $T_PREV_IMG)"
+    local to=$T_PREV
+    T_KREL=$(gen_krel "$to") T_MODE=rollback T_AUTO=0 T_ABOOT=$(bootid) T_PREV=$T_NEW T_NEW=$to
+    trial_save commit
+    cutpoint rollback-0
+    commit_finish
+    say "$CUR -> $to; reboot to use it (rollback again returns to $T_PREV)"
 }
 
 cmd_prune() {
@@ -424,52 +502,80 @@ cmd_prune() {
     need_root
     lock
     [ "$(krun)" != "$K" ] || die "$K is running"
-    local refs="" f d dbase dn
-    refs="$(readlink "$BOOT/Image" 2>/dev/null) $(readlink "$BOOT/uInitrd" 2>/dev/null)"
-    dn=$(fdtfile)
-    dbase=$(basename "$dn")
-    [ ! -L "$BOOT/dtb/$dn" ] || refs="$refs $(readlink "$BOOT/dtb/$dn")"
-    for f in "$TRIAL" "$LAST"; do
-        if st_load "$f"; then refs="$refs $T_PREV_IMG $T_PREV_INI $T_PREV_DTB $T_NEW_IMG $T_NEW_INI $T_NEW_DTB"; fi
+    DTBN=$(fdtfile)
+    local refs g f d dbase
+    refs=$(gen_refs)
+    for g in $(gens_of "$K"); do
+        case "$refs" in *" $g "*) die "generation $g still named by $CUR, trial or last confirm" ;; esac
     done
+    dbase=$(basename "$DTBN")
+    refs=" $(readlink "$BOOT/Image" 2>/dev/null || true) $(readlink "$BOOT/uInitrd" 2>/dev/null || true) $(readlink "$BOOT/dtb/$DTBN" 2>/dev/null || true) "
     for f in "Image-$K" "uInitrd-$K" "$dbase-$K"; do
-        case " $refs " in *" $f "*) die "$f still referenced by links or trial record" ;; esac
+        case "$refs" in *" $f "*) die "$f still named by boot link" ;; esac
     done
-    for f in "Image-$K" "uInitrd-$K" "dtb/$(dirname "$dn")/$dbase-$K"; do
+    for g in $(gens_of "$K"); do
+        rm -rf "${BOOT:?}/$GD/$g"
+        say "removed $BOOT/$GD/$g"
+    done
+    for f in "Image-$K" "uInitrd-$K" "dtb/$(dirname "$DTBN")/$dbase-$K"; do
         d=$BOOT/$f
         if [ -f "$d" ] && [ ! -L "$d" ]; then rm -f "$d"; say "removed $d"; fi
     done
-    fsync_dir "$BOOT"
+    clean_tmp
     log "prune $K"
+}
+
+cmd_in_use() {
+    local K=${1:-} roles="" g
+    safe "$K" || die "usage: $ME in-use KREL"
+    [ "$(default_krel 2>/dev/null || true)" != "$K" ] || roles="$roles default"
+    if st_load "$TRIAL" 2>/dev/null; then
+        [ "$(gen_krel "$T_NEW")" != "$K" ] || roles="$roles trial"
+        [ "$(gen_krel "$T_PREV")" != "$K" ] || roles="$roles trial-previous"
+    fi
+    if st_load "$LAST" 2>/dev/null; then
+        g=$(cur_gen 2>/dev/null || true)
+        if [ "$g" = "$T_NEW" ] && [ "$(gen_krel "$T_PREV")" = "$K" ]; then roles="$roles rollback-target"; fi
+    fi
+    [ -n "$roles" ] || return 1
+    echo "${roles# }"
 }
 
 cmd_list() {
     local d k flags def
-    def=$(readlink "$BOOT/Image" 2>/dev/null || true)
+    def=$(default_krel 2>/dev/null || true)
     st_load "$TRIAL" 2>/dev/null || true
     for d in "$STAGE"/*/; do
         [ -f "$d/Image" ] || continue
         k=$(basename "$d")
         flags=""
         [ "$k" != "$(krun)" ] || flags="$flags running"
-        [ "$def" != "Image-$k" ] || flags="$flags default"
-        [ ! -f "$BOOT/Image-$k" ] || flags="$flags in-boot"
-        [ "${T_KREL:-}" != "$k" ] || flags="$flags trial:$T_PHASE"
+        [ "$def" != "$k" ] || flags="$flags default"
+        if [ -n "$(gens_of "$k")" ] || [ -f "$BOOT/Image-$k" ]; then flags="$flags in-boot"; fi
+        [ -z "${T_NEW:-}" ] || [ "$(gen_krel "$T_NEW")" != "$k" ] || flags="$flags trial:$T_PHASE"
         echo "$k${flags:+ [${flags# }]}"
     done
 }
 
 cmd_status() {
+    DTBN=$(fdtfile 2>/dev/null || true)
     echo "running: $(krun)"
+    echo "default: $(default_krel 2>/dev/null || echo '?')"
     echo "Image -> $(readlink "$BOOT/Image" 2>/dev/null || echo '?')"
     echo "uInitrd -> $(readlink "$BOOT/uInitrd" 2>/dev/null || echo '?')"
+    [ -z "$DTBN" ] || echo "dtb/$DTBN -> $(readlink "$BOOT/dtb/$DTBN" 2>/dev/null || echo 'plain file')"
+    echo "$CUR -> $(cur_gen 2>/dev/null || echo none)"
     if st_load "$TRIAL" 2>/dev/null; then
-        echo "trial: $T_KREL phase=$T_PHASE auto=$T_AUTO pending=${T_PENDING:-none} previous=$T_PREV_IMG"
+        echo "trial: $T_KREL phase=$T_PHASE auto=$T_AUTO pending=${T_PENDING:-none} previous=$T_PREV new=$T_NEW"
     else
         echo "trial: none"
     fi
     [ ! -f "$ST/result" ] || { echo "last results:"; tail -5 "$ST/result"; }
 }
+
+W=""
+trap '[ -z "$W" ] || rm -rf "$W"' EXIT
+DTBN=""
 
 case "${1:-}" in
     try) shift; cmd_try "$@" ;;
@@ -478,6 +584,8 @@ case "${1:-}" in
     rollback) cmd_rollback ;;
     guard) cmd_guard ;;
     prune) shift; cmd_prune "$@" ;;
+    in-use) shift; cmd_in_use "$@" ;;
+    default) default_krel || exit 1 ;;
     list) cmd_list ;;
     status) cmd_status ;;
     -h|--help|help) usage ;;

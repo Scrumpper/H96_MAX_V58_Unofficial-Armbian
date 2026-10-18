@@ -10,8 +10,9 @@ Architecture: all
 Multi-Arch: foreign
 Depends: systemd, initramfs-tools-core, u-boot-tools
 Description: H96 MAX V58 kernel switch with boot guard and rollback
- Copies kernel staged by h96-kernel package into /boot under versioned
- names, switches Image and uInitrd links, and arms boot guard that falls
- back to previous kernel unless trial boot is confirmed. Rollback and
- prune commands. Package itself writes nothing under /boot; only command
- run by administrator does.
+ Copies kernel staged by h96-kernel package into new generation
+ directory under /boot/h96ks. Image, uInitrd and board DTB links
+ resolve through /boot/h96ks/cur, so one rename switches all three.
+ Boot guard falls back to previous generation unless trial boot is
+ confirmed. Rollback and prune commands. Package itself writes nothing
+ under /boot; only command run by administrator does.
