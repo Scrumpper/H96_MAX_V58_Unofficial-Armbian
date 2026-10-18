@@ -23,6 +23,11 @@
 - Packaged files leave `/usr/local` and `/opt`: commands in `/usr/bin` and `/usr/sbin`, helpers and payloads in `/usr/lib/h96` (video stack in `/usr/lib/h96/video`, gaming files in `/usr/lib/h96/gaming`), units in `/usr/lib/systemd/system`, udev rules in `/usr/lib/udev/rules.d`, settings in `/etc/h96`. Signed offline apt repository stays at `/opt/h96-pkgs` as image data.
 - Steam: installer comes from `steam-arm-setup` package (`/usr/share/steam-arm-setup`); `h96-steam` front end and links in `/usr/lib/h96/steam` from `h96-gaming`. Next beta build carries Steam ARM 3.0; `h96-gaming` depends on `steam-arm-setup (>= 3.0)`.
 - `h96-tools` depends on `python3-tk`: `h96-backup-gui` opens without online install.
+- Release identity names `v8.0`: `/etc/h96-release`, console banner (`/etc/issue`, `/etc/issue.net`), os-release `VARIANT`; `h96-backup` records `source_version` `v8.0`. `h96-restore` restores `v8.0` and earlier beta archives natively.
+- `h96-wol` changes NetworkManager profile only when profile is saved on disk; automatic in-memory wired profile stays unsaved (earlier builds wrote it to `/etc/netplan/90-NM-<uuid>.yaml`). `h96-wol.service`, installed off and enabled by `h96-wol on`, sets wake-on-LAN at each boot. `status` runs no `netplan generate`.
+- `h96-restore`: wake-on-LAN is own category `wol`, applied only when `--only` names it; `system` no longer changes network state. `h96-backup-gui` restore tab lists it unticked, also after `[ All ]`.
+- `h96-backup-gui` opens at most 1000x700, stays resizable and sends no maximize request (earlier builds maximized on screens below 1200 px height).
+- COMMANDS.md undervolt section lists `h96-undervolt revert --force` and kernel switch refusals.
 - `h96-mpv-kiosk` menu entry removed: without file or URL it started nothing. Command runs from text console with file or URL.
 - Upgrade from earlier beta build keeps runtime-written detection files (HDMI sink EDID, ALSA HDMI settings, WirePlumber IEC958 settings); dpkg prints no directory removal warning.
 - Maintainer `Scrumpper <190908034+Scrumpper@users.noreply.github.com>`. Lintian clean; overrides only for tags that cannot be fixed, each with reason.
@@ -31,7 +36,7 @@
 
 - "Silence (no microphone)" input ranks above output monitors of non-pro sinks and below Bluetooth mics and non-pro capture devices 0 to 27 (UCM and mono-fallback profiles included). When last microphone leaves, input falls to silence, not HDMI output monitor. Card switched to pro-audio profile outranks silence input with its output monitor.
 - HDMI sink `priority.session` 1200 (v7.2: 2000): still ahead of S/PDIF, Bluetooth and USB sinks, below silence input.
-- Desktop setup (`h96-desktop-fixup.sh`, run on first KDE or GNOME install) no longer rewrites packaged HDMI audio rule, so priorities above hold on desktop installs. Polkit admin rule, Xorg display file and FEX Steam pad dedup rule written by setup scripts equal packaged copies.
+- Desktop setup (`h96-desktop-fixup.sh`, run on first KDE or GNOME install) no longer rewrites packaged HDMI audio rule, so priorities above hold on desktop installs. Polkit admin rule, Xorg display file and FEX Steam pad dedup rule written by setup scripts equal packaged copies. Setup writes files only when content differs (no new modification time on rerun) and restarts polkit only after rule change.
 
 ### GPU and desktop
 
