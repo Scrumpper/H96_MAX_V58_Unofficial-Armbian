@@ -48,6 +48,8 @@ ALLOWLIST = [
     ("bt-le-cmd-enosys", "ignore", r"^Bluetooth: hci\d+: Opcode 0x2037 failed: -38"),
     # bluetoothd: controller rejects LE privacy mode at power-on
     ("bt-privacy-rejected", "ignore", r"^Failed to set privacy: Rejected \(0x0b\)$"),
+    # bluetoothd: adapter powered down before adv monitor manager exists (early boot race)
+    ("bt-adv-monitor-race", "ignore", r"^src/adv_monitor\.c:btd_adv_monitor_power_down\(\) Unexpected NULL btd_adv_monitor_manager object upon power down$"),
     ("bsp-probe-gmac", "ignore", r"^rk_gmac-dwmac [0-9a-f]+\.ethernet: (cannot get clock|Can not read property: rx_delay|set rx_delay to)"),
     ("bsp-probe-vop2-opp", "ignore", r"^rockchip-vop2 [0-9a-f]+\.vop: failed to init opp info"),
     ("bsp-probe-dfi", "ignore", r"^rockchip-dfi [0-9a-f]+\.dfi: Failed to get pclk_ddr_mon"),
@@ -1162,6 +1164,12 @@ def cmd_selftest(args):
     ok(classify("Unable to handle kernel NULL pointer dereference") == (None, None), "NULL deref is outside allowlist")
     ok(classify("Failed to set privacy: Rejected (0x0b)") == ("bt-privacy-rejected", "ignore"), "allowlist matches bluetoothd privacy reject")
     ok(classify("Failed to set privacy: Failed (0x03)") == (None, None), "other privacy failure is outside allowlist")
+    ok(classify("src/adv_monitor.c:btd_adv_monitor_power_down() Unexpected NULL btd_adv_monitor_manager object upon power down")
+       == ("bt-adv-monitor-race", "ignore"), "allowlist matches bluetoothd adv monitor power-down race")
+    ok(classify("src/adv_monitor.c:btd_adv_monitor_power_down() Unexpected NULL btd_adv_monitor object upon power down")
+       == (None, None), "other adv monitor message is outside allowlist")
+    ok(classify("src/adv_monitor.c:btd_adv_monitor_add() Unexpected NULL btd_adv_monitor_manager object upon power down")
+       == (None, None), "adv monitor race match is function-specific")
     r = budget_results("t", "x", [("k", "rk806 spi2.0: no sleep-setting state"), ("k", "new error 12"), ("k", "new error 13")])
     ok(r[0].status == FAIL and "2 outside" in r[0].evidence and "1 distinct" in r[0].evidence, "budget counts unknown lines and groups digits")
 
