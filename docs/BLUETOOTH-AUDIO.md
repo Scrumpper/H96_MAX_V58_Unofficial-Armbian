@@ -51,8 +51,10 @@ WirePlumber autoswitch is on (`bluetooth.autoswitch-to-headset-profile = true`,
 since v6.2): headset mic is listed as input device at all times, headset
 switches to Handsfree (mono call quality) while app records, and returns to
 A2DP stereo when recording stops. `pipewire/95-h96-silence-source.conf` adds
-"Silence (no microphone)" input at lowest priority, so KDE audio applet shows its
-input selector (hidden with single input) and headset mic can be confirmed as default.
+"Silence (no microphone)" input, so KDE audio applet shows its input selector (hidden
+with single input) and headset mic can be confirmed as default. Since 8.0 silence input
+ranks above every output monitor and below every microphone, so it becomes input when
+headset mic leaves, not HDMI output monitor.
 
 Bluetooth sinks force 2048-sample audio cycle while playing (`node.force-quantum`): at 512
 samples encoder and h96 EQ filter chain miss deadlines (xruns), heard as choppy audio. They
