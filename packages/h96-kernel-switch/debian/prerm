@@ -1,0 +1,8 @@
+#!/bin/sh
+# refuses removal while trial is recorded; boot guard must resolve it first
+set -e
+if [ "$1" = remove ] && [ -e "${DPKG_ROOT:-}/var/lib/h96-kernel-switch/trial" ] && [ "${H96KS_FORCE_REMOVE:-0}" != 1 ]; then
+    echo "h96-kernel-switch: trial recorded; run 'h96-kernel-switch confirm' or 'rollback' first (H96KS_FORCE_REMOVE=1 overrides)" >&2
+    exit 1
+fi
+exit 0

@@ -1,0 +1,6 @@
+h96-kernel-switch (8.0.0~r10) resolute; urgency=medium
+
+  * Initial package: try, confirm, rollback, prune, list, status; boot
+    guard unit and auto-confirm timer, enabled by first try.
+
+ -- Scrumpper <190908034+Scrumpper@users.noreply.github.com>  Sun, 18 Oct 2026 12:00:00 +0000

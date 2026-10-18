@@ -57,6 +57,8 @@ Kernel stays on Rockchip BSP line rk-6.1-rkr7.2 with H96 patch series. Vendor U-
 | Path | Contents | Area |
 |------|----------|------|
 | `build/build-kernel-debs.sh` | Builds `h96-kernel-<krel>` and `h96-dtb-<krel>` from kernel build outputs | Kernel packages |
+| `packages/h96-kernel-switch/`, `build/build-kernel-switch-deb.sh` | Kernel switch command, boot guard units, package build | Kernel switch |
+| `tools/kernel-switch/test-kernel-switch.sh` | Stub root tests for kernel switch | Kernel switch |
 | `patch/dt/h96-max-v58.dtso` | H96 board changes as one device-tree overlay | DTB overlay |
 | `patch/dt/h96-max-v58.delete` | Four property deletions overlay cannot express | DTB overlay |
 | `tools/dtb/build-dtb.sh` | Applies delete list and overlay to vendor base DTB | DTB overlay |
@@ -68,8 +70,9 @@ Kernel stays on Rockchip BSP line rk-6.1-rkr7.2 with H96 patch series. Vendor U-
 
 Payload stages into `/usr/lib/h96-kernel/<krel>/` (Image, System.map, config, DTB) and `/usr/lib/modules/<krel>/`.
 Packages contain nothing under `/boot`. Postinst runs `depmod` for its release only; no `/etc/kernel` hooks,
-no initramfs tools. Prerm refuses removal of running kernel's package. Separate boot staging tool, part of
-try-once kernel slot, copies files into `/boot`; that tool is not written yet.
+no initramfs tools. Prerm refuses removal of running kernel's package and postinst prints one hint line.
+`h96-kernel-switch` copies files into `/boot` as guarded trial with fallback and rollback; see
+[KERNEL-SWITCH.md](KERNEL-SWITCH.md).
 
 ```
 MAINT='Name <email>' IMAGE=Image SYSMAP=System.map CONFIG=config MODTAR=modules.tar.gz DTB=board.dtb \

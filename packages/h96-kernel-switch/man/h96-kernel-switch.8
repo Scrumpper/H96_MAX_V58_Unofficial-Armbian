@@ -1,0 +1,81 @@
+.TH H96-KERNEL-SWITCH 8 "2026-10-18" "h96-kernel-switch" "System Administration"
+.SH NAME
+h96-kernel-switch \- boot staged kernel as guarded trial, confirm or roll back
+.SH SYNOPSIS
+.B h96-kernel-switch
+.B list
+|
+.B status
+.br
+.B h96-kernel-switch try
+.I KREL
+.RB [ \-\-auto\-confirm ]
+.RB [ \-\-keep\-dtb ]
+.br
+.B h96-kernel-switch
+.B confirm
+|
+.B rollback
+|
+.B prune
+.I KREL
+.SH DESCRIPTION
+Kernel packages stage files under /usr/lib/h96-kernel/KREL and never write /boot.
+Vendor U-Boot on H96 MAX V58 has no try-once slot; boot.scr loads /boot/Image,
+/boot/uInitrd and /boot/dtb/FDTFILE.
+.B h96-kernel-switch
+copies one staged kernel into /boot under versioned names and moves
+Image and uInitrd links to it. Boot guard runs early on next boot: on trial
+kernel it points links back to previous set at once, so hang, panic or
+watchdog reset lands on previous kernel. Only
+.B confirm
+during trial boot keeps new kernel as default.
+.SH COMMANDS
+.TP
+.B list
+Staged kernels with flags running, default, in-boot, trial.
+.TP
+.B status
+Link targets, recorded trial, last results.
+.TP
+.BI try " KREL"
+Checks staged sha256 sums and modules.dep, builds initramfs with mkinitramfs
+and mkimage outside /boot, checks free space on /boot (files plus 16 MiB
+reserve), copies Image-KREL, uInitrd-KREL and, when board DTB differs,
+FDTFILE-KREL, enables guard units, switches links. Previous files stay.
+Refuses when trial is recorded, when KREL is running or default, when /boot is
+read-only, when extlinux directory exists, or when Image or uInitrd is not link.
+.B \-\-auto\-confirm
+confirms trial 180 s after boot when multi-user.target is active.
+.B \-\-keep\-dtb
+leaves board DTB as is.
+.TP
+.B confirm
+Run during trial boot: points links at trial kernel for good.
+.TP
+.B rollback
+With trial recorded: cancels it and points links at previous set. Without
+trial: returns links to set that was default before last confirm; running it
+again returns to confirmed set.
+.TP
+.BI prune " KREL"
+Removes versioned files of KREL from /boot unless links or records name them.
+.SH FILES
+.TP
+/var/lib/h96-kernel-switch/trial
+Recorded trial: phase, previous and new link targets.
+.TP
+/var/lib/h96-kernel-switch/last
+Sets of last confirm, used by rollback.
+.TP
+/var/lib/h96-kernel-switch/log, result
+Action log and outcome lines.
+.SH LIMITS
+Failure before boot guard runs (early panic, initramfs failure without reset
+to userspace) repeats trial boot, since links still name trial kernel at that
+point. Recovery then needs rescue media or reflash.
+Power loss between two link renames leaves mixed set for one boot; guard reverts
+it on next boot that reaches userspace.
+.SH SEE ALSO
+.BR mkinitramfs (8),
+.BR mkimage (1)

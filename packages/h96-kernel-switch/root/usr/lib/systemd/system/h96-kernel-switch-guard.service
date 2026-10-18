@@ -1,0 +1,17 @@
+[Unit]
+Description=H96 kernel switch boot guard (falls back unless trial is confirmed)
+Documentation=man:h96-kernel-switch(8)
+DefaultDependencies=no
+RequiresMountsFor=/boot /var/lib
+After=local-fs.target systemd-remount-fs.service
+Before=sysinit.target shutdown.target
+Conflicts=shutdown.target
+ConditionPathExists=/var/lib/h96-kernel-switch/trial
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/sbin/h96-kernel-switch guard
+
+[Install]
+WantedBy=sysinit.target

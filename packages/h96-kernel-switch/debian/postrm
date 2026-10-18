@@ -1,0 +1,11 @@
+#!/bin/sh
+# purge removes state and unit links created by first try
+set -e
+R="${DPKG_ROOT:-}"
+if [ "$1" = purge ]; then
+    rm -rf "$R/var/lib/h96-kernel-switch"
+    for l in sysinit.target.wants/h96-kernel-switch-guard.service timers.target.wants/h96-kernel-switch-confirm.timer; do
+        if [ -L "$R/etc/systemd/system/$l" ]; then rm -f "$R/etc/systemd/system/$l"; fi
+    done
+fi
+exit 0

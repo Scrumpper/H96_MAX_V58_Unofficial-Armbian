@@ -8,7 +8,7 @@ set -euo pipefail
 
 KREL=${KREL:-6.1.172-h96v58-8.0}
 # default PKGVER belongs to pinned inputs below; new inputs need a new version
-PKGVER=${PKGVER:-8.0.0~r9}
+PKGVER=${PKGVER:-8.0.0~r10}
 MODPREFIX=${MODPREFIX:-/usr/lib/modules}
 STAGEPREFIX=/usr/lib/h96-kernel
 FDTFILE=${FDTFILE:-rockchip/rk3588-h96-max-v58-panthor.dtb}
@@ -140,6 +140,11 @@ cat > "$KR/DEBIAN/postinst" <<EOF
 set -e
 if [ "\$1" = configure ]; then
     depmod -a -b "\${DPKG_ROOT:-/}" -F "\${DPKG_ROOT:-}$STAGEPREFIX/$KREL/System.map" $KREL
+    # hint only; switching is a separate admin step
+    if [ -z "\${DPKG_ROOT:-}" ]; then
+        echo "$KPKG: staged in $STAGEPREFIX/$KREL; boot files unchanged"
+        echo "$KPKG: to boot it once with fallback: h96-kernel-switch try $KREL (package h96-kernel-switch)"
+    fi
 fi
 exit 0
 EOF
@@ -191,8 +196,8 @@ Description: H96 MAX V58 Linux kernel $KREL (staged)
  $MODPREFIX/$KREL/.
  Maintainer scripts run depmod for this release only.
  Package never writes /boot and runs no /etc/kernel hooks
- or initramfs tools; separate boot staging tool copies
- files into /boot.
+ or initramfs tools; h96-kernel-switch copies files into
+ /boot as guarded trial.
 EOF
 touch -d "@$SOURCE_DATE_EPOCH" "$KR/DEBIAN/control" "$KR/DEBIAN"
 
@@ -218,7 +223,7 @@ Description: H96 MAX V58 device tree for kernel $KREL (staged)
  $FDTFILE
  staged under $STAGEPREFIX/$KREL/dtb/.
  Package has no maintainer scripts and never writes /boot;
- separate boot staging tool copies file into /boot.
+ h96-kernel-switch copies file into /boot.
 EOF
 touch -d "@$SOURCE_DATE_EPOCH" "$DR/DEBIAN/control" "$DR/DEBIAN"
 
