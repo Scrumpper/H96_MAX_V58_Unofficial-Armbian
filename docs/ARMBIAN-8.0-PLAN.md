@@ -1,7 +1,8 @@
 # Armbian 8.0 plan and status
 
 Status of 8.0 work for H96 MAX V58 (RK3588). Planning document, not release note.
-Dated 2026-10-17. Nothing here is published as image yet; current release stays v7.2.
+Dated 2026-10-18. 8.0 is in beta: beta images are built and flashed on test hardware, none
+is published, and current release stays v7.2.
 
 ## Contents
 
@@ -111,10 +112,11 @@ output exists for claim; nothing in this list has been booted on hardware unless
 
 | Package | Status | Verified | Open |
 |---------|--------|----------|------|
-| Kernel patch series | Done | Rockchip rk-6.1-rkr7.2 plus 20 commits reproduces v7.1 kernel tree file for file; each commit compiles; commit messages carry no internal labels; kernel `6.1.172-h96v58-8.0` built from series with pinned GCC 16.1.0 toolchain, symbol map equal to v7.1 apart from embedded config size | Intermediate commits not built into Image or booted; 8.0 kernel not booted |
-| Kernel packages | Done | 8.0 payload sha-identical to 8.0 build outputs and overlay DTB; modules under `/usr/lib/modules`; 37 of 37 package checks pass in scratch dpkg root; no `/boot` path; lintian clean with no suppressed tags; two builds byte-identical on ext4 and tmpfs | Install on v7.2 box; boot test; overlay `.dtbo` set not in DTB package |
-| DTB overlay | Done | Overlay build matches v7.2 DTB tree apart from 2 renumbered phandles and 2 new labels; gate passes; `/boot` output guard refuses `/boot` and paths below it; negative tests fail as designed | Boot test under test `fdtfile` name |
-| Userland packages | Open, not on branch | 8 packages build twice identically; scratch dpkg install, remove and purge clean | Blocking issue: first-boot GPU setup unit can point `/boot/Image` at missing file on 8.0 kernel; conffile and diversion issues; lintian not clean; chroot install not done |
+| Kernel patch series | Done | Rockchip rk-6.1-rkr7.2 plus 20 commits reproduces v7.1 kernel tree file for file; each commit compiles; commit messages carry no internal labels; kernel `6.1.172-h96v58-8.0` built from series with pinned GCC 16.1.0 toolchain, symbol map equal to v7.1 apart from embedded config size; boots in beta image | Intermediate commits not built into Image or booted; series not in public repo |
+| Kernel packages | Done | 8.0 payload sha-identical to 8.0 build outputs and overlay DTB; modules under `/usr/lib/modules`; 37 of 37 package checks pass in scratch dpkg root; no `/boot` path; lintian clean with no suppressed tags; two builds byte-identical on ext4 and tmpfs; installed in beta image, which boots it | Boot staging tool for installed systems; overlay `.dtbo` set not in DTB package |
+| DTB overlay | Done | Overlay build matches v7.2 DTB tree apart from 2 renumbered phandles and 2 new labels; gate passes; `/boot` output guard refuses `/boot` and paths below it; negative tests fail as designed; beta image boots overlay DTB | None for beta |
+| Userland packages | Done for beta, sources not on branch | 8 packages (`h96-base`, `h96-boot`, `h96-net`, `h96-audio`, `h96-desktop`, `h96-media`, `h96-tools`, `h96-gaming`) build twice identically; files moved out of `/usr/local` and `/opt`; lintian clean, overrides only where tag cannot be fixed; chroot install on v7.2 image passes every parity gate; `dpkg -V` and `dpkg --audit` empty | Boot 1 journal volatile; runtime-rewritten files listed by `dpkg -V`; branding conffiles on upgrade |
+| Beta image | Built, flashed on test hardware | Chroot install of kernel, DTB, userland and `steam-arm-setup` packages on v7.2 image; first boot completes with one planned reboot; `h96-selftest` hw checks pass (Panthor, Mesa 26.1.4, PanVK, MPP, RGA, CEC, NPU, HDMI, audio, Bluetooth, WiFi, Ethernet) | Steam ARM 3.0 in next beta build; try-once slot not in beta (rollback is v7.2 reflash) |
 | h96-selftest | Done for `boot`, `hw`, `invariants`, `report` | Runs on Python 3.11 (amd64, arm64); read-only run on v7.2 box with no file changes | `media`, `menus`, `soak` stubs; runs after reboots and upgrade |
 | CI workflow | Open, not on branch | Jobs dry-run in containers; DTB gate job passes with overlay files | Lint and docs jobs fail on current repo; lintian gate not run against userland packages; arm64 runner not confirmed |
 | U-Boot bench | Read-only part done | Boot-mode register, watchdog register decode, load addresses read from image | Live bench runs need owner present; elapsed-time readout needs redesign |
@@ -132,7 +134,8 @@ chroot; selftest runs on box; first green CI run on pull request; backup matrix 
 new kernel or DTB needs owner present and Maskrom cable ready.
 
 **8.0-beta.** First chroot-built image, try slot live, one fresh flash. Live boot script test passed
-(broken-initramfs fallback, forced-panic fallback, forced watchdog expiry, promote).
+(broken-initramfs fallback, forced-panic fallback, forced watchdog expiry, promote). Current state: chroot-built
+image and fresh flash done; try slot and live boot script tests still open.
 
 **8.0 release candidate.** Feature freeze, signed bundle path exercised, docs through every gate, draft prepared
 for owner.
@@ -142,9 +145,8 @@ for owner.
 Decided 2026-10-17: kernel rebuilt in container with pinned GCC 16.1.0 as `6.1.172-h96v58-8.0`; modules under
 `/usr/lib/modules`; package version carries build round after `~` and is never reused; Maintainer
 `Scrumpper <190908034+Scrumpper@users.noreply.github.com>`; vendor base DTB and v7.2 reference DTB committed as pinned
-CI inputs. Still open:
+CI inputs; `libmali` dropped, Mesa only; packaged files moved out of `/usr/local` and `/opt`. Still open:
 
-- Userland paths under `/usr/local` and `/opt` with lintian overrides, or moved paths.
 - Update signing key and its location.
 - Dates for live U-Boot bench, kernel and DTB test boots, and fresh flash.
 

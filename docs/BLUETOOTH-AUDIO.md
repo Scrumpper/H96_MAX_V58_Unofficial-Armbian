@@ -84,6 +84,16 @@ reaches network, and by hand it needs network too:
 LDAC needs libldacbt-abr2 / libldacbt-enc2; aptX and aptX-HD need libfreeaptx0.
 All are open reimplementations, no vendor blob.
 
+## 8.0 packages
+
+On 8.0 beta images, `h96-audio` package installs Bluetooth audio files: `30-h96-bluetooth.conf`
+in `/etc/wireplumber/wireplumber.conf.d/`, `rfcomm.conf` in `/etc/modules-load.d/`,
+`h96-rfcomm.service` and `bt-sco-hci.service` in `/usr/lib/systemd/system/`,
+`h96-bt-policy.py` in `/usr/lib/h96/` with `20-h96-policy.conf` drop-in for
+`bluetooth.service`. v7.2 builder removed `h96-bt-a2dp-heal` and v6.2 EQ files
+(`90-h96-eq.conf`, flat EQ restore through tmpfiles), and 8.0 does not bring them back.
+Manual install below applies to v6.x sources in this repo, not to 8.0 images.
+
 ## Install (manual, on running box)
 
 From `packages/bsp/h96-max-v58/`:

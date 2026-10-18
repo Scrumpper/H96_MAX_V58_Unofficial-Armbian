@@ -2,6 +2,45 @@
 
 
 
+## 8.0 beta (unreleased)
+
+8.0 is in beta and not released; no 8.0 image is published. Current release stays v7.2, whose notes come with v7.2 release download. Entries below describe beta builds and can change before release.
+
+8.0 is platform release over v7.2: kernel, device tree and H96 userland become dpkg packages built from pinned inputs and installed into rootfs at image build time. No new media or gaming features.
+
+### Kernel and device tree
+
+- Kernel `6.1.172-h96v58-8.0`: Rockchip `rk-6.1-rkr7.2` plus H96 patch series (20 commits that reproduce v7.1 kernel tree), built in container with pinned GCC 16.1.0.
+- Packages `h96-kernel-6.1.172-h96v58-8.0` (Image, System.map and config in `/usr/lib/h96-kernel/<krel>/`, modules in `/usr/lib/modules/<krel>/`) and `h96-dtb-6.1.172-h96v58-8.0` (DTB in `/usr/lib/h96-kernel/<krel>/dtb/`), built by `build/build-kernel-debs.sh`. Packages write nothing under `/boot`; postinst runs `depmod` for its own release only; prerm refuses removal of running kernel's package.
+- Image build copies Image, DTB and `uInitrd` (made in image chroot) into `/boot`; `/boot/Image` and `/boot/uInitrd` are symlinks to versioned files. `boot.scr` and `armbianEnv.txt` keys stay as on v7.2; no `/boot/extlinux`. v7.2 kernel files stay in `/boot` for manual relink.
+- Board DTB built from vendor base DTB plus `patch/dt/h96-max-v58.dtso` and `patch/dt/h96-max-v58.delete`; tree diff against v7.2 DTB passes (`tools/dtb/`).
+- Kernel and DTB arrive with image releases; apt pin `00-h96-protect-boot` keeps foreign kernel, DTB, U-Boot and `flash-kernel` packages out.
+
+### Userland packages
+
+- Eight packages, version `8.0.0~rN`: `h96-base` (release identity, `h96` command, first-boot units, apt policy), `h96-boot` (boot chain guards, apt pins, EDID, hang recovery), `h96-net` (BCM43752 WiFi units, hotspot, Wake-on-LAN), `h96-audio` (PipeWire, WirePlumber, HDMI audio, Bluetooth), `h96-desktop` (X11 display, LightDM, KDE and GNOME setup), `h96-media` (mpv configuration, video stack, NPU, CEC, casting), `h96-tools` (backup and restore, perf, undervolt, LEDs, VFD), `h96-gaming` (pad rules, DXVK, box64, Steam ARM wrapper).
+- Packaged files leave `/usr/local` and `/opt`: commands in `/usr/bin` and `/usr/sbin`, helpers and payloads in `/usr/lib/h96` (video stack in `/usr/lib/h96/video`, gaming files in `/usr/lib/h96/gaming`), units in `/usr/lib/systemd/system`, udev rules in `/usr/lib/udev/rules.d`, settings in `/etc/h96`. Signed offline apt repository stays at `/opt/h96-pkgs` as image data.
+- Steam: installer comes from `steam-arm-setup` package (`/usr/share/steam-arm-setup`); `h96-steam` front end and links in `/usr/lib/h96/steam` from `h96-gaming`. Next beta build carries Steam ARM 3.0.
+- Maintainer `Scrumpper <190908034+Scrumpper@users.noreply.github.com>`. Lintian clean; overrides only for tags that cannot be fixed, each with reason.
+
+### GPU and desktop
+
+- `libmali` removed: packages, blob, offline repository deb. Mesa only (Panfrost GL, PanVK Vulkan); OpenCL through `libmali` is gone. Vendor-era Panthor switch tooling (`/opt/panthor`) removed.
+- Image boots to console. KDE Plasma installs on demand through `armbian-config` and runs on X11 with LightDM.
+- First boot reboots once (v7.2: twice).
+
+### Tools and CI
+
+- `tools/h96-selftest.py`: read-only health checks (`boot`, `hw`, `invariants`, `report`, `self-test`).
+- CI on GitHub-hosted arm64 runners: docs gates, shell and Python lint, backup kit on Python 3.7, kernel deb packaging with lintian, DTB overlay tree diff. See `docs/CI.md`.
+- Flash steps add read-back check: `rkdeveloptool rl` of written range, sha256 equal to image before reset. See README, Flashing.
+
+### Known in beta
+
+- Boot 1 journal is volatile, so boot 1 errors are not kept after first reboot.
+- `dpkg -V` lists files rewritten at runtime (HDMI sink EDID, ALSA HDMI settings, WirePlumber IEC958 settings).
+- Try-once kernel slot and signed update bundles are not in beta. Rollback: reflash v7.2 image.
+
 ## v6.2 (2026-09-26)
 
 v6.2 over v6.1. Kernel: HDMI-CEC, HDMI 2.0 modes through GPIO DDC bus, colour-format switch without green cast, extended cursor power-domain fix, RGA 2D accelerator. Display: mode list from connected display, per-display colour and range with confirm-or-revert. Native Steam route update: `h96-steam install` carries Steam ARM 1.2. Audio: flat EQ file restores device setup on PipeWire 1.6, and Bluetooth headset microphone, codecs and reconnect behaviour are reworked.

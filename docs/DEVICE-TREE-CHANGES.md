@@ -11,6 +11,14 @@ differ from stock DTB.
 If you prefer mainline-style DTS, same nodes can be applied on top of
 mainline `rk3588.dtsi`; values here are reference.
 
+8.0 builds board DTB from overlay source instead of edited decompile:
+`tools/dtb/build-dtb.sh` applies `patch/dt/h96-max-v58.delete` (four property deletions)
+and `patch/dt/h96-max-v58.dtso` (board changes below as one overlay) to vendor base DTB
+(`dtb/pinned/rk3588-h96-max-v58.dtb`). `tools/dtb/dt-tree-diff.sh` compares result with
+v7.2 DTB (`dtb/pinned/rk3588-h96-max-v58-panthor.dtb`); residual is two renumbered
+phandles and two new `__symbols__` labels. `h96-dtb-<krel>` package stages DTB in
+`/usr/lib/h96-kernel/<krel>/dtb/`; image build copies it into `/boot/dtb/`.
+
 ## 1. Open Mali GPU (Panthor)
 - **`gpu-supply`** wired to GPU power domain / regulator so GPU rail is
   powered at bind (without it first GL job hangs with TF-A SError).

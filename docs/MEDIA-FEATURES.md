@@ -5,6 +5,12 @@ packages on demand and activates services on first `enable`. Nothing auto-starts
 Sources under `packages/bsp/h96-max-v58/` (tools/, lib/, systemd/, udev/, mpv/,
 wireplumber/, pipewire/, etc-h96/, modules-load.d/).
 
+Paths below are v6.x and v7.x locations (`/usr/local/bin`, `/usr/local/lib/h96`, `/opt`).
+On 8.0 beta images, `h96-media` package installs media commands in `/usr/bin` and
+`/usr/sbin`, helpers in `/usr/lib/h96`, video stack archive in `/usr/lib/h96/video`, units
+in `/usr/lib/systemd/system` and udev rules in `/usr/lib/udev/rules.d`; `h96-gaming` carries
+pad rules, emulators and Steam front end.
+
 ## Tools
 
 - **h96-cec** - HDMI-CEC: control box with TV remote. Daemon (lib/h96-cecd)
