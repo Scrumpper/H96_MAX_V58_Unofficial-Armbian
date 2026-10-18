@@ -1,3 +1,16 @@
+h96-kernel-switch (8.0.0~r12) resolute; urgency=medium
+
+  * New read-only command dtb: board DTB path, layout (plain, managed,
+    link), resolved file and recorded trial phase; h96-undervolt uses it.
+  * New command dtb-plain: managed DTB link back to plain file with same
+    content (temporary name, read-back, rename).
+  * try refuses while h96-undervolt trial is recorded, and DTB change
+    while h96-undervolt change is active (--keep-dtb accepted).
+  * rollback refuses when plain board DTB differs from DTB of target
+    generation; rollback --keep-dtb accepts it.
+
+ -- Scrumpper <190908034+Scrumpper@users.noreply.github.com>  Sun, 18 Oct 2026 21:00:00 +0000
+
 h96-kernel-switch (8.0.0~r11) resolute; urgency=medium
 
   * Generation layout: Image, uInitrd and board DTB link through

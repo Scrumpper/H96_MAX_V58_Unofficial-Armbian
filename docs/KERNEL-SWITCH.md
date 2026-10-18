@@ -14,8 +14,9 @@ not booted on hardware.
 6. [Refusals](#refusals)
 7. [Power loss](#power-loss)
 8. [DTB handling: owner decision](#dtb-handling-owner-decision)
-9. [Limits](#limits)
-10. [Tests](#tests)
+9. [h96-undervolt](#h96-undervolt)
+10. [Limits](#limits)
+11. [Tests](#tests)
 
 ## Why
 
@@ -51,8 +52,9 @@ links to current `Image-<krel>` and `uInitrd-<krel>` plus DTB copy, `h96ks/cur` 
 
 U-Boot side: `ext4fs_find_file1` in U-Boot 2017.09 (`fs/ext4/ext4_common.c`) resolves relative link targets from
 directory holding link, walks directory parts and `..` entries, and allows 8 nested links per lookup (counter
-reset per file). Layout above needs 2 per file. Plain-name `Image` and `uInitrd` links boot on hardware every
-day; links with directory parts have not booted yet (owner bench).
+reset per file). Layout above needs 2 per file, 3 for DTB when `dtb` itself links to `dtb-<krel>`. Plain-name
+`Image` and `uInitrd` links boot on hardware every day; links with directory parts have not booted yet (owner
+bench).
 
 ## Commands
 
@@ -66,8 +68,11 @@ day; links with directory parts have not booted yet (owner bench).
 | `h96-kernel-switch try <krel> --keep-dtb` | Same; board DTB stays as is |
 | `h96-kernel-switch confirm` | During trial boot: keeps trial kernel as default |
 | `h96-kernel-switch rollback` | Cancels recorded trial, or returns to kernel that was default before last confirm |
+| `h96-kernel-switch rollback --keep-dtb` | Same; accepted when plain DTB differs from DTB of previous generation |
 | `h96-kernel-switch prune <krel>` | Removes generations and plain-name files of one kernel unless links or records name them |
 | `h96-kernel-switch in-use <krel>` | Roles of kernel in boot files: `default`, `trial`, `trial-previous`, `rollback-target` |
+| `h96-kernel-switch dtb` | Board DTB `path`, `layout` (`plain`, `managed`, `link`), resolved `file`, recorded `trial` phase; read only |
+| `h96-kernel-switch dtb-plain` | Turns managed DTB link back into plain file with content of `h96ks/cur/fdt` |
 
 Package `h96-kernel-switch` installs command, man page and three systemd units. Units stay disabled until first
 `try` enables `h96-kernel-switch-guard.service` and `h96-kernel-switch-confirm.timer`; both do nothing while no
@@ -110,7 +115,7 @@ before.
 
 ## Files written
 
-Only `try`, `confirm`, `rollback`, `prune` and boot guard write `/boot`, and only these names:
+Only `try`, `confirm`, `rollback`, `prune`, `dtb-plain` and boot guard write `/boot`, and only these names:
 
 | Name | Written by |
 |------|------------|
@@ -119,6 +124,7 @@ Only `try`, `confirm`, `rollback`, `prune` and boot guard write `/boot`, and onl
 | `h96ks/cur` | `try`, guard, `confirm`, `rollback` (atomic link swap) |
 | `Image`, `uInitrd` | `try`, once: plain-name link becomes `h96ks/cur/...` link, content unchanged |
 | `dtb/<fdtfile>` | `try`, once, only when DTB differs: plain file becomes link to `h96ks/cur/fdt`, content unchanged |
+| `dtb/<fdtfile>` | `dtb-plain`: link becomes plain file (temporary name, read-back, rename), content unchanged |
 
 Plain-name files (`Image-<krel>`, `uInitrd-<krel>`) are never replaced; only `prune` removes them or
 generations. `extlinux`, `boot.scr`, `boot.cmd` and `armbianEnv.txt` are never written. Tool never runs
@@ -129,6 +135,8 @@ generations. `extlinux`, `boot.scr`, `boot.cmd` and `armbianEnv.txt` are never w
 `try` stops before any `/boot` write when:
 
 - trial or unfinished confirm is already recorded;
+- `h96-undervolt` trial is recorded (`/var/lib/h96-undervolt-trial`);
+- DTB would change while `h96-undervolt` change is active (`/var/lib/h96-undervolt-state`), unless `--keep-dtb`;
 - kernel is not staged, staged sums fail, or `modules.dep` is missing;
 - staged Image embeds other release than requested;
 - kernel is running or already default, or current Image embeds requested release;
@@ -137,6 +145,10 @@ generations. `extlinux`, `boot.scr`, `boot.cmd` and `armbianEnv.txt` are never w
 - `/boot` is not mounted or is read-only;
 - staged DTB is missing (unless `--keep-dtb`);
 - `/boot` free space is below size of files to write plus 16 MiB reserve.
+
+`rollback` after confirm refuses while board DTB is plain file that differs from DTB of previous generation
+(after `dtb-plain`), unless `--keep-dtb`: rollback switches Image and uInitrd only, so old kernel would boot
+newer DTB. `dtb-plain` refuses while trial is recorded and when DTB is not managed link.
 
 `prune` refuses running kernel and any generation or file named by `h96ks/cur`, boot links, trial record or last
 confirm. Package removal is refused while trial is recorded.
@@ -152,6 +164,7 @@ Record comes before every link move; one rename decides boot set; guard finishes
 | after `armed` record, before `h96ks/cur` moves | Previous kernel; guard records `not-booted`, clears record |
 | guard, before fallback | Trial kernel boots second time; guard reverts as unconfirmed |
 | confirm or rollback (`commit` record) | Guard completes switch; record cleared, last-confirm written |
+| `dtb-plain` | DTB link or plain copy, same content; hidden temporary file removed by next `dtb-plain` or `try` |
 
 Unfinished `commit` found by `rollback` in running system (killed process): `rollback` refuses and names
 `h96-kernel-switch guard`, which completes it.
@@ -167,7 +180,42 @@ uInitrd switch. Cost: new kernel boots with old DTB, so DTB changes (8.0 overlay
 separate step outside tool.
 
 Both paths are in tool now; default stays first one until owner bench decides. Identical DTB needs no link in
-either case.
+either case. `dtb-plain` returns managed layout to plain DTB file; later `try` with `--keep-dtb` keeps it plain.
+
+## h96-undervolt
+
+`h96-undervolt` (package `h96-tools`) edits CPU voltage tables in
+`/boot/dtb/rockchip/rk3588-h96-max-v58-panthor.dtb` and keeps vendor copy as `<dtb>.stock-backup`;
+`h96-undervolt-trial.service` copies stock backup back after unconfirmed trial boot. Once that DTB name links to
+`h96ks/cur/fdt`, in-place write would land inside generation (generations never change) and stock backup would hold
+DTB of earlier kernel.
+
+Rules, enforced by both tools:
+
+| Situation | `h96-undervolt` | `h96-kernel-switch` |
+|-----------|-----------------|---------------------|
+| DTB is managed link (`dtb` prints `layout=managed`) | `set`, `oc`, `revert` refuse; trial guard writes nothing | normal |
+| Kernel trial recorded | `set`, `oc` refuse; `revert` allowed (plain DTB only) | normal |
+| Undervolt trial recorded | normal | `try` refuses |
+| Undervolt or overclock active | normal | `try` refuses DTB change; `--keep-dtb` accepted |
+| DTB differs from stock backup, no undervolt change recorded | `set`, `oc` refuse; `revert` needs `--force` | normal |
+
+`h96-undervolt` asks `h96-kernel-switch dtb` (read only) and also refuses any DTB that is link. It writes DTB and
+stock backup through temporary name and rename; trial guard does same and is ordered after
+`h96-kernel-switch-guard.service`. Path back for undervolt on managed layout: `h96-kernel-switch dtb-plain`, remove
+stale `.stock-backup` once current DTB is vendor tree, then `h96-undervolt set`.
+
+Design choice. Three designs were compared:
+
+1. Kernel switch writes undervolt DTB as new generation: undervolt trial and kernel trial would share `h96ks/cur`,
+   records and boot guard; undervolt revert after kernel switch would need DTB per generation. Boot-critical tool
+   grows second trial type with its own power-loss cases. Rejected.
+2. `--keep-dtb` as default: DTB stays plain file and undervolt works unchanged, but kernel and DTB no longer change
+   together by default; new kernel boots earlier DTB, and stale stock backup after separate DTB update is not
+   caught. Changes owner DTB decision. Rejected.
+3. Each tool writes only own names; mutual refusal allows single boot trial; `dtb-plain` gives plain layout
+   back on request. No generation is ever written by `h96-undervolt`, and no undervolt file by kernel switch.
+   Chosen: smallest change to both tools, every conflicting state ends in refusal with next step named.
 
 ## Limits
 
@@ -188,8 +236,9 @@ Boot result comes from all three files read through links (Image, uInitrd, DTB):
 and mixed fails. Cases: listing, `default`, `in-use`, refusals including embedded release, low space, healthy
 trial and confirm, unconfirmed revert, generation reuse and cleanup, auto-confirm with and without health,
 rollback in each state, `--keep-dtb`, identical DTB, DTB changed outside tool, `dtb` as directory link, prune,
-unreadable record. Power loss runs at every cut point that `try`, `try --keep-dtb`, guard, `confirm` and
-`rollback` reach (list collected from tool trace), then boots until no record is left. Each case checks
+unreadable record, `dtb` output, `dtb-plain` (refusals, generations unchanged, rollback with plain DTB),
+refusals on `h96-undervolt` trial and change files. Power loss runs at every cut point that `try`,
+`try --keep-dtb`, guard, `confirm`, `rollback` and `dtb-plain` reach (list collected from tool trace), then boots until no record is left. Each case checks
 `boot.scr`, `boot.cmd` and `armbianEnv.txt` sums, absence of `extlinux` and absence of temporary files.
 
 ```

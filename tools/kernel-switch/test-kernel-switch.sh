@@ -311,5 +311,45 @@ setup; ks try $NEWK > /dev/null; U=$NEWK B=b2 ks guard
 U=$NEWK B=b2 H96KS_DIE_AT=confirm-0 ks confirm > /dev/null 2>&1
 ok "unfinished commit: rollback refused, guard finishes it" '! ks rollback 2>/dev/null && ks guard && on_new && [ ! -e $STD/trial ]'
 
+echo "== 14 dtb, dtb-plain, h96-undervolt files"
+UVF=$R/var/lib/h96-undervolt-trial UVS=$R/var/lib/h96-undervolt-state
+dtbkey() { ks dtb | sed -n "s/^$1=//p"; }
+setup
+ok "dtb: plain layout, no trial" '[ "$(dtbkey layout)" = plain ] && [ "$(dtbkey trial)" = none ] && [ "$(dtbkey path)" = $R/boot/dtb/$DN ] && [ "$(dtbkey file)" = $R/boot/dtb/$DN ]'
+before=$(blist); echo armed > "$UVF"
+ok "try refused while undervolt trial recorded, /boot byte-identical" 'ks try $NEWK 2>&1 | grep -q "h96-undervolt trial recorded" && [ "$(blist)" = "$before" ] && [ ! -e $STD/trial ]'
+ok "try --keep-dtb refused while undervolt trial recorded" '! ks try $NEWK --keep-dtb 2>/dev/null && [ "$(blist)" = "$before" ]'
+rm -f "$UVF"; echo "-10 mV" > "$UVS"
+ok "try with differing DTB refused while undervolt change active, /boot byte-identical" 'ks try $NEWK 2>&1 | grep -q "h96-undervolt change active" && [ "$(blist)" = "$before" ] && [ ! -e $STD/trial ]'
+KEEP=1
+ok "try --keep-dtb accepted while undervolt change active: DTB stays plain" 'ks try $NEWK --keep-dtb > /dev/null && on_new && [ ! -L $R/boot/dtb/$DN ] && [ "$(dtbkey trial)" = armed ]'
+KEEP=0
+setup; echo old-dtb > "$SK/dtb/$DN"; (cd "$SK/dtb" && sha256sum "$DN" > SHA256SUMS.dtb); echo "-10 mV" > "$UVS"
+ok "try with identical DTB accepted while undervolt change active" 'ks try $NEWK > /dev/null && on_new && [ ! -L $R/boot/dtb/$DN ]'
+setup; ks try $NEWK > /dev/null
+ok "dtb: managed layout, file in trial generation, trial armed" '[ "$(dtbkey layout)" = managed ] && [ "$(dtbkey file)" = $R/boot/h96ks/$NEWK.g1/fdt ] && [ "$(dtbkey trial)" = armed ]'
+ok "dtb-plain refused while trial recorded" 'ks dtb-plain 2>&1 | grep -q "trial recorded" && [ "$(dtl)" = ../../h96ks/cur/fdt ]'
+U=$NEWK B=b2 ks guard; U=$NEWK B=b2 ks confirm > /dev/null
+g0=$(cd "$R/boot/h96ks" && find . -type f -print0 | sort -z | xargs -0 sha256sum); e0=$(entries)
+U=$NEWK ks dtb-plain > /dev/null; rc=$?
+ok "dtb-plain: rc 0, DTB plain file with trial generation content, new set boots" '[ $rc = 0 ] && [ ! -L $R/boot/dtb/$DN ] && [ "$(dtbkey layout)" = plain ] && on_new && invariant'
+ok "dtb-plain: only DTB name written, generations unchanged" '[ "$(changed "$e0")" = "./dtb/rockchip/$DB " ] && [ "$(cd $R/boot/h96ks && find . -type f -print0 | sort -z | xargs -0 sha256sum)" = "$g0" ]'
+ok "dtb-plain on plain DTB refused" 'U=$NEWK ks dtb-plain 2>&1 | grep -q "nothing to do"'
+e0=$(entries)
+ok "rollback refused while plain DTB differs from previous generation, /boot unchanged" 'U=$NEWK B=b3 ks rollback 2>&1 | grep -q "differs from DTB of $OLDK.g1" && [ -z "$(changed "$e0")" ]'
+U=$NEWK B=b3 ks rollback --keep-dtb > /dev/null; rc=$?
+ok "rollback --keep-dtb: previous Image and uInitrd, current DTB kept" '[ $rc = 0 ] && [ "$(cat $R/boot/Image)" = old-image ] && [ "$(cat $R/boot/uInitrd)" = old-initrd ] && [ "$(cat $R/boot/dtb/$DN)" = new-dtb ] && [ ! -L $R/boot/dtb/$DN ] && invariant'
+ok "rollback with unknown option refused" '! ks rollback --x 2>/dev/null'
+setup; ks try $NEWK > /dev/null; U=$NEWK B=b2 ks guard; U=$NEWK B=b2 ks confirm > /dev/null
+cps=$(U=$NEWK cutpoints ks dtb-plain)
+ok "dtb-plain reaches plain-0 plain-1" '[ "$cps" = "plain-0 plain-1 " ]'
+for cp in $cps; do
+    setup; ks try $NEWK > /dev/null; U=$NEWK B=b2 ks guard; U=$NEWK B=b2 ks confirm > /dev/null
+    U=$NEWK H96KS_DIE_AT=$cp ks dtb-plain > /dev/null 2>&1; rc=$?
+    first=$(boot_as)
+    U=$NEWK ks dtb-plain > /dev/null 2>&1
+    ok "cut in dtb-plain at $cp: rc 99, boot $first is new set, rerun leaves plain DTB, no tmp" '[ $rc = 99 ] && [ "$first" = $NEWK ] && [ ! -L $R/boot/dtb/$DN ] && on_new && invariant'
+done
+
 echo "kernel-switch stub tests: $pass pass, $fail fail"
 [ "$fail" = 0 ]

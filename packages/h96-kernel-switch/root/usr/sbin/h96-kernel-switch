@@ -21,19 +21,23 @@ TRIAL=$ST/trial
 LAST=$ST/last
 RESERVE_KB=${H96KS_RESERVE_KB:-16384}
 TMPSFX=.h96ks-tmp
+UVFLAG=$R/var/lib/h96-undervolt-trial   # h96-undervolt (h96-tools): trial recorded
+UVSTATE=$R/var/lib/h96-undervolt-state  # h96-undervolt: DTB change active
 KEYS="PHASE KREL MODE AUTO PENDING ABOOT PREV NEW"
 
 usage() {
     cat <<EOF
-usage: $ME list | status | default
+usage: $ME list | status | default | dtb
        $ME try KREL [--auto-confirm] [--keep-dtb]
-       $ME confirm | rollback | prune KREL | in-use KREL
+       $ME confirm | rollback [--keep-dtb] | prune KREL | in-use KREL | dtb-plain
        $ME guard | auto-confirm        (run by systemd units)
 try:      copy staged KREL into new /boot generation, point h96ks/cur at it, arm boot guard
 confirm:  keep KREL as default; run during trial boot
 rollback: cancel pending trial, or return to kernel that was default before last confirm
 default:  print release that boot files start
 in-use:   print roles of KREL in boot files (default, trial, trial-previous, rollback-target); rc 1 when none
+dtb:      print board DTB path, layout (plain, managed, link), resolved file and trial phase
+dtb-plain: turn managed DTB link back into plain file, same content
 EOF
 }
 
@@ -277,6 +281,7 @@ cmd_try() {
     lock
     preflight
     if [ -e "$TRIAL" ]; then die "trial already recorded ($TRIAL); confirm, rollback or reboot first"; fi
+    [ ! -e "$UVFLAG" ] || die "h96-undervolt trial recorded; run 'h96-undervolt confirm' or 'h96-undervolt revert' first"
     local S=$STAGE/$K
     [ -f "$S/Image" ] && [ -f "$S/SHA256SUMS.kernel" ] || die "$K not staged in $STAGE (install h96-kernel-$K)"
     (cd "$S" && sha256sum -c --status SHA256SUMS.kernel) || die "$S fails SHA256SUMS.kernel"
@@ -306,6 +311,9 @@ cmd_try() {
         cmp -s "$sd" "$dp" || needdtb=1
     else
         fsrc=$dp
+    fi
+    if [ "$needdtb" = 1 ] && [ -e "$UVSTATE" ]; then
+        die "h96-undervolt change active in $dp; staged DTB would drop it. Run 'h96-undervolt revert' first, or pass --keep-dtb"
     fi
     # initramfs for K: mkinitramfs and mkimage only, outside /boot
     mkdir -p "$R/var/tmp"
@@ -463,6 +471,10 @@ cmd_confirm() {
 }
 
 cmd_rollback() {
+    local keepdtb=0 a
+    for a in "$@"; do
+        case "$a" in --keep-dtb) keepdtb=1 ;; *) die "usage: $ME rollback [--keep-dtb]" ;; esac
+    done
     need_root
     lock
     local rc=0
@@ -487,6 +499,12 @@ cmd_rollback() {
     [ "$(readlink "$BOOT/Image")" = "$CUR/Image" ] && [ "$(readlink "$BOOT/uInitrd")" = "$CUR/uInitrd" ] ||
         die "Image or uInitrd no longer links through $CUR; no rollback"
     gen_ok "$T_PREV" || die "previous generation $T_PREV missing; no rollback"
+    # plain DTB does not follow h96ks/cur (dtb-plain, --keep-dtb)
+    DTBN=$(fdtfile)
+    local dp="$BOOT/dtb/$DTBN"
+    if [ "$keepdtb" = 0 ] && [ ! -L "$dp" ] && ! cmp -s "$dp" "$BOOT/$GD/$T_PREV/fdt"; then
+        die "$dp is plain file and differs from DTB of $T_PREV; rollback switches Image and uInitrd only. Pass --keep-dtb to roll back with current DTB"
+    fi
     preflight
     local to=$T_PREV
     T_KREL=$(gen_krel "$to") T_MODE=rollback T_AUTO=0 T_ABOOT=$(bootid) T_PREV=$T_NEW T_NEW=$to
@@ -541,6 +559,46 @@ cmd_in_use() {
     echo "${roles# }"
 }
 
+# read-only: board DTB layout for h96-undervolt and status
+cmd_dtb() {
+    DTBN=$(fdtfile)
+    local dp="$BOOT/dtb/$DTBN" lay=plain tr=none rc=0
+    [ -e "$dp" ] || die "$dp missing"
+    if [ -L "$dp" ]; then
+        if [ "$(readlink "$dp")" = "$(dtb_rel)" ]; then lay=managed; else lay="link"; fi
+    fi
+    if [ -e "$TRIAL" ]; then
+        st_load "$TRIAL" || rc=$?
+        if [ "$rc" = 0 ]; then tr=$T_PHASE; else tr=unreadable; fi
+    fi
+    printf 'path=%s\nlayout=%s\nfile=%s\ntrial=%s\n' "$dp" "$lay" "$(realpath "$dp")" "$tr"
+}
+
+# managed DTB link -> plain file with content of h96ks/cur/fdt; one rename
+cmd_dtb_plain() {
+    need_root
+    lock
+    preflight
+    clean_tmp
+    [ ! -e "$TRIAL" ] || die "trial recorded ($TRIAL); confirm, rollback or reboot first"
+    DTBN=$(fdtfile)
+    local dp="$BOOT/dtb/$DTBN" t
+    [ -L "$dp" ] && [ "$(readlink "$dp")" = "$(dtb_rel)" ] || die "$dp is not link to $CUR/fdt; nothing to do"
+    [ -f "$dp" ] || die "$dp points at missing file"
+    t="$(dirname "$dp")/.$(basename "$dp")$TMPSFX"
+    cp "$dp" "$t"
+    chmod 0644 "$t"
+    sync "$t" 2>/dev/null || sync
+    cmp -s "$t" "$dp" || die "read-back of $t failed"
+    cutpoint plain-0
+    mv -Tf "$t" "$dp"
+    fsync_dir "$(dirname "$dp")"
+    cutpoint plain-1
+    log "dtb-plain: $dp plain file, content of $(cur_gen || echo none)/fdt"
+    say "$dp is plain file now, content unchanged"
+    say "try without --keep-dtb links it again when staged DTB differs; rollback refuses while DTB differs from previous generation"
+}
+
 cmd_list() {
     local d k flags def
     def=$(default_krel 2>/dev/null || true)
@@ -581,10 +639,12 @@ case "${1:-}" in
     try) shift; cmd_try "$@" ;;
     confirm) cmd_confirm manual ;;
     auto-confirm) cmd_confirm auto ;;
-    rollback) cmd_rollback ;;
+    rollback) shift; cmd_rollback "$@" ;;
     guard) cmd_guard ;;
     prune) shift; cmd_prune "$@" ;;
     in-use) shift; cmd_in_use "$@" ;;
+    dtb) cmd_dtb ;;
+    dtb-plain) cmd_dtb_plain ;;
     default) default_krel || exit 1 ;;
     list) cmd_list ;;
     status) cmd_status ;;
