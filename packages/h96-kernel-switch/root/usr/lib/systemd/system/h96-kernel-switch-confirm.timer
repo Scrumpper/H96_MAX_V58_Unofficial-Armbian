@@ -1,0 +1,10 @@
+[Unit]
+Description=H96 kernel switch auto-confirm 180 s after boot
+Documentation=man:h96-kernel-switch(8)
+
+[Timer]
+OnBootSec=180
+AccuracySec=1s
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,136 @@
+.TH H96-KERNEL-SWITCH 8 "2026-10-18" "h96-kernel-switch" "System Administration"
+.SH NAME
+h96-kernel-switch \- boot staged kernel as guarded trial, confirm or roll back
+.SH SYNOPSIS
+.B h96-kernel-switch
+.B list
+|
+.B status
+|
+.B default
+|
+.B dtb
+.br
+.B h96-kernel-switch try
+.I KREL
+.RB [ \-\-auto\-confirm ]
+.RB [ \-\-keep\-dtb ]
+.br
+.B h96-kernel-switch
+.B confirm
+|
+.B rollback
+.RB [ \-\-keep\-dtb ]
+|
+.B dtb-plain
+.br
+.B h96-kernel-switch
+.B prune
+|
+.B in-use
+.I KREL
+.SH DESCRIPTION
+Kernel packages stage files under /usr/lib/h96-kernel/KREL and never write /boot.
+Vendor U-Boot on H96 MAX V58 has no try-once slot; boot.scr loads /boot/Image,
+/boot/uInitrd and /boot/dtb/FDTFILE.
+.B h96-kernel-switch
+copies one staged kernel into generation directory /boot/h96ks/KREL.gN
+(Image, uInitrd, fdt). Image and uInitrd link through /boot/h96ks/cur, and so
+does board DTB once DTB differs between kernels; one rename of h96ks/cur
+switches all three, so power loss leaves either old or new set. Boot guard
+runs early on next boot: on trial kernel it points h96ks/cur back to previous
+generation at once, so hang, panic or watchdog reset lands on previous kernel.
+Only
+.B confirm
+during trial boot keeps new kernel as default.
+.SH COMMANDS
+.TP
+.B list
+Staged kernels with flags running, default, in-boot, trial.
+.TP
+.B status
+Default release, link targets, recorded trial, last results.
+.TP
+.B default
+Prints release that boot files start; exit status 1 when unknown.
+.TP
+.BI try " KREL"
+Checks staged sha256 sums, modules.dep and release string embedded in Image,
+builds initramfs with mkinitramfs and mkimage outside /boot, checks free space
+on /boot (new files plus 16 MiB reserve), writes new generation through hidden
+temporary directory, enables guard units, records trial, then moves h96ks/cur.
+First run converts plain-name Image and uInitrd links into h96ks/cur links;
+every conversion step keeps content each boot name resolves to (previous
+generation holds hard links to current files and DTB copy). Refuses when trial
+is recorded, when KREL is running or default, when /boot is read-only, when
+extlinux directory exists, or when Image or uInitrd is not link. Also
+refuses while h96-undervolt trial is recorded, and DTB change while
+h96-undervolt change is active (use
+.BR \-\-keep\-dtb ).
+.B \-\-auto\-confirm
+confirms trial 180 s after boot when multi-user.target is active.
+.B \-\-keep\-dtb
+leaves board DTB as is; generation carries current DTB.
+.TP
+.B confirm
+Run during trial boot: points h96ks/cur at trial generation for good.
+.TP
+.B rollback
+With trial recorded: cancels it. Without trial: returns h96ks/cur to
+generation that was default before last confirm; running it again returns to
+confirmed generation. Refuses when board DTB is plain file that differs from
+DTB of target generation, since rollback switches Image and uInitrd only;
+.B \-\-keep\-dtb
+rolls back with current DTB.
+.TP
+.BI prune " KREL"
+Removes generations and plain-name files of KREL from /boot unless h96ks/cur,
+boot links or records name them.
+.TP
+.BI in-use " KREL"
+Prints roles of KREL in boot files: default, trial, trial-previous,
+rollback-target; exit status 1 when none. Kernel packages use it to skip
+install hint and to refuse removal.
+.TP
+.B dtb
+Read only. Prints path=, layout= (plain, managed, link), file= (resolved
+file) and trial= (none or recorded phase) for board DTB.
+.BR h96-undervolt (8)
+uses it to refuse writes into generations.
+.TP
+.B dtb-plain
+Turns managed DTB link back into plain file holding content of
+h96ks/cur/fdt (temporary name, read-back, rename). Refuses while trial is
+recorded. Later
+.B try
+links DTB again when staged DTB differs, unless
+.BR \-\-keep\-dtb .
+.SH FILES
+.TP
+/boot/h96ks/cur, /boot/h96ks/KREL.gN
+Active generation link and generation directories.
+.TP
+/var/lib/h96-kernel-switch/trial
+Recorded trial or unfinished confirm or rollback: phase, previous and new
+generation.
+.TP
+/var/lib/h96-kernel-switch/last
+Generations of last confirm or rollback, used by rollback.
+.TP
+/var/lib/h96-kernel-switch/log, result
+Action log and outcome lines.
+.TP
+/var/lib/h96-undervolt-trial, /var/lib/h96-undervolt-state
+Read by
+.BR try :
+h96-undervolt trial recorded, undervolt or overclock active.
+.SH LIMITS
+Failure before boot guard runs (early panic, initramfs failure without reset
+to userspace) repeats trial boot, since h96ks/cur still names trial generation
+at that point. Recovery then needs rescue media or reflash.
+U-Boot must follow relative links with directory parts (Image to
+h96ks/cur/Image, h96ks/cur to generation); not yet booted on hardware.
+.SH SEE ALSO
+.BR h96-undervolt (8),
+.BR mkinitramfs (8),
+.BR mkimage (1)

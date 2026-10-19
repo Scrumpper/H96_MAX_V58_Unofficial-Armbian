@@ -69,7 +69,7 @@ resolve_sink() {
 list_a2dp_sources() {
   # pw-dump is JSON; parse with python3 if available, else a tolerant grep/sed fallback.
   if have python3; then
-    pw-dump 2>/dev/null | python3 - <<'PY' 2>/dev/null
+    pw-dump 2>/dev/null | python3 /dev/fd/3 3<<'PY' 2>/dev/null
 import json, sys
 try:
     data = json.load(sys.stdin)

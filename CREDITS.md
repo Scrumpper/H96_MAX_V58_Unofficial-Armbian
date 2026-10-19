@@ -16,7 +16,7 @@ This board support builds on work of others.
 - **Rockchip MPP** `RKVENC`/`RKVENC2`/`JPGENC`: hardware video *encode* path
   exposed by `h96-encode`.
 - **bjin/mpv-prescalers**: `ravu-lite-ar-r4` shader used by `h96-upscale`, by
-  Bin Jin. Shipped unmodified under **GNU LGPL v3**, licence header intact.
+  Bin Jin. Included unmodified under **GNU LGPL v3**, licence header intact.
   <https://github.com/bjin/mpv-prescalers>
 - **Rockchip RKNPU / RKNN**: NPU driver and `librknnrt` inference runtime.
   Runtime is proprietary and is therefore **not** distributed with this image --

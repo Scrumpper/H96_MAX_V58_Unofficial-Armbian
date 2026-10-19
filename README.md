@@ -4,7 +4,7 @@
 
 ---
 
-Board bring-up **sources** for running Armbian on **H96 Max V58** TV box
+Bring-up **sources** for running Armbian on **H96 Max V58** TV box
 (Rockchip **RK3588**, Mali-G610) with **open GPU** stack: Panthor kernel
 driver + Mesa (Panfrost/PanVK), hardware video, onboard WiFi 6, and working
 front-panel display.
@@ -16,26 +16,79 @@ front-panel driver, board config, BSP scripts) is provided as source under
 GPL-2.0. See [`LICENSE`](LICENSE) and [`CREDITS.md`](CREDITS.md).
 
 > **Unofficial.** Not affiliated with, endorsed by, or supported by Armbian,
-> Rockchip, or H96 manufacturer. It has been tested only on our own unit and
+> Rockchip, or H96 manufacturer. It has been tested only on author's own unit and
 > comes with **no warranty**. Always keep recovery plan before overwriting your device.
 
-> **Scope: this repo covers hardware bring-up (kernel, device tree, front-panel
-> daemon) up through v3.1.** It does not include desktop-completeness and
-> reliability fixes from v3.2 and later (except HDMI EDID work, v4.1
-> Bluetooth audio + headset-mic sources, and v4.1 `xpad` kernel driver +
-> media-tool sources, which are documented in CHANGELOG.md /
-> docs/BLUETOOTH-AUDIO.md / docs/MEDIA-FEATURES.md and do apply here): WiFi connection tooling,
-> Discover/software-install authentication, gaming stack, and related first-boot
-> automation. Compiling from these sources reproduces open GPU, onboard WiFi 6,
-> hardware video, front-panel display, and (v4.1) Bluetooth headset mic + AAC. For
-> full current feature set, use pre-built release images until rest of that
-> userspace layer is published here as well.
+> **Scope.** Repo contains hardware bring-up sources (kernel patches, device tree, board
+> file, front-panel daemon, BSP files from v6.x releases) and Armbian 8.0 groundwork:
+> DTB overlay source with tree-diff gate, kernel package builder, `h96-selftest` and CI.
+> Userland package sources (`h96-*` debs) and 8.0 kernel patch series are not published
+> here yet. Compiling from these sources reproduces open GPU, onboard WiFi 6, hardware
+> video, front-panel display, HDMI EDID work and Bluetooth headset microphone. For full
+> feature set, use pre-built release images.
 
 ---
 
-## Release images (v6.2)
+## Armbian 8.0 (beta, not released)
 
-Current release is **v6.2**, shipped as one pre-built full image. It boots to
+8.0 is in beta. No 8.0 image is published; current release stays v7.2. Facts below
+describe beta images and can change until release.
+
+8.0 is platform release: kernel, device tree and H96 userland become dpkg packages
+built from pinned inputs and installed into rootfs at image build time. It adds no new
+media or gaming features. Plan and status: [docs/ARMBIAN-8.0-PLAN.md](docs/ARMBIAN-8.0-PLAN.md).
+
+| Area | 8.0 beta | v7.2 |
+|------|----------|------|
+| Kernel | `6.1.172-h96v58-8.0`, Rockchip `rk-6.1-rkr7.2` plus H96 patch series, pinned GCC 16.1.0 | `6.1.172-h96v58-7.1` |
+| Kernel delivery | Packages `h96-kernel-<krel>` and `h96-dtb-<krel>`; payload staged in `/usr/lib/h96-kernel/<krel>/`, modules in `/usr/lib/modules/<krel>/` | Files in `/boot` and modules owned by no package |
+| Boot files | Image build copies Image, DTB and `uInitrd` into `/boot`; `/boot/Image` and `/boot/uInitrd` are symlinks to versioned files | Same symlink scheme |
+| Device tree | Built from vendor base DTB plus overlay `patch/dt/h96-max-v58.dtso`, checked by tree diff against v7.2 DTB | Edited vendor DTB |
+| Userland | Packages `h96-base`, `h96-boot`, `h96-net`, `h96-audio`, `h96-desktop`, `h96-media`, `h96-tools`, `h96-gaming` | Files under `/usr/local` and `/opt` |
+| GPU | Panthor plus Mesa only (Panfrost GL, PanVK Vulkan); `libmali` removed | Mesa by default; `libmali` blob and package kept in image |
+| Desktop | Console image; KDE Plasma on X11 installed on demand | Same |
+| Steam | `steam-arm-setup` package from Steam ARM project, `h96-steam` front end | Installer under `/usr/local/lib/h96/steam` |
+| First boot | One planned reboot | Two reboots |
+
+Package layout:
+
+- Commands in `/usr/bin` and `/usr/sbin`; helpers, seeds and payloads in `/usr/lib/h96`
+  (video stack in `/usr/lib/h96/video`, gaming files in `/usr/lib/h96/gaming`, Steam
+  wrapper links in `/usr/lib/h96/steam`).
+- Units in `/usr/lib/systemd/system`, udev rules in `/usr/lib/udev/rules.d`, settings in
+  `/etc/h96`.
+- Nothing packaged under `/usr/local` or `/opt`. Signed offline apt repository stays at
+  `/opt/h96-pkgs` as image data, not as package.
+- Package version `8.0.0~rN`: build round after `~`, so every beta sorts below `8.0.0`;
+  version is never reused for different content.
+- Kernel and DTB packages write nothing under `/boot`. Postinst runs `depmod` for its own
+  release only; prerm blocks uninstall of running kernel's package. Apt pin
+  `00-h96-protect-boot` keeps foreign kernel, DTB, U-Boot and `flash-kernel` packages out.
+- Vendor U-Boot, `boot.scr` and `armbianEnv.txt` keys stay as on v7.2. Image has no
+  `/boot/extlinux`.
+
+GPU: OpenCL through `libmali` is gone with `libmali`; vendor-era Panthor switch tooling
+(`/opt/panthor`) is removed. Measured on beta image: Mesa 26.1.4 on Mali-G610 (Panfrost
+GL, PanVK Vulkan), mpv with Rockchip MPP decode.
+
+Rollback from 8.0 beta: reflash published v7.2 image.
+
+---
+
+## Current release (v7.2)
+
+v7.2 is current published image. Kernel and device tree `6.1.172-h96v58-7.1` on Rockchip
+`rk-6.1-rkr7.2` base, Steam ARM 2.3.1. Release notes and flashing guide come with v7.2
+release download.
+
+---
+
+## Earlier releases (v6.0 to v6.2)
+
+Notes below describe v6.x images and their paths (`/usr/local`, `/opt`). 8.0 moves these
+files as listed above.
+
+v6.2 was published as one pre-built full image. It boots to
 text console and does not pre-install desktop. v6.2 updates native Steam route over
 v6.1 and reworks audio: flat EQ file restores device setup on PipeWire 1.6, and Bluetooth
 headset microphone, codecs and reconnect behaviour change.
@@ -49,7 +102,7 @@ v6.2 kernel moves to release string `6.1.115-h96v58v2` and adds:
 - HDMI0 DDC on GPIO I2C bus, since on-chip DDC controller never completes transfers:
   native EDID reads and HDMI 2.0 SCDC scrambling. Verified: 2560x1440 at 120 and
   144 Hz, 3840x2160 at 60 Hz.
-- Plane colour conversion re-applied on colour-format switch without modeset: no green
+- Plane colour space conversion re-applied on output format switch without modeset: no green
   cast when switching between RGB and YCbCr.
 - HDMI audio channel allocation derived with ELD bypass: groundwork for multichannel.
   Multichannel is not verified; no AV receiver tested.
@@ -57,13 +110,13 @@ v6.2 kernel moves to release string `6.1.115-h96v58v2` and adds:
 - RGA 2D accelerator binds after deferred probes (`/dev/rga` works).
 - stmmac Wake-on-LAN IRQ balance: no kernel warning when toggling WoL.
 - SARADC volume key: pinhole recovery button driver.
-- Neutral kernel build banner.
+- Neutral kernel banner.
 - HDMI output stays muted 1 s when colour format changes between RGB and YCbCr: no green flash at boot handover from loader. `dw_hdmi_qp.fmt_switch_mute_ms` sets hold (0 = off).
 
 Box on v6.1 gets userland changes above without reflash through
-`h96-v6.1.1-HOTfix.zip`; kernel changes above ship only with v6.2 image, so full
+`h96-v6.1.1-HOTfix.zip`; kernel changes above come only with v6.2 image, so full
 benefit needs reflash. Over v6.0, kernel release string changes from
-`6.1.115-h96` to `6.1.115-h96v58v1`, so moving to it is reflash rather than
+`6.1.115-h96` to `6.1.115-h96v58v1`, so moving to it needs reflash, not
 `apt upgrade`. This build adds three kernel checks (`CONFIG_LOCKUP_DETECTOR`,
 `CONFIG_SOFTLOCKUP_DETECTOR`, `CONFIG_BOOTPARAM_SOFTLOCKUP_PANIC`) that panic kernel on
 stuck CPU, paired with watchdog reset. One device tree node changes, watchdog is
@@ -78,7 +131,7 @@ enabled, and every v6.0 feature and command is retained.
 - **New in v6.2, Steam ARM 1.2 on native route.** Launch handler sets Steam overlay, MangoHud, Godot 4 and Unity renderer per title, with no launch options, and reads title profiles from `/etc/h96/titles.conf`. Graphics forwarding is applied as soon as client downloads its emulation tool, so titles no longer start on CPU renderer after fresh install. New components `desktop-mode`, `icon-bigpicture`, `icon-desktop` and `tray`. Install, re-run and component changes keep installed games. 32-bit titles lose `-vulkan`, start scripts are followed to binary they start, `gl32=off` profile key runs title on emulated x86 Mesa, and Steam overlay buffers left after game sessions are freed. Full list in [CHANGELOG.md](CHANGELOG.md).
 - **New in v6.2, display.** `h96-display detect` builds mode list from connected display, up to 8K; modes wider than 4096 px and FRL tier are listed but untested. HDMI 2.0 tier (340 to 600 MHz, SCDC) is on by default. Modes are picked in KDE System Settings → Display and persist per display. Colour format and range are set per display on command line (`sudo h96-display color rgb|ycbcr|auto`, `range full|limited|auto`), each applied live with 15 s confirm-or-revert. One HDMI output (HDMI0).
 - **New in v6.2, tools.** `h96-leds` steady by default, blinking opt-in. Installed and off by default: `h96-wol`, `h96-cec`, `h96-vm`, `h96-hotspot`. `h96-backup` / `h96-restore` v2.1 restore backups from v5.0.1 and newer. mpv decodes through `rkmpp-copy` and prefers 8-bit VP9 on YouTube; AV1 is excluded.
-- **New in v6.2, audio.** Image ships flat EQ file `/etc/h96/eq/active.txt`; PipeWire 1.6 stops h96 EQ filter chain without it and WirePlumber then stalls. Bluetooth headset microphone is listed at all times (autoswitch), runs mSBC where headset supports it, Bluetooth sinks run 2048-sample cycle and never suspend, BlueZ reconnect policy is set, and `h96-bt-a2dp-heal.service` restores dropped A2DP link. See [docs/BLUETOOTH-AUDIO.md](docs/BLUETOOTH-AUDIO.md).
+- **New in v6.2, audio.** Image includes flat EQ file `/etc/h96/eq/active.txt`; PipeWire 1.6 stops h96 EQ filter chain without it and WirePlumber then stalls. Bluetooth headset microphone is listed at all times (autoswitch), runs mSBC where headset supports it, Bluetooth sinks run 2048-sample cycle and never suspend, BlueZ reconnect policy is set, and `h96-bt-a2dp-heal.service` restores dropped A2DP link. See [docs/BLUETOOTH-AUDIO.md](docs/BLUETOOTH-AUDIO.md).
 - **New in v6.1, Steam installed on demand.** `h96-steam` installs either of two clients and
   downloads nothing until it runs. Native route installs ARM64 client, which runs on
   Mali GPU as ARM program; titles built for x86 run through emulation tool
@@ -105,14 +158,14 @@ enabled, and every v6.0 feature and command is retained.
   hardware of same architecture, so emulation tool updates, ARM64 Proton builds and
   per-title fixes arrive with client updates. VR itself is not part of this box: there is no VR
   runtime or headset support, and launcher removes client's VR argument from
-  streaming client. Emulated route runs x86-64 client under FEX-Emu, with every part of
+  streaming client. Emulated route executes x86-64 client under FEX-Emu, with every part of
   client emulated and its interface software rendered.
 - **New in v6.1, cursor window's power domain.** v6.0 fixed cursor latch in VOP2
   driver. v6.1 fixes second path in same driver, where power domain feeding
   cursor window could be switched off while window still held reference to it, leaving
   pointer moving and clicking with nothing drawn until next reboot. Driver now
-  records reference per window, powers domain on whenever window needs it, and refuses
-  release with no matching reference, reporting it once in kernel log.
+  tracks reference per window, powers domain on each time window needs it, and skips
+  release with no matching reference, logging it once in kernel log.
 - **New in v6.1, two input fixes.** Udev rule unbinds `xpad` from headset interface that
   some third-party Xbox 360 style pads expose, which had made one pad appear as two identical
   joysticks. Second rules file hands pad's `/dev/hidraw` node and `/dev/uinput` to
@@ -131,7 +184,7 @@ enabled, and every v6.0 feature and command is retained.
 - **v6.1 kernel: release `6.1.115-h96v58v1`.** Suffix names board and kernel revision
   number that moves independently of image version, so kernel is identifiable from
   `uname -r` alone. Module set is rebuilt against it with `CONFIG_MODVERSIONS=y`, so
-  module built for v6.0 release is refused rather than loaded. This build adds
+  module built for v6.0 kernel is rejected, not loaded. This build adds
   `CONFIG_LOCKUP_DETECTOR=y`, `CONFIG_SOFTLOCKUP_DETECTOR=y` and
   `CONFIG_BOOTPARAM_SOFTLOCKUP_PANIC=y`: CPU that makes no scheduling progress for 20 seconds is reported
   and kernel panics.
@@ -142,13 +195,13 @@ enabled, and every v6.0 feature and command is retained.
   video and returns on movement, and stays correct after leaving mpv for desktop.
   `/etc/mpv/mpv.conf` uses `cursor-autohide=1000` and `x11-bypass-compositor=never`. Kernel
   Image changes, so moving to v6.0 is reflash.
-- **New in v6.0, `h96-backup` and `h96-restore`.** `h96-backup` captures configured box into
+- **New in v6.0, `h96-backup` and `h96-restore`.** `h96-backup` saves configured box into
   one archive (manifest of installed on-demand features plus passive data that cannot be
   re-downloaded, such as saves, configs and WiFi credentials); `h96-restore` replays it after
-  reflash, reinstalling recorded features and restoring data. `--open` prints
-  installer commands instead of running them; `--dry-run` prints plan and changes nothing;
+  reflash, reinstalling listed features and restoring data. `--open` prints
+  installer commands instead of running them; `--dry-run` lists plan and changes nothing;
   `--force` overwrites configs that are newer on disk (stop desktop session first on
-  fresh image, whose session has already written default configs). Both tools take `--only`
+  fresh image, whose session has already written default configs). Both tools accept `--only`
   and `--skip` category lists and `--emulators`; `h96-backup-gui` presents same choices
   as checkboxes. Steam is not covered: neither tool has Steam category, so Steam clients,
   sign-in, settings and installed games are not in archive. Boxes on v5.0.1 or earlier have no backup tool; migration kit (`h96-migrate-kit.zip` in release) installs same three tools there (`sudo bash install.sh`, `--gui` for window) so box can be captured to USB stick before flash.
@@ -167,7 +220,7 @@ enabled, and every v6.0 feature and command is retained.
   walk kernel structs same way; pass `--traceable-functions` with symbol list from
   `/proc/kallsyms`, since this kernel has no ftrace function list. BTF is data that BPF tools
   read; machine code is same with or without it, and kernel Image grows by 7 MB.
-  Armbian's own rk35xx kernel configuration ships with BTF on. VOP2 cursor fixes are
+  Armbian's own rk35xx kernel configuration has BTF on. VOP2 cursor fixes are
   published as `patch/kernel/h96-vop2-cursor.patch` (v6.0) and
   `patch/kernel/h96-vop2-cursor-pd.patch` (v6.1); see [Building
   image](#building-image-with-armbian-framework).
@@ -176,7 +229,7 @@ enabled, and every v6.0 feature and command is retained.
   `/lib/modules/6.1.115-h96`. Full module set (3110 modules) is built from same
   source and configuration as kernel Image, with `CONFIG_MODVERSIONS=y`: every module
   carries symbol versions, and loader rejects module built against different kernel
-  layout instead of loading it unchecked. Earlier releases shipped module set built against
+  layout instead of loading it unchecked. Earlier releases included module set built against
   pre-PSI configuration; those modules loaded on 6.1.115 kernels because vermagic
   string matched, and only modules in use had been checked by inspection. Bcmdhd
   WiFi module and every other module now carry matching symbol versions, and kernel's
@@ -232,14 +285,14 @@ enabled, and every v6.0 feature and command is retained.
 - **v4.2.1** added `h96` command index: type `h96` for categorized list of every
   command, or `h96 <command>` for its help. **v4.2** was efficiency delta on v4.1:
   faster boot, zram zstd compression, and VM sysctl tuning baked into image.
-- Full image boots to console and does **not** ship KDE pre-installed.
+- Full image boots to console and does **not** include KDE pre-installed.
   Install desktop when you want it through `armbian-config`; first launch of Plasma
   applies H96 desktop settings.
-- Shipped flasher is slim-capable: from full image it can strip to headless
-  (nodesktop), no-GPU, or bare-server build before writing, so one download covers desktop,
+- Included flasher is slim-capable: from full image it can strip to headless
+  (nodesktop), no-GPU, or bare-server image before writing, so one download covers desktop,
   headless, and server use. Free space is reclaimed with `zerofree` after stripping.
 
-These sources cover kernel, device tree, and BSP package image is built from;
+These sources hold kernel, device tree, and BSP package image is built from;
 desktop and headless split is userspace and packaging step and is not selected from this
 repo.
 
@@ -273,8 +326,9 @@ repo.
 > **Note on Ethernet.** Onboard RTL8211F PHY may spend extended time attempting
 > Gigabit auto-negotiation before downshifting to 100Mbps, so link can take minutes
 > to become usable after boot while system itself reaches multi-user in about 7
-> seconds. Kernel logs `Downshift occurred from negotiated speed 1Gbps to actual
-> speed 100Mbps, check cabling!`. Measured at 26 s, 128 s and 190 s across boots on one
+> seconds. Kernel logs
+> `Downshift occurred from negotiated speed 1Gbps to actual speed 100Mbps, check cabling!`.
+> Measured at 26 s, 128 s and 190 s across boots on one
 > unit. **On measured unit, cause was far end, not board:**
 > link partner advertised only 10/100, so board was correctly asking for
 > speed nothing answered. Check what router or switch supports before
@@ -292,7 +346,7 @@ repo.
 
 ## Thermals
 
-Read from `/sys/class/thermal` on shipped image. Trip points are SoC BSP
+Read from `/sys/class/thermal` on published image. Trip points are SoC BSP
 defaults; nothing here changes them.
 
 | Zone                 | Passive trips | Critical |
@@ -315,7 +369,18 @@ load. That is expected for this SoC in this chassis and is not fault.
 
 ## Repository layout
 
+BSP tree under `packages/bsp/h96-max-v58/` holds v6.x sources, and install paths named
+below (`/usr/local/...`) are v6.x and v7.x locations. 8.0 packages install same functions
+under `/usr/bin`, `/usr/sbin`, `/usr/lib/h96`, `/usr/lib/systemd/system` and
+`/usr/lib/udev/rules.d` (see [Armbian 8.0](#armbian-80-beta-not-released)).
+
 ```
+build/
+  build-kernel-debs.sh            8.0: wraps kernel build outputs into h96-kernel-<krel>
+                                  and h96-dtb-<krel> (payload /usr/lib/h96-kernel/<krel>,
+                                  modules /usr/lib/modules/<krel>, nothing under /boot)
+dtb/pinned/                       8.0: vendor base DTB, v7.2 reference DTB, SHA256SUMS
+                                  (CI tree-diff inputs)
 config/
   boards/h96-max-v58.tvb          Armbian board file (TV-box class): BOOT_FDT_FILE, u-boot
                                   config, kernel source pin, kernel config hook
@@ -335,6 +400,8 @@ patch/
                                   WiFi (bcmdhd, brcmfmac ids), SDIO rescan hook,
                                   HDMI PHY clock name, xpad 8BitDo
   overlays/h96-max-v58-gpio-ir.dts  IR receiver overlay (gpio-ir-receiver)
+  dt/h96-max-v58.dtso             8.0: board changes as one overlay on vendor base DTB
+  dt/h96-max-v58.delete           8.0: four property deletions overlay cannot express
 packages/
   bsp/h96-max-v58/
     src/h96-vfd.c                 front-panel VFD daemon source (+ Makefile)
@@ -393,7 +460,8 @@ packages/
                                   and h96-transcode-server
     systemd/system.conf.d/zz-h96-watchdog.conf  v6.1 RuntimeWatchdogSec=30s
                                   (install to /etc/systemd/system.conf.d/)
-    tools/                        userspace tools installed to /usr/local/bin|sbin:
+    tools/                        userspace tools (v6.x and v7.x: /usr/local/bin|sbin;
+                                  8.0 packages: /usr/bin|sbin):
                                   h96 (command index), h96-perf, h96-npu, h96-encode,
                                   h96-upscale, h96-npu-setup, h96-npu-upscale(-setup),
                                   h96-subtitles(-setup), scrumptop, h96-display,
@@ -407,10 +475,12 @@ packages/
                                   h96-transcode-server, h96-xpad-dedup (/usr/local/sbin/)
     tools/h96-steam               v6.1 Steam installer front end (native installer 1.2
                                   since v6.2); installers in
-                                  lib/steam/ (installed to /usr/local/lib/h96/steam/)
+                                  lib/steam/ (installed to /usr/local/lib/h96/steam/;
+                                  8.0: steam-arm-setup package, links in /usr/lib/h96/steam/)
     lib/                          shared banner library, EDID mode picker, subtitle
                                   renderer, h96-bt-agent, h96-bt-loopback, h96-cecd,
-                                  display-wake daemon (installed under /usr/local/lib/h96/)
+                                  display-wake daemon (installed under /usr/local/lib/h96/;
+                                  8.0: /usr/lib/h96/)
     udev/99-h96-dma-heap.rules    DMA-heap group/mode rule (hardware video decode
                                   for non-root users; see CHANGELOG v4.0)
     udev/97-h96-display-wake.rules  HDMI re-drive check after hotplug
@@ -447,7 +517,15 @@ packages/
     skel/wireplumber-default-nodes  [/etc/skel/.local/state/wireplumber/default-nodes]
     mpv/mpv.conf                  base mpv config [/etc/mpv/mpv.conf]
     udev/70-h96-pinhole.rules     desktop ignores pinhole button
+tools/
+  h96-selftest.py                 8.0: read-only health checks (boot, hw, invariants, report)
+  dtb/build-dtb.sh, dt-tree-diff.sh, gate/  8.0: overlay DTB build and tree-diff gate
+  docs/check-docs.py, strip-articles.py     docs style gates (CI)
+  ci/kernel-debs-smoke.sh         CI: placeholder kernel debs for lintian
+.github/workflows/ci.yml          CI on GitHub-hosted arm64 runners
 docs/
+  ARMBIAN-8.0-PLAN.md             8.0 scope, work package status, milestones
+  CI.md                           CI jobs, gates, local run
   DEVICE-TREE-CHANGES.md          every DT change vs stock vendor DTB, explained
   BLUETOOTH-AUDIO.md              Bluetooth audio, headset microphone, codecs, manual install
   MEDIA-FEATURES.md               media suite and USB controllers
@@ -461,15 +539,33 @@ CHANGELOG.md  CREDITS.md  LICENSE
 These sources plug into standard [Armbian build system](https://github.com/armbian/build).
 Device tree carries hardware enablement; rest is board config + BSP.
 
-> **Released images are NOT built by these steps.** Shipped `.img` files are rootless
+> **Released images are NOT built by these steps.** Published `.img` files are rootless
 > delta on known-good ophub RK3588 6.1.x BSP base image (Rock 5B lineage, adapted to
 > H96 NVR-DEMO DTB), and v6.0 kernel was built outside framework from source,
-> config and patches published here. Steps below build bare Armbian board from
+> config and patches in this repository. Steps below produce bare Armbian board from
 > framework: booting console with working peripherals, but WITHOUT `h96-*` userspace
 > layer (GPU staging, VPU/NPU setup, Bluetooth stack, media tools, display/EDID handling).
-> No `compile.sh` invocation reproduces release image. Build from source to change
+> No `compile.sh` invocation gives same image as release. Build from source to change
 > kernel or DTB; flash release to run box. These steps were written against
-> framework source at time of writing and have not been run end to end by us.
+> framework source at time of writing and have not been run end to end by author.
+
+**8.0 kernel.** 8.0 beta kernel `6.1.172-h96v58-8.0` is built from Rockchip `rk-6.1-rkr7.2`
+plus H96 patch series in pinned container (GCC 16.1.0), outside framework. That series is
+not published here yet, so steps below reproduce v6.2 kernel, not 8.0 kernel.
+`build/build-kernel-debs.sh` packages kernel build outputs:
+
+```bash
+MAINT='Name <email>' IMAGE=Image SYSMAP=System.map CONFIG=config MODTAR=modules.tar.gz DTB=board.dtb \
+    build/build-kernel-debs.sh out
+```
+
+Result: `h96-kernel-<krel>` (Image, System.map and config in `/usr/lib/h96-kernel/<krel>/`,
+modules in `/usr/lib/modules/<krel>/`) and `h96-dtb-<krel>` (DTB in
+`/usr/lib/h96-kernel/<krel>/dtb/`). Neither package writes `/boot`; image build stages boot files.
+Inputs and `MAINT` have no defaults; `PIN=1` (default) checks each input against sha256 of
+8.0 build outputs. Optional `KCFLAGS` names compiler flags of kernel build; kernel package
+changelog records it, and output stays byte-identical while it is unset. Value other than
+pinned build value (`KCFLAGS_PIN`) needs `PIN=0` and `PKGVER` above default. Details: [docs/ARMBIAN-8.0-PLAN.md](docs/ARMBIAN-8.0-PLAN.md).
 
 **What v6.1 kernel is.** Source `armbian/linux-rockchip`, branch `rk-6.1-rkr5.1`, commit
 `95e85f6cb496c75807c5b16f158853578e7e7d1b`, plus three plain `-p1` diffs against that commit:
@@ -485,7 +581,7 @@ turns off (`SLUB_DEBUG`, `SCHEDSTATS`). This build also turns on `CONFIG_LOCKUP_
 scheduling for 20 seconds is reported and kernel panics.
 
 **Build `BRANCH=vendor`, not `edge`.** On rockchip-rk3588 family `edge` resolves to
-rolling mainline (7.2+), which ships NO RK3588 vendor drivers: board reaches console
+rolling mainline (7.2+), which carries NO RK3588 vendor drivers: board reaches console
 with no GPU, no hardware video, no HDMI on this BSP, dead onboard WiFi/BT (issue #5).
 `vendor` selects rk-6.1 BSP kernel (LINUXFAMILY `rk35xx`) that knows this SoC.
 Family file tracks newer rk-6.1 branch (`rk-6.1-rkr7.2` at time of writing); board
@@ -539,13 +635,13 @@ cp  /path/to/this-repo/config/linux-rk35xx-vendor.config  userpatches/config/ker
               BUILD_DESKTOP=yes  BUILD_MINIMAL=no  KERNEL_CONFIGURE=no
 ```
 
-Output image lands in `output/images/`. It boots bare 6.1 board; `h96-*` tooling is
+Output image lands in `output/images/`. It boots minimal 6.1 board; `h96-*` tooling is
 separate userspace delta releases carry, not part of this build.
 
 **What framework changes on top of config.** Framework's own
 `armbian_kernel_config__*` hooks (`lib/functions/compilation/armbian-kernel.sh`) rewrite
-parts of any user-supplied `.config` before build: they set `CONFIG_LOCALVERSION` to
-empty string, force `CONFIG_RT_GROUP_SCHED=y` for Docker, and turn BTF debug information on (`CONFIG_DEBUG_INFO`, `CONFIG_DEBUG_INFO_BTF`), which shipped configuration also carries, along with
+parts of any user-supplied `.config` before compiling: they set `CONFIG_LOCALVERSION` to
+empty string, force `CONFIG_RT_GROUP_SCHED=y` for Docker, and turn BTF debug information on (`CONFIG_DEBUG_INFO`, `CONFIG_DEBUG_INFO_BTF`), which published configuration also carries, along with
 zram, nftables, filesystem and container options that vendor config already carries.
 Board file's `custom_kernel_config` hook runs after them and restores v6.2 values
 (`CONFIG_LOCALVERSION="-h96v58v2"`, `CONFIG_RT_GROUP_SCHED=n`, `CONFIG_MODVERSIONS=y`,
@@ -569,8 +665,8 @@ explicitly.
 `drivers/gpu/drm/rockchip/rockchip_drm_vop2.c`: it re-asserts hardware cursor window on
 each video-port latch so cursor stays visible under continuous GPU compositing.
 `patch/kernel/h96-vop2-cursor-pd.patch` is v6.1 change to same file: window
-records whether it holds reference to its power domain, domain is powered on whenever
-window needs it, and unbalanced release is refused and reported once in kernel log.
+notes whether it holds reference to its power domain, domain is powered on each time
+window needs it, and driver skips unbalanced release, logging it once in kernel log.
 `patch/kernel/h96-board-support.patch` carries board support every release has had:
 BCM43752 ids for `brcmfmac`, two `bcmdhd` log-prefix lines, SDIO rescan hook in `dw_mmc`
 and `rfkill-wlan`, HDMI PHY clock name, and 8BitDo entries in `xpad`. Both are
@@ -582,7 +678,9 @@ boot, force mode: add `video=HDMI-A-1:1280x720@60e` to `extraargs=` line in
 > stock Android vendor DTB, edited for open-GPU Armbian (hence
 > `rockchip,rk3588-nvr-demo-v10-android` compatible and numeric phandles). File is
 > decompile of `rk3588-h96-max-v58-panthor.dtb`, DTB v6.2 image boots (`fdtfile=` in
-> `/boot/armbianEnv.txt`), and recompiles to same tree. `docs/DEVICE-TREE-CHANGES.md`
+> `/boot/armbianEnv.txt`), and recompiles to same tree. 8.0 builds same DTB name from
+> vendor base plus `patch/dt/h96-max-v58.dtso`; tree diff against v7.2 DTB differs only
+> in renumbered phandles and two new labels. `docs/DEVICE-TREE-CHANGES.md`
 > documents every change so it can be re-applied onto mainline `rk3588.dtsi` for
 > from-scratch DTS. BSP tools that edit device tree (`h96-undervolt`,
 > `h96-undervolt-trial.service`) use `-panthor` path, so keep that DTB name.
@@ -638,17 +736,65 @@ ir-keytable -p nec -t  # press buttons -> scancodes
 
 For KDE/GNOME to composite on GPU (not fall back to software `llvmpipe`),
 append `packages/bsp/h96-max-v58/environment.d-h96-gpu.conf` to `/etc/environment`.
-Do **not** install `libmali` blob packages: they shadow Mesa's EGL/Vulkan.
+Do **not** install `libmali` blob packages: they shadow Mesa's EGL/Vulkan. 8.0 removes
+`libmali` from image and offline repository; Mesa (Panfrost GL, PanVK Vulkan) is only GPU
+driver stack.
+
+8.0 image boots to console. KDE Plasma installs on demand through `armbian-config` and
+runs on X11 with LightDM; Wayland is not used, since it breaks GPU compositing and mpv on
+this BSP.
 
 ---
 
 ## Flashing
 
-RK3588 flashes over USB with **`rkdeveloptool`** in Maskrom mode (hold
-recessed reset pinhole, rear panel, in gap between two WiFi antenna
-posts, while connecting USB), or with Rockchip's RKDevTool GUI on
-Windows. Write Armbian image (`.img`) to eMMC. This is standard RK3588
-procedure and is not specific to this repo.
+Flashing erases eMMC. Back up box data first (`h96-backup`). Needed: Linux host with `rkdeveloptool`, USB-A to USB-A data cable,
+`MiniLoaderAll.bin` and image from release download.
+
+1. Check archive before decompressing, then decompress and check image:
+
+   ```bash
+   sha256sum -c --ignore-missing SHA256SUMS       # .img.xz line OK
+   xz -dk H96-MAX-V58_Unofficial-Armbian_<version>.img.xz
+   sha256sum -c SHA256SUMS                        # .img.xz and .img lines OK
+   ```
+
+2. Enter Loader mode. Box running Armbian: `sudo reboot loader` over SSH. Box without
+   working system: unplug power and USB, hold recessed pinhole button (rear panel, gap
+   between two WiFi antenna posts) while plugging cable into black USB2 port, release
+   after about 3 s. Loader gadget (VID 2207) appears on that port only.
+
+3. Erase and switch to Maskrom. Loader mode refuses `db`, so from Loader:
+
+   ```bash
+   rkdeveloptool ld                               # Loader
+   rkdeveloptool ef
+   rkdeveloptool rd
+   sleep 5
+   rkdeveloptool ld                               # Maskrom
+   ```
+
+   Pinhole start already in Maskrom skips `ef` and `rd`.
+
+4. Write image, read it back and compare before reset:
+
+   ```bash
+   rkdeveloptool db MiniLoaderAll.bin
+   rkdeveloptool wl 0 H96-MAX-V58_Unofficial-Armbian_<version>.img
+   rkdeveloptool rl 0 <sectors> readback.img      # sectors = image size in bytes / 512
+   sha256sum readback.img                         # equal to .img line in SHA256SUMS
+   rkdeveloptool rd
+   ```
+
+   On failed `db` or `wl`, or on read-back mismatch, do not reset: wait for Maskrom,
+   repeat `db` and `wl`, read back again. Delete `readback.img` after match. Never
+   interrupt `wl` once it starts.
+
+5. First boot shows console on HDMI (`root` / `1234`); first-boot setup runs before SSH
+   answers. 8.0 beta reboots once on its own; v7.2 rebooted twice. After reboot, network
+   can take minutes (DHCP, Gigabit negotiation) and DHCP address can change.
+
+Windows hosts can use Rockchip's RKDevTool GUI instead of `rkdeveloptool`.
 
 ---
 
@@ -659,4 +805,4 @@ Armbian, Linux kernel, Rockchip's BSP, Panthor, and Mesa.
 
 ---
 
-This project is not affiliated with, endorsed by or sponsored by Valve Corporation. Steam, Proton, Steam Deck and Steam Frame are trademarks of Valve Corporation. No Valve artwork ships in image.
+This project is not affiliated with, endorsed by or sponsored by Valve Corporation. Steam, Proton, Steam Deck and Steam Frame are trademarks of Valve Corporation. Image contains no Valve artwork.

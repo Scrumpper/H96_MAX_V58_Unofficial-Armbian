@@ -11,6 +11,14 @@ differ from stock DTB.
 If you prefer mainline-style DTS, same nodes can be applied on top of
 mainline `rk3588.dtsi`; values here are reference.
 
+8.0 compiles board DTB from overlay source instead of edited decompile:
+`tools/dtb/build-dtb.sh` applies `patch/dt/h96-max-v58.delete` (four property deletions)
+and `patch/dt/h96-max-v58.dtso` (board changes below as one overlay) to vendor base DTB
+(`dtb/pinned/rk3588-h96-max-v58.dtb`). `tools/dtb/dt-tree-diff.sh` compares result with
+v7.2 DTB (`dtb/pinned/rk3588-h96-max-v58-panthor.dtb`); residual is two renumbered
+phandles and two new `__symbols__` labels. `h96-dtb-<krel>` package stages DTB in
+`/usr/lib/h96-kernel/<krel>/dtb/`; image build copies it into `/boot/dtb/`.
+
 ## 1. Open Mali GPU (Panthor)
 - **`gpu-supply`** wired to GPU power domain / regulator so GPU rail is
   powered at bind (without it first GL job hangs with TF-A SError).
@@ -39,21 +47,21 @@ nothing with Ethernet (they run simultaneously):
   has no analog audio out; leaving them enabled prints codec errors at boot.
 - **`serial@febc0000`**: `dmas` dropped (Bluetooth UART stays functional;
   DMA channel reference produced noise).
-- Kernel log level pinned low: `loglevel=3`, `printk = 3 4 1 7`.
+- Kernel log verbosity pinned low: `loglevel=3`, `printk = 3 4 1 7`.
 
 ## 5. IR receiver (overlay, not baked)
-IR is shipped as **separate overlay** (`patch/overlays/h96-max-v58-gpio-ir.dts`)
+IR is provided as **separate overlay** (`patch/overlays/h96-max-v58-gpio-ir.dts`)
 rather than in base DTS, so remotes can be learned in userspace with
 `ir-keytable` and no per-remote DTB rebuild. It switches pin from vendor
 `remotectl`/PWM3 driver to mainline `gpio-ir-receiver` on **GPIO0_D4**.
 
 ## 6. HDMI EDID: why this is NOT device-tree change
 
-Worth recording as negative result, because it looks like device-tree problem and is not.
+Worth recording as negative result, because it resembles device-tree problem and is not.
 
 HDMI EDID read on this board never succeeds. `/sys/class/drm/card*-HDMI-A-1/edid` reads
-back zero bytes and kernel logs `i2c read time out!` 18 times on every boot before
-giving up, costing about 1.8 seconds of 7.99 second startup.
+back zero bytes and kernel logs `i2c read time out!` 18 times on every boot ahead of
+giving up, costing about 1.8 seconds of 7.99 second boot time.
 
 Obvious fix would be to point HDMI node at right i2c bus with `ddc-i2c-bus`
 property. **That property does not exist on this node.** `dw-hdmi-qp` uses internal DDC
@@ -67,7 +75,7 @@ So fix is kernel boot argument instead, added to `extraargs` in
 drm.edid_firmware=HDMI-A-1:edid/h96-1080p-audio.bin
 ```
 
-**Use 256-byte EDID shipped in this repo at
+**Use 256-byte EDID included in this repo at
 `packages/bsp/h96-max-v58/edid/h96-1080p-audio.bin`, not one of kernel's
 built-in blobs.** All of those are 128 bytes with no CTA/CEA extension block, and
 sink presenting no CTA block is treated as DVI, which disables HDMI audio entirely
@@ -75,7 +83,7 @@ while leaving video working. See CHANGELOG.md under v3.4.
 
 `edid/1920x1080.bin` is one of EDID blobs compiled into kernel
 (`drivers/gpu/drm/drm_edid_load.c`), so nothing is loaded from disk and there is no root
-filesystem or initramfs dependency. Kernel confirms which path it took by logging
+filesystem or initramfs dependency. Kernel shows which path it took by logging
 `Got built-in EDID` rather than `external`. Retries drop from 18 to 1 and kernel startup
 time drops from 4.26s to 2.58s.
 

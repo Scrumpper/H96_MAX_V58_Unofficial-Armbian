@@ -1,0 +1,259 @@
+// SPDX-License-Identifier: (GPL-2.0+ OR MIT)
+/*
+ * H96 Max V58 board changes as one device-tree overlay.
+ *
+ * Base: Android vendor NVR-DEMO-V10 DTB (rockchip,rk3588-nvr-demo-v10-android),
+ * included in image as dtb/rockchip/rk3588-h96-max-v58.dtb.
+ * Result: rk3588-h96-max-v58-panthor.dtb (DTB image boots).
+ *
+ * Targets are base __symbols__ labels or root paths (&{/}, &{/aliases}).
+ * Full vendor arrays (cru assigned-clock-rates, pcie2x1l0 reg and ranges)
+ * and numeric CRU clock ids tie overlay to vendor base. Four property
+ * deletions cannot be expressed in overlay; they live in h96-max-v58.delete
+ * and run before fdtoverlay (tools/dtb/build-dtb.sh).
+ *
+ * Build: dtc -@ -I dts -O dtb -o h96-max-v58.dtbo h96-max-v58.dtso
+ */
+/dts-v1/;
+/plugin/;
+
+/* Model string (v7.x chain step "model name"). */
+&{/} {
+	model = "H96 Max V58";
+};
+
+/* DEVICE-TREE-CHANGES section 1: open Mali GPU (Panthor binding). */
+&gpu {
+	compatible = "rockchip,rk3588-mali", "arm,mali-valhall-csf";
+	clocks = <&cru 0x114>, <&cru 0x115>, <&cru 0x116>;
+	clock-names = "core", "coregroup", "stacks";
+	interrupts = <0x00 0x5c 0x04>, <0x00 0x5d 0x04>, <0x00 0x5e 0x04>;
+	interrupt-names = "job", "mmu", "gpu";
+	operating-points-v2 = <&gpu_panthor_opp_table>;
+
+	/* Label differs from vendor gpu_opp_table, which names unused /gpu-opp-table. */
+	gpu_panthor_opp_table: opp-table {
+		compatible = "operating-points-v2";
+
+		opp-300000000 {
+			opp-hz = /bits/ 64 <300000000>;
+			opp-microvolt = <675000 675000 850000>;
+		};
+		opp-400000000 {
+			opp-hz = /bits/ 64 <400000000>;
+			opp-microvolt = <675000 675000 850000>;
+		};
+		opp-500000000 {
+			opp-hz = /bits/ 64 <500000000>;
+			opp-microvolt = <675000 675000 850000>;
+		};
+		opp-600000000 {
+			opp-hz = /bits/ 64 <600000000>;
+			opp-microvolt = <675000 675000 850000>;
+		};
+		opp-700000000 {
+			opp-hz = /bits/ 64 <700000000>;
+			opp-microvolt = <700000 700000 850000>;
+		};
+		opp-800000000 {
+			opp-hz = /bits/ 64 <800000000>;
+			opp-microvolt = <750000 750000 850000>;
+		};
+		opp-900000000 {
+			opp-hz = /bits/ 64 <900000000>;
+			opp-microvolt = <800000 800000 850000>;
+		};
+		opp-1000000000 {
+			opp-hz = /bits/ 64 <1000000000>;
+			opp-microvolt = <850000 850000 850000>;
+		};
+	};
+};
+
+/* Section 1: GPU rail powered at power-domain bind. */
+&power {
+	gpu-supply = <&vdd_gpu_s0>;
+};
+
+/* Section 1: NPLL 4 GHz (third assigned clock) for 1000 MHz GPU point. */
+&cru {
+	assigned-clock-rates = <1100000000 786432000 4000000000 1188000000
+				702000000 400000000 500000000 800000000
+				100000000 400000000 100000000 200000000
+				500000000 375000000 150000000 200000000>;
+};
+
+/* Section 2: hardware cursor plane on VP0. */
+&vp0 {
+	cursor-win-id = <0>;
+};
+
+/* Section 3: onboard WiFi on PCIe (pcie2x1l0), vestigial SDIO off. */
+&pcie2x1l0 {
+	reg = <0x00 0xfe170000 0x00 0x10000>,
+	      <0x0a 0x40800000 0x00 0x400000>,
+	      <0x00 0xf2000000 0x00 0x100000>;
+	reg-names = "pcie-apb", "pcie-dbi", "config";
+	ranges = <0x81000000 0x00 0xf2100000 0x00 0xf2100000 0x00 0x100000>,
+		 <0x82000000 0x00 0xf2200000 0x00 0xf2200000 0x00 0xe00000>,
+		 <0xc3000000 0x09 0x80000000 0x09 0x80000000 0x00 0x40000000>;
+	vpcie3v3-supply = <&vcc3v3_pcie30>;
+	status = "okay";
+};
+
+&vcc3v3_pcie30 {
+	regulator-always-on;
+	regulator-boot-on;
+	status = "okay";
+};
+
+&gpio0 {
+	wl_reg_on_hog {
+		gpio-hog;
+		gpios = <20 0>;
+		line-name = "wl_reg_on";
+		output-high;
+	};
+};
+
+&sdio {
+	status = "disabled";
+};
+
+/* Section 4: no analog audio on this board. */
+&es8311 {
+	status = "disabled";
+};
+
+&i2s0_sound {
+	status = "disabled";
+};
+
+/* Section 4: uart9 "dmas" removed by h96-max-v58.delete. */
+
+/* Section 8: DesignWare watchdog (v6.1). */
+&wdt {
+	status = "okay";
+};
+
+/* Section 9: HDMI CEC, HDMI I2S path, GPIO DDC bus (v6.2). */
+&hdmi0 {
+	cec-enable;
+	ddc-i2c-bus = <&i2c_ddc>;
+	pinctrl-0 = <&hdmim0_tx0_cec &hdmim0_tx0_hpd>;
+};
+
+&i2s5_8ch {
+	rockchip,hdmi-path;
+};
+
+&{/} {
+	i2c_ddc: i2c-ddc {
+		compatible = "i2c-gpio";
+		#address-cells = <1>;
+		#size-cells = <0>;
+		sda-gpios = <&gpio4 16 6>;	/* GPIO_ACTIVE_HIGH | GPIO_OPEN_DRAIN */
+		scl-gpios = <&gpio4 15 6>;
+		i2c-gpio,delay-us = <5>;
+		status = "okay";
+	};
+};
+
+&{/aliases} {
+	i2c10 = "/i2c-ddc";
+};
+
+/* v7.x chain step "cpu-idle-low-opp": cpu-sleep idle state on, low OPPs. */
+&CPU_SLEEP {
+	status = "okay";
+};
+
+&cluster0_opp_table {
+	opp-408000000 {
+		opp-supported-hw = <0xff 0xffff>;
+		opp-hz = /bits/ 64 <408000000>;
+		opp-microvolt = <675000 675000 950000>, <675000 675000 950000>;
+		clock-latency-ns = <40000>;
+	};
+	opp-600000000 {
+		opp-supported-hw = <0xff 0xffff>;
+		opp-hz = /bits/ 64 <600000000>;
+		opp-microvolt = <675000 675000 950000>, <675000 675000 950000>;
+		clock-latency-ns = <40000>;
+	};
+	opp-816000000 {
+		opp-supported-hw = <0xff 0xffff>;
+		opp-hz = /bits/ 64 <816000000>;
+		opp-microvolt = <675000 675000 950000>, <675000 675000 950000>;
+		clock-latency-ns = <40000>;
+	};
+	opp-1008000000 {
+		opp-supported-hw = <0xff 0xffff>;
+		opp-hz = /bits/ 64 <1008000000>;
+		opp-microvolt = <675000 675000 950000>, <675000 675000 950000>;
+		clock-latency-ns = <40000>;
+	};
+};
+
+&cluster1_opp_table {
+	opp-408000000 {
+		opp-supported-hw = <0xff 0xffff>;
+		opp-hz = /bits/ 64 <408000000>;
+		opp-microvolt = <675000 675000 1000000>, <675000 675000 1000000>;
+		clock-latency-ns = <40000>;
+	};
+	opp-600000000 {
+		opp-supported-hw = <0xff 0xffff>;
+		opp-hz = /bits/ 64 <600000000>;
+		opp-microvolt = <675000 675000 1000000>, <675000 675000 1000000>;
+		clock-latency-ns = <40000>;
+	};
+	opp-816000000 {
+		opp-supported-hw = <0xff 0xffff>;
+		opp-hz = /bits/ 64 <816000000>;
+		opp-microvolt = <675000 675000 1000000>, <675000 675000 1000000>;
+		clock-latency-ns = <40000>;
+	};
+	opp-1008000000 {
+		opp-supported-hw = <0xff 0xffff>;
+		opp-hz = /bits/ 64 <1008000000>;
+		opp-microvolt = <675000 675000 1000000>, <675000 675000 1000000>;
+		clock-latency-ns = <40000>;
+	};
+};
+
+&cluster2_opp_table {
+	opp-408000000 {
+		opp-supported-hw = <0xff 0xffff>;
+		opp-hz = /bits/ 64 <408000000>;
+		opp-microvolt = <675000 675000 1000000>, <675000 675000 1000000>;
+		clock-latency-ns = <40000>;
+	};
+	opp-600000000 {
+		opp-supported-hw = <0xff 0xffff>;
+		opp-hz = /bits/ 64 <600000000>;
+		opp-microvolt = <675000 675000 1000000>, <675000 675000 1000000>;
+		clock-latency-ns = <40000>;
+	};
+	opp-816000000 {
+		opp-supported-hw = <0xff 0xffff>;
+		opp-hz = /bits/ 64 <816000000>;
+		opp-microvolt = <675000 675000 1000000>, <675000 675000 1000000>;
+		clock-latency-ns = <40000>;
+	};
+	opp-1008000000 {
+		opp-supported-hw = <0xff 0xffff>;
+		opp-hz = /bits/ 64 <1008000000>;
+		opp-microvolt = <675000 675000 1000000>, <675000 675000 1000000>;
+		clock-latency-ns = <40000>;
+	};
+};
+
+/* v7.x chain step "av1d": AV1 decoder and its IOMMU. */
+&av1d {
+	status = "okay";
+};
+
+&av1d_mmu {
+	compatible = "rockchip,iommu-av1d";
+};

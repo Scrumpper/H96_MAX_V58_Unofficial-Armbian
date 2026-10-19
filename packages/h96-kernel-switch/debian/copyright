@@ -1,0 +1,9 @@
+Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
+Upstream-Name: h96-kernel-switch
+
+Files: *
+Copyright: 2025-2026 H96 MAX V58 Unofficial Armbian project
+License: GPL-2.0-only
+
+License: GPL-2.0-only
+ On Debian systems full text is in /usr/share/common-licenses/GPL-2.
