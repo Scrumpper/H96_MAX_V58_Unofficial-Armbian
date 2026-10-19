@@ -3,7 +3,8 @@
 # Builds h96-kernel-<krel> and h96-dtb-<krel> debs from pinned kernel build outputs.
 # Payload stages into /usr/lib/h96-kernel/<krel>/ and /usr/lib/modules/<krel>/; nothing under /boot.
 # Usage: MAINT='Name <email>' IMAGE=.. SYSMAP=.. CONFIG=.. MODTAR=.. DTB=.. build-kernel-debs.sh [OUTDIR]
-# KCFLAGS: flags the kernel was compiled with; recorded in kernel package changelog only, unset changes nothing.
+# KCFLAGS: flags the kernel was compiled with; recorded in kernel package changelog only. Value other than
+# KCFLAGS_PIN needs PIN=0 and PKGVER other than default, so pinned version never gets second content.
 # Re-runnable; output depends only on inputs and SOURCE_DATE_EPOCH.
 set -euo pipefail
 
@@ -11,14 +12,18 @@ KREL=${KREL:-6.1.172-h96v58-8.0}
 # default versions belong to pinned inputs and maintainer scripts below; new content needs a new version
 # kernel and DTB debs carry own versions (DTB content changes less often). Explicit PKGVER sets both.
 [ -z "${PKGVER:-}" ] || DTB_PKGVER=${DTB_PKGVER:-$PKGVER}
-PKGVER=${PKGVER:-8.0.0~r11}
+PKGVER_DEF=8.0.0~r11
+PKGVER_GIVEN=${PKGVER:-}
+PKGVER=${PKGVER:-$PKGVER_DEF}
 DTB_PKGVER=${DTB_PKGVER:-8.0.0~r10}
 MODPREFIX=${MODPREFIX:-/usr/lib/modules}
 STAGEPREFIX=/usr/lib/h96-kernel
 FDTFILE=${FDTFILE:-rockchip/rk3588-h96-max-v58-panthor.dtb}
 # Maintainer field; required, no default
 MAINT=${MAINT:-}
-KCFLAGS=${KCFLAGS:-}
+# KCFLAGS of pinned Image build; other KCFLAGS mean new content (PIN=0, own PKGVER)
+KCFLAGS_PIN=""
+KCFLAGS=${KCFLAGS:-$KCFLAGS_PIN}
 export SOURCE_DATE_EPOCH=${SOURCE_DATE_EPOCH:-1791244800}
 
 # inputs: kernel Image, System.map, .config, modules tarball (<krel>/kernel/...), board DTB
@@ -62,6 +67,10 @@ case "$KREL" in ''|*/*|*..*) die "bad KREL: $KREL";; esac
 case "$FDTFILE" in ''|/*|*..*) die "bad FDTFILE: $FDTFILE";; esac
 case "$MODPREFIX" in ''|[!/]*|*..*) die "bad MODPREFIX: $MODPREFIX";; esac
 case "$KCFLAGS" in *[!-A-Za-z0-9=.,+_\ ]*) die "KCFLAGS has characters outside [-A-Za-z0-9=.,+_ ]: $KCFLAGS";; esac
+if [ "$KCFLAGS" != "$KCFLAGS_PIN" ]; then
+    [ "$PIN" = 0 ] || die "KCFLAGS '$KCFLAGS' differs from pinned build '$KCFLAGS_PIN': set PIN=0 and new PKGVER"
+    [ -n "$PKGVER_GIVEN" ] && [ "$PKGVER" != "$PKGVER_DEF" ] || die "KCFLAGS '$KCFLAGS' needs explicit PKGVER other than $PKGVER_DEF"
+fi
 case "$MAINT" in
     '') die "set MAINT='Name <email>'";;
     *' <'*@*'>') ;;
