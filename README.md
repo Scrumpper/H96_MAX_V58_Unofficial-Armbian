@@ -563,7 +563,8 @@ Result: `h96-kernel-<krel>` (Image, System.map and config in `/usr/lib/h96-kerne
 modules in `/usr/lib/modules/<krel>/`) and `h96-dtb-<krel>` (DTB in
 `/usr/lib/h96-kernel/<krel>/dtb/`). Neither package writes `/boot`; image build stages boot files.
 Inputs and `MAINT` have no defaults; `PIN=1` (default) checks each input against sha256 of
-8.0 build outputs. Details: [docs/ARMBIAN-8.0-PLAN.md](docs/ARMBIAN-8.0-PLAN.md).
+8.0 build outputs. Optional `KCFLAGS` names compiler flags of kernel build; kernel package
+changelog records it, and output stays byte-identical while it is unset. Details: [docs/ARMBIAN-8.0-PLAN.md](docs/ARMBIAN-8.0-PLAN.md).
 
 **What v6.1 kernel is.** Source `armbian/linux-rockchip`, branch `rk-6.1-rkr5.1`, commit
 `95e85f6cb496c75807c5b16f158853578e7e7d1b`, plus three plain `-p1` diffs against that commit:

@@ -3,6 +3,7 @@
 # Builds h96-kernel-<krel> and h96-dtb-<krel> debs from pinned kernel build outputs.
 # Payload stages into /usr/lib/h96-kernel/<krel>/ and /usr/lib/modules/<krel>/; nothing under /boot.
 # Usage: MAINT='Name <email>' IMAGE=.. SYSMAP=.. CONFIG=.. MODTAR=.. DTB=.. build-kernel-debs.sh [OUTDIR]
+# KCFLAGS: flags the kernel was compiled with; recorded in kernel package changelog only, unset changes nothing.
 # Re-runnable; output depends only on inputs and SOURCE_DATE_EPOCH.
 set -euo pipefail
 
@@ -17,6 +18,7 @@ STAGEPREFIX=/usr/lib/h96-kernel
 FDTFILE=${FDTFILE:-rockchip/rk3588-h96-max-v58-panthor.dtb}
 # Maintainer field; required, no default
 MAINT=${MAINT:-}
+KCFLAGS=${KCFLAGS:-}
 export SOURCE_DATE_EPOCH=${SOURCE_DATE_EPOCH:-1791244800}
 
 # inputs: kernel Image, System.map, .config, modules tarball (<krel>/kernel/...), board DTB
@@ -59,6 +61,7 @@ command -v dpkg-deb >/dev/null || die "dpkg-deb missing"
 case "$KREL" in ''|*/*|*..*) die "bad KREL: $KREL";; esac
 case "$FDTFILE" in ''|/*|*..*) die "bad FDTFILE: $FDTFILE";; esac
 case "$MODPREFIX" in ''|[!/]*|*..*) die "bad MODPREFIX: $MODPREFIX";; esac
+case "$KCFLAGS" in *[!-A-Za-z0-9=.,+_\ ]*) die "KCFLAGS has characters outside [-A-Za-z0-9=.,+_ ]: $KCFLAGS";; esac
 case "$MAINT" in
     '') die "set MAINT='Name <email>'";;
     *' <'*@*'>') ;;
@@ -100,8 +103,11 @@ EOF
     # native version (no Debian revision) takes changelog.gz
     local cl=changelog.gz
     case "$3" in *-*) cl=changelog.Debian.gz;; esac
-    printf '%s (%s) unstable; urgency=medium\n\n  * Kernel %s, staged files only.\n\n -- %s  %s\n' \
-        "$1" "$3" "$KREL" "$MAINT" "$(date -u -R -d "@$SOURCE_DATE_EPOCH")" \
+    # KCFLAGS line in kernel package only; DTB package stays byte-equal
+    local kc=""
+    [ -z "$KCFLAGS" ] || [ "$1" != "$KPKG" ] || kc="  * Kernel compiled with KCFLAGS: $KCFLAGS\n"
+    printf '%s (%s) unstable; urgency=medium\n\n  * Kernel %s, staged files only.\n%b\n -- %s  %s\n' \
+        "$1" "$3" "$KREL" "$kc" "$MAINT" "$(date -u -R -d "@$SOURCE_DATE_EPOCH")" \
         | gzip -9n > "$d/$cl"
 }
 
