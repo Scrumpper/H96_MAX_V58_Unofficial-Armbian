@@ -60,9 +60,9 @@ Rollback from 8.0 beta: reflash v7.2 image.
 
 | Feature | Notes |
 |---|---|
-| Open GPU stack | Panthor DRM + Mesa (Panfrost). KDE composites on GPU; renderer reports `Mali-G610 MC4 (Panfrost)`, not `llvmpipe`. Hardware cursor plane. |
+| Open GPU stack | Panthor DRM + Mesa (Panfrost). KDE composites on GPU; renderer string is `Mali-G610 MC4 (Panfrost)`, not `llvmpipe`. Hardware cursor plane. |
 | Open Vulkan | PanVK on Mali-G610, no vendor blob. |
-| Hardware video | Rockchip MPP through mpv. `ff2mpv` browser button hands page video to mpv. |
+| Hardware video | Rockchip MPP through mpv. `ff2mpv` browser extension hands page video to mpv. |
 | Hardware video encode | H.264, HEVC and MJPEG on VPU through `h96-encode`. |
 | Display | Kernel reads display EDID over GPIO DDC bus; `h96-display detect` lists modes; HDMI 2.0 modes up to 3840x2160 at 60 Hz verified. |
 | WiFi 6 | Radio sits on **PCIe**, not SDIO, so WiFi and Ethernet run at same time. Connect with `sudo h96-wifi-connect` or WiFi tray icon. |
@@ -130,7 +130,7 @@ change.
 ssh root@<ip>     # password: 1234
 ```
 
-v7.2 release download includes full flashing guide (`FLASHING.md`), scripted flasher
+v7.2 release download includes complete flashing guide (`FLASHING.md`), scripted flasher
 (`flash.py`) and command reference (`COMMANDS.md`).
 
 ---
@@ -164,7 +164,7 @@ Full detail in [CHANGELOG.md](CHANGELOG.md) and release downloads.
 | Version | Key change |
 |---|---|
 | **8.0 beta** | Platform release, not published: kernel, DTB and userland as dpkg packages; files out of `/usr/local` and `/opt`; `libmali` removed |
-| **v7.2** | First-boot fixes, time zone sync, autologin set once, kernel guard against foreign updaters, Steam ARM 2.3.1 |
+| **v7.2** | First-boot repairs, time zone sync, autologin set once, kernel guard against foreign updaters, Steam ARM 2.3.1 |
 | **v7.1** | Kernel `6.1.172-h96v58-7.1`: AV1 hardware decode, HDR10 playback (opt-in), IEC958 channel status, RGA 2D jobs |
 | **v7.0** | Kernel `6.1.172-h96v58-7.0` on Rockchip `rk-6.1-rkr7.2` base |
 | **v6.2** | HDMI-CEC, HDMI 2.0 modes over GPIO DDC, Bluetooth headset microphone rework |
@@ -180,11 +180,11 @@ Earlier revisions were closed-blob GPU builds and are superseded.
 
 ## About this repository
 
-Repo publishes **board bring-up sources** (device tree, overlays, kernel config, kernel
+Repo publishes **hardware bring-up sources** (device tree, overlays, kernel config, kernel
 patches, board file, front-panel daemon, Bluetooth firmware, BSP files from v6.x) under
 GPL-2.0, plus Armbian 8.0 groundwork: DTB overlay source and tree-diff gate, kernel
 package builder, `h96-selftest` and CI. 8.0 userland package sources and kernel patch
-series are not published here yet; for full feature set use pre-built release image. See
+series are not published here yet; for complete feature set use pre-built release image. See
 [README.md](README.md) for build steps.
 
 ---

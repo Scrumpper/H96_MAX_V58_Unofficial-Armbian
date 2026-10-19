@@ -22,7 +22,7 @@ and audio stack pins device to A2DP-only roles.
 
 Fix: `CONFIG_BT_RFCOMM=m` + `CONFIG_BT_RFCOMM_TTY=y` in kernel config. Armbian
 then compiles `rfcomm.ko` into kernel package with correct module dependencies;
-`modules-load.d/rfcomm.conf` autoloads it at boot before BlueZ, and
+`modules-load.d/rfcomm.conf` autoloads it at boot ahead of BlueZ, and
 `systemd/h96-rfcomm.service` runs `depmod` for running kernel release (`uname -r`)
 and loads `rfcomm` and `xpad` before `bluetooth.service`. HFP/HSP roles in
 `wireplumber/30-h96-bluetooth.conf` then expose mic as `bluez_input` source
@@ -32,7 +32,7 @@ under "Headset Head Unit" profile.
 
 HFP voice rides SCO/eSCO link. On this Broadcom BCM4362A2 UART controller SCO
 audio must be routed over HCI, set by vendor command 0xFC1C byte0=0x01 (Transport).
-`bt-sco-hci.service` sends it after adapter appears. Confirm current routing:
+`bt-sco-hci.service` sends it after adapter appears. Check current routing:
 
     hcitool -i hci0 cmd 0x3f 0x1d   # reply byte after status: 01 = HCI, 00 = PCM
 
@@ -55,14 +55,14 @@ A2DP stereo when recording stops. `pipewire/95-h96-silence-source.conf` adds
 with single input) and headset mic can be confirmed as default. Since 8.0 silence input
 ranks above output monitors of non-pro sinks (HDMI included) and below Bluetooth mics and
 non-pro capture devices 0 to 27, so it becomes input when headset mic leaves, not HDMI
-output monitor. Card switched to pro-audio profile outranks silence input with its output
+output monitor. Card set to pro-audio profile outranks silence input with its output
 monitor.
 
 Bluetooth sinks force 2048-sample audio cycle while playing (`node.force-quantum`): at 512
 samples encoder and h96 EQ filter chain miss deadlines (xruns), heard as choppy audio. They
 also never suspend (`session.suspend-timeout-seconds = 0`), so headsets do not see idle
 link and power off. `bluetooth/h96-bt-policy.py` (installed to `/usr/local/lib/h96/`,
-run by `systemd/bluetooth.service.d/20-h96-policy.conf` before bluetoothd) sets
+run by `systemd/bluetooth.service.d/20-h96-policy.conf` ahead of bluetoothd) sets
 `FastConnectable = true` and `ReconnectAttempts = 15` with intervals up to 60 s in
 `/etc/bluetooth/main.conf`. `bluetooth/h96-bt-a2dp-heal.py` with
 `systemd/h96-bt-a2dp-heal.service` reconnects headset A2DP link when it drops while
@@ -70,7 +70,7 @@ headset stays connected (many headsets close A2DP when WirePlumber restarts, and
 reconnects profiles only after full link loss). `tmpfiles.d/h96-eq.conf` restores flat
 EQ file at boot if missing.
 
-`/etc/h96/eq/active.txt` must exist (flat file included since v6.2): PipeWire 1.6
+`/etc/h96/eq/active.txt` must exist (flat copy included since v6.2): PipeWire 1.6
 stops h96 EQ filter chain without it, and failed node stalls WirePlumber, so
 Bluetooth headsets get no audio device at all.
 
@@ -81,7 +81,7 @@ SBC, FastStream and Opus, and picks best one headset supports. AAC needs
 `libspa-codec-bluez5-aac.so` plugin, packaged only in `libspa-0.2-modules-extra`
 package (FDK-AAC, split out of base PipeWire for licensing). Package is not in
 image's offline repo; release image installs it through `h96-online-extras` once box
-reaches network, and by hand it needs network too:
+reaches network, and by hand it requires network too:
 
     sudo apt install libspa-0.2-modules-extra
 

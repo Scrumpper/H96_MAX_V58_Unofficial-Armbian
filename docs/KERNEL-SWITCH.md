@@ -43,7 +43,7 @@ kernel set in one generation directory and points every boot name through one li
 
 Switching kernel is one rename of `h96ks/cur`, so U-Boot reads either complete old set or complete new set.
 Generation directory is written under hidden temporary name, read back, then renamed into place; it never
-changes afterwards. Retry of same release writes new generation (`.g2`) and removes earlier unused attempt.
+changes afterwards. Retry of same release creates new generation (`.g2`) and removes earlier unused attempt.
 
 8.0 beta image has `Image -> Image-<krel>` and `uInitrd -> uInitrd-<krel>` with plain DTB file. First `try`
 converts this layout in steps that each keep content every boot name resolves to: previous generation holds hard
@@ -81,9 +81,9 @@ trial is recorded. Preset file `90-h96-kernel-switch.preset` keeps guard, timer 
 
 Kernel package maintainer scripts ask `h96-kernel-switch in-use` (read only) when command is installed:
 
-- postinst prints two hint lines naming `try`, except when release is already default or on trial; without
+- postinst shows two hint lines naming `try`, except when release is already default or on trial; without
   `h96-kernel-switch`, hint is skipped when release is running;
-- prerm refuses removal of running release and of release that is default, on trial or rollback target
+- prerm blocks uninstall of kernel in use and of release that is default, on trial or rollback target
   (`H96_KERNEL_FORCE_REMOVE=1` overrides), since its modules would be missing at next boot.
 
 ```
@@ -128,7 +128,7 @@ Only `try`, `confirm`, `rollback`, `prune`, `dtb-plain` and boot guard write `/b
 
 Plain-name files (`Image-<krel>`, `uInitrd-<krel>`) are never replaced; only `prune` removes them or
 generations. `extlinux`, `boot.scr`, `boot.cmd` and `armbianEnv.txt` are never written. Tool never runs
-`update-initramfs`, `u-boot-update` or `flash-kernel`. Each step syncs file and directory.
+`update-initramfs`, `u-boot-update` or `flash-kernel`. Each step flushes directory and file.
 
 ## Refusals
 
@@ -137,9 +137,9 @@ generations. `extlinux`, `boot.scr`, `boot.cmd` and `armbianEnv.txt` are never w
 - trial or unfinished confirm is already recorded;
 - `h96-undervolt` trial is recorded (`/var/lib/h96-undervolt-trial`);
 - DTB would change while `h96-undervolt` change is active (`/var/lib/h96-undervolt-state`), unless `--keep-dtb`;
-- kernel is not staged, staged sums fail, or `modules.dep` is missing;
+- kernel is not staged, staged checksums fail, or `modules.dep` is missing;
 - staged Image embeds other release than requested;
-- kernel is running or already default, or current Image embeds requested release;
+- kernel is running or already default, or current Image embeds release asked for;
 - `/boot/Image` or `/boot/uInitrd` is not link to plain name or `h96ks/cur`, or names missing file;
 - `/boot/extlinux`, `/boot/boot/extlinux` or `/extlinux` exists (U-Boot reads it before `boot.scr`);
 - `/boot` is not mounted or is read-only;
@@ -150,8 +150,8 @@ generations. `extlinux`, `boot.scr`, `boot.cmd` and `armbianEnv.txt` are never w
 (after `dtb-plain`), unless `--keep-dtb`: rollback switches Image and uInitrd only, so old kernel would boot
 newer DTB. `dtb-plain` refuses while trial is recorded and when DTB is not managed link.
 
-`prune` refuses running kernel and any generation or file named by `h96ks/cur`, boot links, trial record or last
-confirm. Package removal is refused while trial is recorded.
+`prune` keeps running kernel and any generation or file named by `h96ks/cur`, boot links, trial record or last
+confirm. Package removal is blocked while trial is on record.
 
 ## Power loss
 
@@ -159,7 +159,7 @@ Record comes before every link move; one rename decides boot set; guard finishes
 
 | Interrupted in | Next boot |
 |----------------|-----------|
-| layout conversion | Each boot name still resolves to previous content; next `try` continues conversion |
+| layout conversion | Each boot name still resolves to previous content; next `try` resumes conversion |
 | generation write | Previous set; hidden temporary directory removed |
 | after `armed` record, before `h96ks/cur` moves | Previous kernel; guard records `not-booted`, clears record |
 | guard, before fallback | Trial kernel boots second time; guard reverts as unconfirmed |
@@ -186,7 +186,7 @@ either case. `dtb-plain` returns managed layout to plain DTB file; later `try` w
 
 `h96-undervolt` (package `h96-tools`) edits CPU voltage tables in
 `/boot/dtb/rockchip/rk3588-h96-max-v58-panthor.dtb` and keeps vendor copy as `<dtb>.stock-backup`;
-`h96-undervolt-trial.service` copies stock backup back after unconfirmed trial boot. Once that DTB name links to
+`h96-undervolt-trial.service` restores stock backup after unconfirmed trial boot. Once that DTB name links to
 `h96ks/cur/fdt`, in-place write would land inside generation (generations never change) and stock backup would hold
 DTB of earlier kernel.
 
@@ -209,9 +209,9 @@ Design choice. Three designs were compared:
 
 1. Kernel switch writes undervolt DTB as new generation: undervolt trial and kernel trial would share `h96ks/cur`,
    records and boot guard; undervolt revert after kernel switch would need DTB per generation. Boot-critical tool
-   grows second trial type with its own power-loss cases. Rejected.
+   adds second kind of trial with its own power-loss cases. Rejected.
 2. `--keep-dtb` as default: DTB stays plain file and undervolt works unchanged, but kernel and DTB no longer change
-   together by default; new kernel boots earlier DTB, and stale stock backup after separate DTB update is not
+   together by default; new kernel boots earlier DTB, and outdated stock backup after separate DTB update is not
    caught. Changes owner DTB decision. Rejected.
 3. Each tool writes only own names; mutual refusal allows single boot trial; `dtb-plain` gives plain layout
    back on request. No generation is ever written by `h96-undervolt`, and no undervolt file by kernel switch.
@@ -219,11 +219,11 @@ Design choice. Three designs were compared:
 
 ## Limits
 
-- Failure before boot guard runs (early panic, initramfs failure, root not mounted) repeats trial boot, because
+- Failure ahead of boot guard (early panic, initramfs failure, root not mounted) repeats trial boot, because
   `h96ks/cur` still names trial generation at that point. Watchdog reset then loops on trial kernel; recovery
   needs rescue media or reflash. Bench test with owner present is required before release.
-- Trial and previous kernel need different release strings; `try` refuses running release and Image that embeds
-  requested release.
+- Trial and previous kernel need different release strings; `try` rejects kernel in use and Image that embeds
+  release asked for.
 - Links with directory parts in `/boot` have not booted on hardware yet.
 - `systemctl preset-all` between `try` and reboot disables guard; trial then boots without fallback. Run `try`
   again after `rollback`, or `systemctl enable h96-kernel-switch-guard.service`, before rebooting.

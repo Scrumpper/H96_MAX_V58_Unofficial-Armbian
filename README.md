@@ -4,7 +4,7 @@
 
 ---
 
-Board bring-up **sources** for running Armbian on **H96 Max V58** TV box
+Bring-up **sources** for running Armbian on **H96 Max V58** TV box
 (Rockchip **RK3588**, Mali-G610) with **open GPU** stack: Panthor kernel
 driver + Mesa (Panfrost/PanVK), hardware video, onboard WiFi 6, and working
 front-panel display.
@@ -19,7 +19,7 @@ GPL-2.0. See [`LICENSE`](LICENSE) and [`CREDITS.md`](CREDITS.md).
 > Rockchip, or H96 manufacturer. It has been tested only on author's own unit and
 > comes with **no warranty**. Always keep recovery plan before overwriting your device.
 
-> **Scope.** Repo holds hardware bring-up sources (kernel patches, device tree, board
+> **Scope.** Repo contains hardware bring-up sources (kernel patches, device tree, board
 > file, front-panel daemon, BSP files from v6.x releases) and Armbian 8.0 groundwork:
 > DTB overlay source with tree-diff gate, kernel package builder, `h96-selftest` and CI.
 > Userland package sources (`h96-*` debs) and 8.0 kernel patch series are not published
@@ -32,7 +32,7 @@ GPL-2.0. See [`LICENSE`](LICENSE) and [`CREDITS.md`](CREDITS.md).
 ## Armbian 8.0 (beta, not released)
 
 8.0 is in beta. No 8.0 image is published; current release stays v7.2. Facts below
-describe beta builds and can change before release.
+describe beta images and can change until release.
 
 8.0 is platform release: kernel, device tree and H96 userland become dpkg packages
 built from pinned inputs and installed into rootfs at image build time. It adds no new
@@ -62,13 +62,13 @@ Package layout:
 - Package version `8.0.0~rN`: build round after `~`, so every beta sorts below `8.0.0`;
   version is never reused for different content.
 - Kernel and DTB packages write nothing under `/boot`. Postinst runs `depmod` for its own
-  release only; prerm refuses removal of running kernel's package. Apt pin
+  release only; prerm blocks uninstall of running kernel's package. Apt pin
   `00-h96-protect-boot` keeps foreign kernel, DTB, U-Boot and `flash-kernel` packages out.
 - Vendor U-Boot, `boot.scr` and `armbianEnv.txt` keys stay as on v7.2. Image has no
   `/boot/extlinux`.
 
 GPU: OpenCL through `libmali` is gone with `libmali`; vendor-era Panthor switch tooling
-(`/opt/panthor`) is removed. Measured on beta build: Mesa 26.1.4 on Mali-G610 (Panfrost
+(`/opt/panthor`) is removed. Measured on beta image: Mesa 26.1.4 on Mali-G610 (Panfrost
 GL, PanVK Vulkan), mpv with Rockchip MPP decode.
 
 Rollback from 8.0 beta: reflash published v7.2 image.
@@ -102,7 +102,7 @@ v6.2 kernel moves to release string `6.1.115-h96v58v2` and adds:
 - HDMI0 DDC on GPIO I2C bus, since on-chip DDC controller never completes transfers:
   native EDID reads and HDMI 2.0 SCDC scrambling. Verified: 2560x1440 at 120 and
   144 Hz, 3840x2160 at 60 Hz.
-- Plane colour conversion re-applied on colour-format switch without modeset: no green
+- Plane colour space conversion re-applied on output format switch without modeset: no green
   cast when switching between RGB and YCbCr.
 - HDMI audio channel allocation derived with ELD bypass: groundwork for multichannel.
   Multichannel is not verified; no AV receiver tested.
@@ -110,13 +110,13 @@ v6.2 kernel moves to release string `6.1.115-h96v58v2` and adds:
 - RGA 2D accelerator binds after deferred probes (`/dev/rga` works).
 - stmmac Wake-on-LAN IRQ balance: no kernel warning when toggling WoL.
 - SARADC volume key: pinhole recovery button driver.
-- Neutral kernel build banner.
+- Neutral kernel banner.
 - HDMI output stays muted 1 s when colour format changes between RGB and YCbCr: no green flash at boot handover from loader. `dw_hdmi_qp.fmt_switch_mute_ms` sets hold (0 = off).
 
 Box on v6.1 gets userland changes above without reflash through
 `h96-v6.1.1-HOTfix.zip`; kernel changes above come only with v6.2 image, so full
 benefit needs reflash. Over v6.0, kernel release string changes from
-`6.1.115-h96` to `6.1.115-h96v58v1`, so moving to it is reflash rather than
+`6.1.115-h96` to `6.1.115-h96v58v1`, so moving to it needs reflash, not
 `apt upgrade`. This build adds three kernel checks (`CONFIG_LOCKUP_DETECTOR`,
 `CONFIG_SOFTLOCKUP_DETECTOR`, `CONFIG_BOOTPARAM_SOFTLOCKUP_PANIC`) that panic kernel on
 stuck CPU, paired with watchdog reset. One device tree node changes, watchdog is
@@ -158,14 +158,14 @@ enabled, and every v6.0 feature and command is retained.
   hardware of same architecture, so emulation tool updates, ARM64 Proton builds and
   per-title fixes arrive with client updates. VR itself is not part of this box: there is no VR
   runtime or headset support, and launcher removes client's VR argument from
-  streaming client. Emulated route runs x86-64 client under FEX-Emu, with every part of
+  streaming client. Emulated route executes x86-64 client under FEX-Emu, with every part of
   client emulated and its interface software rendered.
 - **New in v6.1, cursor window's power domain.** v6.0 fixed cursor latch in VOP2
   driver. v6.1 fixes second path in same driver, where power domain feeding
   cursor window could be switched off while window still held reference to it, leaving
   pointer moving and clicking with nothing drawn until next reboot. Driver now
-  records reference per window, powers domain on whenever window needs it, and refuses
-  release with no matching reference, reporting it once in kernel log.
+  tracks reference per window, powers domain on each time window needs it, and skips
+  release with no matching reference, logging it once in kernel log.
 - **New in v6.1, two input fixes.** Udev rule unbinds `xpad` from headset interface that
   some third-party Xbox 360 style pads expose, which had made one pad appear as two identical
   joysticks. Second rules file hands pad's `/dev/hidraw` node and `/dev/uinput` to
@@ -184,7 +184,7 @@ enabled, and every v6.0 feature and command is retained.
 - **v6.1 kernel: release `6.1.115-h96v58v1`.** Suffix names board and kernel revision
   number that moves independently of image version, so kernel is identifiable from
   `uname -r` alone. Module set is rebuilt against it with `CONFIG_MODVERSIONS=y`, so
-  module built for v6.0 release is refused rather than loaded. This build adds
+  module built for v6.0 kernel is rejected, not loaded. This build adds
   `CONFIG_LOCKUP_DETECTOR=y`, `CONFIG_SOFTLOCKUP_DETECTOR=y` and
   `CONFIG_BOOTPARAM_SOFTLOCKUP_PANIC=y`: CPU that makes no scheduling progress for 20 seconds is reported
   and kernel panics.
@@ -195,13 +195,13 @@ enabled, and every v6.0 feature and command is retained.
   video and returns on movement, and stays correct after leaving mpv for desktop.
   `/etc/mpv/mpv.conf` uses `cursor-autohide=1000` and `x11-bypass-compositor=never`. Kernel
   Image changes, so moving to v6.0 is reflash.
-- **New in v6.0, `h96-backup` and `h96-restore`.** `h96-backup` captures configured box into
+- **New in v6.0, `h96-backup` and `h96-restore`.** `h96-backup` saves configured box into
   one archive (manifest of installed on-demand features plus passive data that cannot be
   re-downloaded, such as saves, configs and WiFi credentials); `h96-restore` replays it after
-  reflash, reinstalling recorded features and restoring data. `--open` prints
-  installer commands instead of running them; `--dry-run` prints plan and changes nothing;
+  reflash, reinstalling listed features and restoring data. `--open` prints
+  installer commands instead of running them; `--dry-run` lists plan and changes nothing;
   `--force` overwrites configs that are newer on disk (stop desktop session first on
-  fresh image, whose session has already written default configs). Both tools take `--only`
+  fresh image, whose session has already written default configs). Both tools accept `--only`
   and `--skip` category lists and `--emulators`; `h96-backup-gui` presents same choices
   as checkboxes. Steam is not covered: neither tool has Steam category, so Steam clients,
   sign-in, settings and installed games are not in archive. Boxes on v5.0.1 or earlier have no backup tool; migration kit (`h96-migrate-kit.zip` in release) installs same three tools there (`sudo bash install.sh`, `--gui` for window) so box can be captured to USB stick before flash.
@@ -289,10 +289,10 @@ enabled, and every v6.0 feature and command is retained.
   Install desktop when you want it through `armbian-config`; first launch of Plasma
   applies H96 desktop settings.
 - Included flasher is slim-capable: from full image it can strip to headless
-  (nodesktop), no-GPU, or bare-server build before writing, so one download covers desktop,
+  (nodesktop), no-GPU, or bare-server image before writing, so one download covers desktop,
   headless, and server use. Free space is reclaimed with `zerofree` after stripping.
 
-These sources cover kernel, device tree, and BSP package image is built from;
+These sources hold kernel, device tree, and BSP package image is built from;
 desktop and headless split is userspace and packaging step and is not selected from this
 repo.
 
@@ -542,10 +542,10 @@ Device tree carries hardware enablement; rest is board config + BSP.
 > **Released images are NOT built by these steps.** Published `.img` files are rootless
 > delta on known-good ophub RK3588 6.1.x BSP base image (Rock 5B lineage, adapted to
 > H96 NVR-DEMO DTB), and v6.0 kernel was built outside framework from source,
-> config and patches published here. Steps below build bare Armbian board from
+> config and patches in this repository. Steps below produce bare Armbian board from
 > framework: booting console with working peripherals, but WITHOUT `h96-*` userspace
 > layer (GPU staging, VPU/NPU setup, Bluetooth stack, media tools, display/EDID handling).
-> No `compile.sh` invocation reproduces release image. Build from source to change
+> No `compile.sh` invocation gives same image as release. Build from source to change
 > kernel or DTB; flash release to run box. These steps were written against
 > framework source at time of writing and have not been run end to end by author.
 
@@ -635,12 +635,12 @@ cp  /path/to/this-repo/config/linux-rk35xx-vendor.config  userpatches/config/ker
               BUILD_DESKTOP=yes  BUILD_MINIMAL=no  KERNEL_CONFIGURE=no
 ```
 
-Output image lands in `output/images/`. It boots bare 6.1 board; `h96-*` tooling is
+Output image lands in `output/images/`. It boots minimal 6.1 board; `h96-*` tooling is
 separate userspace delta releases carry, not part of this build.
 
 **What framework changes on top of config.** Framework's own
 `armbian_kernel_config__*` hooks (`lib/functions/compilation/armbian-kernel.sh`) rewrite
-parts of any user-supplied `.config` before build: they set `CONFIG_LOCALVERSION` to
+parts of any user-supplied `.config` before compiling: they set `CONFIG_LOCALVERSION` to
 empty string, force `CONFIG_RT_GROUP_SCHED=y` for Docker, and turn BTF debug information on (`CONFIG_DEBUG_INFO`, `CONFIG_DEBUG_INFO_BTF`), which published configuration also carries, along with
 zram, nftables, filesystem and container options that vendor config already carries.
 Board file's `custom_kernel_config` hook runs after them and restores v6.2 values
@@ -665,8 +665,8 @@ explicitly.
 `drivers/gpu/drm/rockchip/rockchip_drm_vop2.c`: it re-asserts hardware cursor window on
 each video-port latch so cursor stays visible under continuous GPU compositing.
 `patch/kernel/h96-vop2-cursor-pd.patch` is v6.1 change to same file: window
-records whether it holds reference to its power domain, domain is powered on whenever
-window needs it, and unbalanced release is refused and reported once in kernel log.
+notes whether it holds reference to its power domain, domain is powered on each time
+window needs it, and driver skips unbalanced release, logging it once in kernel log.
 `patch/kernel/h96-board-support.patch` carries board support every release has had:
 BCM43752 ids for `brcmfmac`, two `bcmdhd` log-prefix lines, SDIO rescan hook in `dw_mmc`
 and `rfkill-wlan`, HDMI PHY clock name, and 8BitDo entries in `xpad`. Both are

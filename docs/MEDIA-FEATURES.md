@@ -51,7 +51,7 @@ hardware cursor stays visible during continuous GPU compositing (fullscreen vide
 browser pages, desktop splash); it still auto-hides over video and returns on movement, and
 it stays correct after leaving mpv for desktop. `/etc/mpv/mpv.conf` uses
 `cursor-autohide=1000` with `x11-bypass-compositor=never`: autohide is active during playback
-and KWin compositing stays on in fullscreen. Earlier releases kept cursor visible during
+and KWin compositing stays on in fullscreen. Earlier releases held cursor visible during
 playback (`cursor-autohide=no`) because VOP2 cursor plane was not restored after it was
 hidden, leaving pointer invisible until reboot.
 
@@ -74,7 +74,7 @@ module set changed.
 ## NPU upscaling: how it works and how to use it
 
 `h96-npu-upscale` is OFFLINE / BATCH upscaler, not live playback. One Real-ESRGAN
-tile inference on NPU is ~100 ms, so full frame is seconds and clip is
+tile inference on NPU is ~100 ms, so whole frame is seconds and clip is
 minutes. Use it for stills and short low-res clips.
 
 Mechanism:
@@ -104,7 +104,7 @@ command, nothing else.
 
 Why it needs v5.0 kernel:
 - Android 11 and later `init`/`lmkd` hard-require `/proc/pressure`. Stock BSP kernel
-  built PSI out, so container came up and then died in about 15 seconds. v5.0 rebuilds
+  built PSI out, so container started and then died in about 15 seconds. v5.0 rebuilds
   kernel with `CONFIG_PSI=y` (`PSI_DEFAULT_DISABLED` off) from armbian/linux-rockchip
   `rk-6.1-rkr5.1`, commit `95e85f6c`. Binder (`CONFIG_ANDROID_BINDER_IPC`/`BINDERFS`) is
   built in as well. `h96-waydroid status` verifies both.
@@ -150,12 +150,12 @@ cause was local test configuration: `init` forced `ro.hardware.egl=swiftshader` 
 `drm_device` before measurement. Upstream enables ARM drivers in
 `waydroid_arm64/BoardConfig.mk` (`BOARD_MESA3D_GALLIUM_DRIVERS += ... panfrost lima`,
 `BOARD_MESA3D_VULKAN_DRIVERS += ... panfrost`), not in root `BoardConfig.mk`, which
-lists only llvmpipe, virgl and friends, and reading root file alone gives false
+lists only llvmpipe, virgl and friends, and reading top-level file alone gives false
 impression there is no Panfrost. HALIUM vendor images ARE stripped of Mesa GPU drivers,
 so MAINLINE vendor image is required; MAINLINE is what these profiles fetch.
 
 X11 wrinkle: this box runs KDE Plasma on X11 on purpose (Wayland breaks GPU/mpv
-path on this BSP), and Waydroid's full UI wants Wayland compositor. `start` runs nested
+path on this BSP), and Waydroid's full UI needs Wayland compositor. `start` runs nested
 Weston window inside X session and points Waydroid at it. Nothing about desktop
 changes.
 
@@ -177,16 +177,16 @@ libraries and no neuralnetworks HAL, so passing NPU node through would only give
 Android device file with no driver behind it. NPU work stays on host side
 (`h96-npu`, `h96-npu-upscale`).
 
-TESTED AND REJECTED: shadowing container's `/dev/kmsg` to cut kernel log noise.
+TESTED AND REJECTED: shadowing container's `/dev/kmsg` to reduce kernel log noise.
 Shadow mount applies cleanly, but Waydroid container then never starts. Do not retry
 it.
 
 ### v5.0.1 additions
 
 - Borderless fullscreen: `h96-waydroid size fullscreen` opens window borderless at 0,0
-  filling screen. It opens at screen size, so there is no output reconfigure and
+  filling screen. It opens at display size, so there is no output reconfigure and
   surface does not black out.
-- Clean teardown: closing Android window stops session AND container, so
+- Clean teardown: closing Android window ends session AND container, so
   container does not keep holding GPU. Sudoers drop-in lets desktop user run
   `h96-waydroid stop` without password, and Stop Android menu entry was added.
 - `q` to quit: started from terminal (`h96-waydroid start`), launcher quits and tears
@@ -220,10 +220,10 @@ in use is software rather than PanVK/Panfrost. `h96-emulators gpu` reports that 
 any time, and `h96-emulators list` shows recommended backend to select inside each
 emulator.
 
-Fresh flashes have no `flatpak` at all. Install auto-bootstraps it (apt `flatpak` plus
+Newly flashed boxes have no `flatpak` at all. Install auto-bootstraps it (apt `flatpak` plus
 Flathub remote) after warning, or run `h96-emulators bootstrap` first.
 
 mGBA and ScummVM are deliberately excluded. Both are 2D and do not meaningfully use
 Mali GPU, so this tool's GPU wiring has nothing to do for them. They are not missing from
-box: both are one click away in software store as Flathub `io.mgba.mGBA` and
+box: both are one click away in app store as Flathub `io.mgba.mGBA` and
 `org.scummvm.ScummVM`, or as apt `mgba-qt` and `scummvm`. They run fine on CPU.

@@ -12,7 +12,7 @@ Workflow file: `.github/workflows/ci.yml`. Runs on push to `main` and `armbian-*
 | `lint` | Shell lint | `shellcheck -S error` over `*.sh` and files with sh/bash shebang | Any error-level finding (warnings printed, not gating) |
 | `lint` | Python syntax | `python3 -m py_compile` over `*.py` and files with python shebang | Any syntax error |
 | `lint` | Self-tests | `tools/h96-selftest.py self-test`, plus `tests/` when present | Any failed check |
-| `kit-oldest-python` | Backup kit syntax | `compile()` under Python 3.7 over `h96-backup*`, `h96-restore*` and `h96-migrate-kit/` Python files | Any syntax error on oldest supported interpreter, or no kit files found |
+| `kit-oldest-python` | Backup kit syntax | `compile()` under Python 3.7 over `h96-backup*`, `h96-restore*` and `h96-migrate-kit/` Python files | Any syntax error on oldest supported interpreter, or no kit files present |
 | `debs` | Packaging PII | Generic regex over `build/` and `tools/ci/` | LAN address or home path |
 | `debs` | Deb build | `tools/ci/kernel-debs-smoke.sh` driving `build/build-kernel-debs.sh` | Builder exit status nonzero |
 | `debs` | Lintian | `lintian --fail-on error,warning` over both built debs, no suppressed tags | Any error or warning tag |
@@ -23,7 +23,7 @@ Jobs `docs`, `lint`, `debs` and `dtb` run inside `ubuntu:26.04` container on arm
 
 ## Deb packaging smoke test
 
-Kernel binaries are pinned build outputs, not CI products, and are not in this repository. `tools/ci/kernel-debs-smoke.sh` feeds `build/build-kernel-debs.sh` placeholder inputs (text Image, one-line System.map, config with matching `CONFIG_LOCALVERSION`, modules tarball with one placeholder file, board overlay compiled as DTB stand-in) with `PIN=0` and version `0~ci`, so placeholder debs never carry release version. Resulting `h96-kernel-*` and `h96-dtb-*` debs exercise package layout, control fields, maintainer scripts and lintian; they are not installable kernels. Builder refuses root, so job runs it as `nobody`.
+Kernel binaries are pinned build outputs, not CI products, and are not in this repository. `tools/ci/kernel-debs-smoke.sh` feeds `build/build-kernel-debs.sh` placeholder inputs (text Image, one-line System.map, config with matching `CONFIG_LOCALVERSION`, modules tarball with one placeholder file, board overlay compiled as DTB stand-in) with `PIN=0` and version `0~ci`, so placeholder debs never carry release version. Resulting `h96-kernel-*` and `h96-dtb-*` debs exercise package layout, control fields, maintainer scripts and lintian; they are not installable kernels. Builder declines root, so job runs it as `nobody`.
 
 Lintian runs with no suppressed tags and no override files. Modules install under `/usr/lib/modules` (`MODPREFIX` default), so `aliased-location` does not fire. Package version is native (no Debian revision), so changelog is `changelog.gz` and `initial-upload-closes-no-bugs` does not fire.
 
@@ -44,4 +44,4 @@ Kernel build, image build, userland deb build, chroot install test, signing, rel
 
 ## Local run
 
-Each `run:` block is plain bash, run from repository root with `bash -eo pipefail`. Blocks call `apt-get` as root, since jobs run as root inside containers; outside container, remove those lines (tools must already be installed). Steps named `safe directory` write `safe.directory` into global git config; for local run, point `GIT_CONFIG_GLOBAL` at temporary file first. Closest local equivalent: run each job inside `ubuntu:26.04` container with repository mounted.
+Each `run:` block is plain bash, run from top of repository with `bash -eo pipefail`. Blocks call `apt-get` as root, since jobs run as root inside containers; outside container, remove those lines (tools must already be installed). Steps named `safe directory` write `safe.directory` into global git config; for local run, first point `GIT_CONFIG_GLOBAL` at temporary file. Closest local equivalent: run each job inside `ubuntu:26.04` container with repository mounted.
