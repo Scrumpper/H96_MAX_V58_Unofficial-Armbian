@@ -4,7 +4,7 @@
 # Payload stages into /usr/lib/h96-kernel/<krel>/ and /usr/lib/modules/<krel>/; nothing under /boot.
 # Usage: MAINT='Name <email>' IMAGE=.. SYSMAP=.. CONFIG=.. MODTAR=.. DTB=.. build-kernel-debs.sh [OUTDIR]
 # KCFLAGS: flags the kernel was compiled with; recorded in kernel package changelog only. Value other than
-# KCFLAGS_PIN needs PIN=0 and PKGVER other than default, so pinned version never gets second content.
+# KCFLAGS_PIN needs PIN=0 and PKGVER above default, so no earlier version gets second content.
 # Re-runnable; output depends only on inputs and SOURCE_DATE_EPOCH.
 set -euo pipefail
 
@@ -69,7 +69,10 @@ case "$MODPREFIX" in ''|[!/]*|*..*) die "bad MODPREFIX: $MODPREFIX";; esac
 case "$KCFLAGS" in *[!-A-Za-z0-9=.,+_\ ]*) die "KCFLAGS has characters outside [-A-Za-z0-9=.,+_ ]: $KCFLAGS";; esac
 if [ "$KCFLAGS" != "$KCFLAGS_PIN" ]; then
     [ "$PIN" = 0 ] || die "KCFLAGS '$KCFLAGS' differs from pinned build '$KCFLAGS_PIN': set PIN=0 and new PKGVER"
-    [ -n "$PKGVER_GIVEN" ] && [ "$PKGVER" != "$PKGVER_DEF" ] || die "KCFLAGS '$KCFLAGS' needs explicit PKGVER other than $PKGVER_DEF"
+    if [ -z "$PKGVER_GIVEN" ] || ! dpkg --validate-version "$PKGVER" 2>/dev/null ||
+        ! dpkg --compare-versions "$PKGVER" gt "$PKGVER_DEF"; then
+        die "KCFLAGS '$KCFLAGS' needs explicit PKGVER above $PKGVER_DEF"
+    fi
 fi
 case "$MAINT" in
     '') die "set MAINT='Name <email>'";;

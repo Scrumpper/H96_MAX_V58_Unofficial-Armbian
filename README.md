@@ -565,7 +565,7 @@ modules in `/usr/lib/modules/<krel>/`) and `h96-dtb-<krel>` (DTB in
 Inputs and `MAINT` have no defaults; `PIN=1` (default) checks each input against sha256 of
 8.0 build outputs. Optional `KCFLAGS` names compiler flags of kernel build; kernel package
 changelog records it, and output stays byte-identical while it is unset. Value other than
-pinned build value (`KCFLAGS_PIN`) needs `PIN=0` and `PKGVER` other than default. Details: [docs/ARMBIAN-8.0-PLAN.md](docs/ARMBIAN-8.0-PLAN.md).
+pinned build value (`KCFLAGS_PIN`) needs `PIN=0` and `PKGVER` above default. Details: [docs/ARMBIAN-8.0-PLAN.md](docs/ARMBIAN-8.0-PLAN.md).
 
 **What v6.1 kernel is.** Source `armbian/linux-rockchip`, branch `rk-6.1-rkr5.1`, commit
 `95e85f6cb496c75807c5b16f158853578e7e7d1b`, plus three plain `-p1` diffs against that commit:
