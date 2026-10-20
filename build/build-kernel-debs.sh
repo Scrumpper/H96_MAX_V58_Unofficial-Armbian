@@ -9,13 +9,38 @@
 set -euo pipefail
 
 KREL=${KREL:-6.1.172-h96v58-8.0}
+# pins per release: default versions and sha256 of pinned build outputs; PIN=0 skips pins for other inputs
+PINNED=1
+case "$KREL" in
+6.1.172-h96v58-8.0)
+    PKGVER_DEF=8.0.0~r11; DTB_PKGVER_DEF=8.0.0~r10
+    SHA_IMAGE=6fbe2fee96d1dbc920d7957877ccb2b140c32a927d647615d877a840af64e8bc
+    SHA_SYSMAP=6d8e615f4e8376088bd9145a59c9ae3f48f3715a287826ae8ff19c7ce430f976
+    SHA_CONFIG=b94f0167acfc532645470821d7acf56360aaf8a93c6fd513406328083f633e19
+    SHA_MODTAR=a9c2f2c972697937d23a160daff70b021cc7e22c154ddd1a407d351babce3e49
+    SHA_DTB=4891450dbe1ffee7257e268ecca06c91857623a6025ff6a79ba02e31d2363253
+    ;;
+6.12.69-h96v58-8.0)
+    PKGVER_DEF=8.0.0~r16; DTB_PKGVER_DEF=8.0.0~r16
+    SHA_IMAGE=4ef3a6e04dc3921542a9ac4310006bd69990f1aa2a2a433f94b77e772e41126b
+    SHA_SYSMAP=44cd801d40dc6ba9d5cf9ab3c1af51dca6597a540c8eeb987a61db908e52c49d
+    SHA_CONFIG=1ba08c2ac16c8abc1a83b4c09b8e88500537e237e24ad7d1374a16d5bd4cc780
+    SHA_MODTAR=ac9d95ee5016d5ab688bf296de721ae960a790366b31e504c4081a0f38acbcb8
+    SHA_DTB=c5dbeca93cc471ff890958bfa6ec11343130ea9279c6ce0960057d9fd768b8f0
+    ;;
+*)
+    # unpinned release: PIN=0 and explicit PKGVER
+    PINNED=0; PKGVER_DEF=8.0.0~r11; DTB_PKGVER_DEF=8.0.0~r10
+    ;;
+esac
+# vendor tree named in package text, from KREL major.minor
+KBASE=${KREL%%-*}; KBASE=rk-${KBASE%.*}
 # default versions belong to pinned inputs and maintainer scripts below; new content needs a new version
 # kernel and DTB debs carry own versions (DTB content changes less often). Explicit PKGVER sets both.
 [ -z "${PKGVER:-}" ] || DTB_PKGVER=${DTB_PKGVER:-$PKGVER}
-PKGVER_DEF=8.0.0~r11
 PKGVER_GIVEN=${PKGVER:-}
 PKGVER=${PKGVER:-$PKGVER_DEF}
-DTB_PKGVER=${DTB_PKGVER:-8.0.0~r10}
+DTB_PKGVER=${DTB_PKGVER:-$DTB_PKGVER_DEF}
 MODPREFIX=${MODPREFIX:-/usr/lib/modules}
 STAGEPREFIX=/usr/lib/h96-kernel
 FDTFILE=${FDTFILE:-rockchip/rk3588-h96-max-v58-panthor.dtb}
@@ -33,13 +58,7 @@ CONFIG=${CONFIG:-}
 MODTAR=${MODTAR:-}
 DTB=${DTB:-}
 
-# pins: 8.0 kernel build outputs and overlay DTB; PIN=0 skips pins for other inputs
 PIN=${PIN:-1}
-SHA_IMAGE=6fbe2fee96d1dbc920d7957877ccb2b140c32a927d647615d877a840af64e8bc
-SHA_SYSMAP=6d8e615f4e8376088bd9145a59c9ae3f48f3715a287826ae8ff19c7ce430f976
-SHA_CONFIG=b94f0167acfc532645470821d7acf56360aaf8a93c6fd513406328083f633e19
-SHA_MODTAR=a9c2f2c972697937d23a160daff70b021cc7e22c154ddd1a407d351babce3e49
-SHA_DTB=4891450dbe1ffee7257e268ecca06c91857623a6025ff6a79ba02e31d2363253
 
 OUT=${1:-out}
 if [ -z "${WORK:-}" ]; then WORK=$(mktemp -d); trap 'rm -rf "$WORK"' EXIT; fi
@@ -85,6 +104,7 @@ fi
 
 for v in IMAGE SYSMAP CONFIG MODTAR DTB; do [ -n "${!v}" ] && [ -f "${!v}" ] || die "$v not set or not found: ${!v}"; done
 if [ "$PIN" = 1 ]; then
+    [ "$PINNED" = 1 ] || die "no pins for KREL $KREL: set PIN=0 and new PKGVER"
     for v in IMAGE SYSMAP CONFIG MODTAR DTB; do
         want=SHA_$v; got=$(sha256sum "${!v}" | cut -d' ' -f1)
         [ "$got" = "${!want}" ] || die "$v sha $got, pinned ${!want}"
@@ -103,7 +123,7 @@ doc_files() { # pkg root version
     mkdir -p "$d"
     cat > "$d/copyright" <<EOF
 Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
-Upstream-Name: linux (Rockchip BSP rk-6.1 with H96 MAX V58 patches)
+Upstream-Name: linux (Rockchip BSP $KBASE with H96 MAX V58 patches)
 Source: https://github.com/armbian/linux-rockchip
 
 Files: *
@@ -226,7 +246,7 @@ Installed-Size: $KSIZE
 Maintainer: $MAINT
 Description: H96 MAX V58 Linux kernel $KREL (staged)
  Linux kernel $KREL for H96 MAX V58 (RK3588),
- Rockchip BSP rk-6.1 tree with H96 patch series.
+ Rockchip BSP $KBASE tree with H96 patch series.
  .
  Stages Image, System.map and config under
  $STAGEPREFIX/$KREL/
