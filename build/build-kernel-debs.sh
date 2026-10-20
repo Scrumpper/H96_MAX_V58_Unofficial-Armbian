@@ -3,6 +3,7 @@
 # Builds h96-kernel-<krel> and h96-dtb-<krel> debs from pinned kernel build outputs.
 # Payload stages into /usr/lib/h96-kernel/<krel>/ and /usr/lib/modules/<krel>/; nothing under /boot.
 # Usage: MAINT='Name <email>' IMAGE=.. SYSMAP=.. CONFIG=.. MODTAR=.. DTB=.. build-kernel-debs.sh [OUTDIR]
+# DTBO: optional colon-separated .dtbo files (paths may contain spaces), staged in dtb package under <FDTFILE dir>/overlay/ (not pinned).
 # KCFLAGS: flags the kernel was compiled with; recorded in kernel package changelog only. Value other than
 # KCFLAGS_PIN needs PIN=0 and PKGVER above default, so no earlier version gets second content.
 # Re-runnable; output depends only on inputs and SOURCE_DATE_EPOCH.
@@ -57,6 +58,9 @@ SYSMAP=${SYSMAP:-}
 CONFIG=${CONFIG:-}
 MODTAR=${MODTAR:-}
 DTB=${DTB:-}
+DTBO=${DTBO:-}
+DTBOS=()
+[ -z "$DTBO" ] || IFS=: read -r -a DTBOS <<< "$DTBO"
 
 PIN=${PIN:-1}
 
@@ -103,6 +107,11 @@ if [ "$HEAVY" = 1 ]; then
 fi
 
 for v in IMAGE SYSMAP CONFIG MODTAR DTB; do [ -n "${!v}" ] && [ -f "${!v}" ] || die "$v not set or not found: ${!v}"; done
+for o in "${DTBOS[@]}"; do
+    [ -f "$o" ] || die "DTBO not found: $o"
+    case "$(basename "$o")" in .*|*[!A-Za-z0-9._-]*) die "bad DTBO name: $o";; *.dtbo) ;; *) die "DTBO not .dtbo: $o";; esac
+done
+[ -z "$DTBO" ] || [ "$PIN" = 0 ] || die "DTBO is not pinned: set PIN=0 and new PKGVER"
 if [ "$PIN" = 1 ]; then
     [ "$PINNED" = 1 ] || die "no pins for KREL $KREL: set PIN=0 and new PKGVER"
     for v in IMAGE SYSMAP CONFIG MODTAR DTB; do
@@ -264,7 +273,13 @@ DR=$WORK/$DPKG
 DS=$DR$STAGEPREFIX/$KREL/dtb
 mkdir -p "$DS/$(dirname "$FDTFILE")" "$DR/DEBIAN"
 cp "$DTB" "$DS/$FDTFILE"
-(cd "$DS" && sha256sum "$FDTFILE" > SHA256SUMS.dtb)
+OVL=()
+for o in "${DTBOS[@]}"; do
+    mkdir -p "$DS/$(dirname "$FDTFILE")/overlay"
+    cp "$o" "$DS/$(dirname "$FDTFILE")/overlay/"
+    OVL+=("$(dirname "$FDTFILE")/overlay/$(basename "$o")")
+done
+(cd "$DS" && sha256sum "$FDTFILE" "${OVL[@]}" > SHA256SUMS.dtb)
 doc_files "$DPKG" "$DR" "$DTB_PKGVER"
 finish_pkg "$DR"
 DSIZE=$(inst_size "$DR")
@@ -283,6 +298,10 @@ Description: H96 MAX V58 device tree for kernel $KREL (staged)
  Package has no maintainer scripts and never writes /boot;
  h96-kernel-switch copies file into /boot.
 EOF
+if [ ${#OVL[@]} -gt 0 ]; then
+    { echo " ."; echo " Optional device tree overlays, off unless copied to /boot and named"
+      echo " in armbianEnv.txt overlays=:"; printf ' %s\n' "${OVL[@]}"; } >> "$DR/DEBIAN/control"
+fi
 touch -d "@$SOURCE_DATE_EPOCH" "$DR/DEBIAN/control" "$DR/DEBIAN"
 
 ARCH=arm64
