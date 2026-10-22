@@ -475,6 +475,16 @@ def check_boot():
         units = [l.split()[0] for l in out.splitlines() if l.strip()]
         res.append(Result(g, "failed units", FAIL if units else PASS,
                           ("failed: " + ", ".join(units)) if units else "systemctl --failed: 0 units"))
+        # modules-load names its module in journal; failure here hides behind udev autoload (8.0 RC: bcmdhd EINVAL)
+        rc2, act, _ = run(["systemctl", "show", "-p", "ActiveState,Result", "--value", "systemd-modules-load.service"])
+        st = act.split()
+        if rc2 == 0 and st:
+            if "failed" in st:
+                _, jl, _ = run(["journalctl", "-b", "-u", "systemd-modules-load.service", "-p", "3", "-o", "cat", "--no-pager", "-q"])
+                res.append(Result(g, "modules-load", FAIL, "systemd-modules-load.service failed: "
+                                  + ("; ".join(l.strip() for l in jl.splitlines() if l.strip())[:200] or "no journal line")))
+            else:
+                res.append(Result(g, "modules-load", PASS, "systemd-modules-load.service " + " ".join(st)))
 
     t = (read("/proc/sys/kernel/tainted", "") or "").strip()
     if not t.isdigit():
