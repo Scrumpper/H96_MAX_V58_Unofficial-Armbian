@@ -24,6 +24,12 @@ cat > "$W/bin/mkinitramfs" <<'EOF'
 [ -d "$H96KS_ROOT/usr/lib/modules/$3" ] || exit 1
 echo "initrd for $3${SALT:-}" > "$2"
 EOF
+cat > "$W/bin/depmod" <<'EOF'
+#!/bin/sh
+# stub: depmod -a -b ROOT -F MAP KREL
+echo "depmod $(cat "$3/usr/lib/modules/$6/modules.order" 2>/dev/null)" > "$3/usr/lib/modules/$6/modules.dep"
+EOF
+chmod +x "$W/bin/depmod"
 cat > "$W/bin/mkimage" <<'EOF'
 #!/bin/sh
 # stub: last two args are -d IN OUT
@@ -127,7 +133,7 @@ ok "missing staged DTB refused without --keep-dtb" '! ks try $NEWK 2>/dev/null'
 setup; printf 'x\0Linux version 6.1.99-other (gcc) #1\0' > "$SK/Image"; (cd "$SK" && sha256sum Image System.map config > SHA256SUMS.kernel)
 ok "staged Image reporting other release refused" 'ks try $NEWK 2>&1 | grep -q "reports release 6.1.99-other"'
 setup; printf 'x\0Linux version %s (gcc) #1\0' "$NEWK" > "$R/boot/Image-$OLDK"
-ok "current Image reporting trial release, staged content differs: accepted" 'ks try $NEWK > /dev/null && [ "$(phase)" = armed ]'
+ok "current Image reporting trial release, staged content differs, no saved module tree of in-boot build: refused (r14)" 'ks try $NEWK 2>&1 | grep -q "no saved module tree of in-boot build" && [ ! -e $STD/trial ] && [ "$(img)" = Image-$OLDK ]'
 setup; printf 'x\0Linux version %s (gcc) #1\0' "$NEWK" > "$R/boot/Image-$OLDK"; cp "$R/boot/Image-$OLDK" "$SK/Image"; cp "$R/boot/dtb/$DN" "$SK/dtb/$DN"
 (cd "$SK" && sha256sum Image System.map config > SHA256SUMS.kernel); (cd "$SK/dtb" && sha256sum "$DN" > SHA256SUMS.dtb)
 ok "current Image reporting trial release, staged content equal: refused" 'ks try $NEWK 2>&1 | grep -q "already reports release $NEWK; staged Image and DTB equal"'
@@ -265,7 +271,7 @@ ok "unreadable trial moved aside, links left as found" 'on_new && ls $STD/ | gre
 
 echo "== 12 power loss at every cut point of try: boot after cut never mixed, guard settles on previous"
 setup; cps=$(cutpoints ks try $NEWK)
-ok "try reaches layout, copy and switch cut points" '[ "$cps" = "conv-cur conv-dtb conv-gen conv-img conv-ini copy-0 copy-1 switch-0 switch-1 " ]'
+ok "try reaches layout, copy, module snapshot and switch cut points" '[ "$cps" = "conv-cur conv-dtb conv-gen conv-img conv-ini copy-0 copy-1 snap-0 snap-1 switch-0 switch-1 " ]'
 for cp in $cps; do
     setup
     H96KS_DIE_AT=$cp ks try $NEWK > /dev/null 2>&1; rc=$?
@@ -421,7 +427,7 @@ out=$(H96KS_AVAIL_KB=1000 B=b3 kss try $NEWK 2>&1); rc=$?
 ok "same release, low /boot space: refused, /boot byte-identical" '[ $rc != 0 ] && echo "$out" | grep -q "KiB free, needs" && [ "$(blist)" = "$before" ] && [ ! -e $STD/trial ]'
 # power loss during same-release try and confirm
 same_base; cps=$(B=b3 H96KS_PROCVER=$B1 H96KS_UNAME=$NEWK H96KS_BOOTID=b3 cutpoints bash "$KS" try $NEWK)
-ok "same-release try reaches copy and switch cut points" 'echo "$cps" | grep -q "copy-0 copy-1 switch-0 switch-1"'
+ok "same-release try reaches copy, module snapshot and switch cut points" 'echo "$cps" | grep -q "copy-0 copy-1 snap-0 snap-1 switch-0 switch-1"'
 for cp in $cps; do
     same_base
     H96KS_DIE_AT=$cp B=b3 kss try $NEWK > /dev/null 2>&1; rc=$?
@@ -436,6 +442,91 @@ for cp in confirm-0 commit-1 commit-2; do
     n=5; while [ -e "$STD/trial" ] && [ $n -lt 9 ]; do pv=$(bimg); U=$NEWK B=b$n PV=$pv kss guard 2>/dev/null; n=$((n + 1)); done
     ok "same-release cut in confirm at $cp: guard completes confirm, g2 default" '[ "$(cur)" = $NEWK.g2 ] && [ "$(bimg)" = "$B2" ] && [ ! -e $STD/trial ] && grep -qx "NEW=$NEWK.g2" $STD/last && invariant'
 done
+
+echo "== 16 module trees per kernel build (r14): same-release revert runs with own modules"
+NOTE='\x04\x00\x00\x00\x14\x00\x00\x00\x03\x00\x00\x00GNU\x00'
+IDA=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa IDB=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+hexb() { echo "$1" | sed 's/../\\x&/g'; }
+notes() { printf "$NOTE$(hexb "$1")" > "$W/notes-$1"; }   # running kernel notes of build ID
+notes $IDA; notes $IDB
+# package version of NEWK: Image with banner and build id, module tree content
+pkg() {  # id banner tree-text
+    printf "img\0%s\n\0$NOTE$(hexb "$1")pad" "$2" > "$SK/Image"; (cd "$SK" && sha256sum Image System.map config > SHA256SUMS.kernel)
+    rm -f "$R/usr/lib/modules/$NEWK/modules.dep"; echo "$3" > "$R/usr/lib/modules/$NEWK/modules.dep"
+}
+km() { H96KS_UNAME=$NEWK H96KS_BOOTID=${B:-b1} H96KS_PROCVER=${PV:-$B1} H96KS_NOTES=$W/notes-${ID:-$IDA} bash "$KS" "$@"; }
+mnt() { cat "$STD/test-mount" 2>/dev/null; }
+mdep() { cat "$R$(mnt)/modules.dep"; }
+nsnap() { find "$SD" -mindepth 1 -maxdepth 1 -type d ! -name '.*' 2>/dev/null | wc -l; }
+SD=$STD/modules/$NEWK
+# confirmed g1 = build A (tree dep-A), then package upgrade to build B (tree dep-B)
+mod_base() {
+    setup; stage "$B1" dtb-1; pkg $IDA "$B1" dep-A
+    ks try $NEWK > /dev/null; B=b2 ID=$IDA km guard; B=b2 ID=$IDA km confirm > /dev/null; rm -f "$STD/last"
+    pkg $IDB "$B2" dep-B; echo dtb-2 > "$SK/dtb/$DN"; (cd "$SK/dtb" && sha256sum "$DN" > SHA256SUMS.dtb)
+}
+mod_base
+ok "first try saved package tree of build A (meta with build id, tree content dep-A)" '[ "$(nsnap)" = 1 ] && grep -q "IDS=.*$IDA" $SD/*/meta && [ "$(cat $SD/*/tree/modules.dep)" = dep-A ]'
+ok "status: g1 modules saved (package now build B), WARN: running A differs from package tree" 'B=b3 ID=$IDA km status > $W/s; grep -qx "  modules: saved" $W/s && grep -q "^WARN: running kernel build differs" $W/s'
+ok "list prints WARN line on mismatch" 'B=b3 ID=$IDA km list | grep -q "^WARN: running kernel build differs"'
+st0=$(cd "$STD" && find . | sort)
+B=b3 ID=$IDA km modules-mount > "$W/mm" 2>&1
+ok "modules-mount (running A, package B): saved tree A mounted, content dep-A" '[ "$(mdep)" = dep-A ] && grep -q "mounted read-only" $W/mm'
+ok "modules-mount writes nothing in state dir apart from test mount record" '[ "$(cd $STD && find . | grep -v test-mount | sort)" = "$st0" ]'
+ok "status after mount: saved tree mounted, no WARN" 'B=b3 ID=$IDA km status > $W/s; grep -q "^modules: saved tree .* mounted" $W/s && ! grep -q ^WARN $W/s'
+ok "snapshot-modules skips package tree while saved tree is mounted" 'B=b3 ID=$IDA km snapshot-modules --quiet 2>/dev/null; [ "$(nsnap)" = 1 ]'
+rm -f "$STD/test-mount"
+out=$(B=b3 ID=$IDA km try $NEWK 2>&1); rc=$?
+ok "same-release try with saved tree of in-boot build: accepted, package tree B saved too" '[ $rc = 0 ] && [ "$(phase)" = armed ] && [ "$(nsnap)" = 2 ] && grep -l "IDS=.*$IDB" $SD/*/meta > /dev/null'
+B=b4 ID=$IDB PV=$B2 km guard
+B=b4 ID=$IDB PV=$B2 km modules-mount > "$W/mm" 2>&1
+ok "trial boot (build B running): package tree matches, nothing mounted" '[ -z "$(mnt)" ] && grep -q "package tree of $NEWK matches" $W/mm'
+B=b5 ID=$IDA PV=$B1 km guard
+B=b5 ID=$IDA PV=$B1 km modules-mount > /dev/null 2>&1
+ok "trial not confirmed, revert boot (build A): saved tree A mounted (dep-A)" '[ ! -e $STD/trial ] && [ "$(cur)" = $NEWK.g1 ] && [ "$(mdep)" = dep-A ]'
+rm -f "$STD/test-mount"
+# confirm keeps saved tree of rollback target; rollback boots A with its tree; prune drops it
+mod_base; B=b3 ID=$IDA km try $NEWK > /dev/null; B=b4 ID=$IDB PV=$B2 km guard; B=b4 ID=$IDB PV=$B2 km confirm > /dev/null
+ok "confirm: saved trees of g1 (rollback target) and g2 kept" '[ "$(nsnap)" = 2 ] && B=b4 ID=$IDB PV=$B2 km status | grep -A1 "generation: $NEWK.g1" | grep -qx "  modules: saved"'
+B=b5 ID=$IDB PV=$B2 km rollback > /dev/null
+B=b6 ID=$IDA PV=$B1 km modules-mount > /dev/null 2>&1
+ok "rollback to g1, boot of build A: saved tree A mounted" '[ "$(cur)" = $NEWK.g1 ] && [ "$(mdep)" = dep-A ]'
+rm -f "$STD/test-mount"
+B=b6 ID=$IDA PV=$B1 km rollback > /dev/null; rm -f "$STD/last"
+B=b7 ID=$IDB PV=$B2 km prune $NEWK.g1 > /dev/null
+ok "prune of g1: saved tree of build A removed, tree of B (staged) kept" '[ "$(nsnap)" = 1 ] && grep -q "IDS=.*$IDB" $SD/*/meta && [ ! -e $R/boot/h96ks/$NEWK.g1 ]'
+# no saved tree: refusal, apt cache deb, repair
+mod_base; rm -rf "$STD/modules"; before=$(blist)
+out=$(B=b3 ID=$IDA km try $NEWK 2>&1); rc=$?
+ok "same-release try without saved tree of in-boot build: refused, /boot byte-identical, no record" '[ $rc != 0 ] && echo "$out" | grep -q "no saved module tree of in-boot build" && [ "$(blist)" = "$before" ] && [ ! -e $STD/trial ]'
+mkdeb() {  # id banner: h96-kernel deb of build in apt cache
+    local d=$W/deb; rm -rf "$d"; mkdir -p "$d/DEBIAN" "$d/usr/lib/h96-kernel/$NEWK" "$d/usr/lib/modules/$NEWK"
+    printf "img\0%s\n\0$NOTE$(hexb "$1")pad" "$2" > "$d/usr/lib/h96-kernel/$NEWK/Image"; echo map > "$d/usr/lib/h96-kernel/$NEWK/System.map"
+    echo "a.ko" > "$d/usr/lib/modules/$NEWK/modules.order"
+    printf 'Package: h96-kernel-%s\nVersion: 8.0.0~r1\nArchitecture: arm64\nMaintainer: t <t@t>\nDescription: t\n' "$NEWK" > "$d/DEBIAN/control"
+    mkdir -p "$R/var/cache/apt/archives"; dpkg-deb -b "$d" "$R/var/cache/apt/archives/h96-kernel-${NEWK}_8.0.0~r1_arm64.deb" > /dev/null
+}
+mkdeb $IDB "$B2"
+ok "apt cache deb of other build only: still refused" '! B=b3 ID=$IDA km try $NEWK 2>/dev/null && [ ! -e $STD/trial ]'
+mkdeb $IDA "$B1"
+out=$(B=b3 ID=$IDA km try $NEWK 2>&1); rc=$?
+ok "apt cache deb of in-boot build: tree taken from deb (depmod run), try accepted" '[ $rc = 0 ] && echo "$out" | grep -q "taken from" && [ "$(phase)" = armed ] && [ "$(cat "$(dirname "$(grep -l "IDS=.*$IDA" $SD/*/meta)")/tree/modules.dep")" = "depmod a.ko" ]'
+mod_base; rm -rf "$STD/modules" "$R/var/cache/apt/archives"
+ok "repair-modules without saved tree or deb: refused with message" 'B=b3 ID=$IDA km repair-modules 2>&1 | grep -q "no module tree of running build" && [ -z "$(mnt)" ]'
+mkdeb $IDA "$B1"
+ok "repair-modules with matching apt cache deb: tree built and mounted" 'B=b3 ID=$IDA km repair-modules > /dev/null && [ "$(mdep)" = "depmod a.ko" ] && ! B=b3 ID=$IDA km status | grep -q ^WARN'
+rm -f "$STD/test-mount"
+ok "repair-modules when package tree matches: nothing to do" 'B=b3 ID=$IDB km repair-modules | grep -q "nothing to do"'
+# power loss between snapshot and switch
+for cp in snap-0 snap-1; do
+    mod_base; rm -rf "$STD/modules"; mkdeb $IDA "$B1"; before=$(blist)
+    H96KS_DIE_AT=$cp B=b3 ID=$IDA km try $NEWK > /dev/null 2>&1; rc=$?
+    ok "cut at $cp (first snapshot of try): rc 99, /boot byte-identical, no record" '[ $rc = 99 ] && [ "$(blist)" = "$before" ] && [ ! -e $STD/trial ]'
+    B=b3 ID=$IDA km try $NEWK > /dev/null 2>&1
+    ok "cut at $cp: retry arms trial, saved trees complete, no temp dirs" '[ "$(phase)" = armed ] && [ "$(nsnap)" = 2 ] && [ -z "$(for d in $SD/*/; do [ -s $d/tree/modules.dep ] || echo x; done)" ] && [ -z "$(find $STD/modules -name "*.h96ks-tmp")" ]'
+done
+mod_base; rm -rf "$STD/modules"
+ok "mismatch with no saved tree: modules-mount warns, mounts nothing" 'B=b3 ID=$IDA km modules-mount 2>&1 | grep -q "WARN running build" && [ -z "$(mnt)" ]'
 
 echo "kernel-switch stub tests: $pass pass, $fail fail"
 [ "$fail" = 0 ]

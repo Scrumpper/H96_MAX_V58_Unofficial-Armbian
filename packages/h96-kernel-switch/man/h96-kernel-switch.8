@@ -29,6 +29,14 @@ h96-kernel-switch \- boot staged kernel as guarded trial, confirm or roll back
 |
 .B in-use
 .I KREL
+.br
+.B h96-kernel-switch
+.B snapshot-modules
+.RB [ \-\-quiet ]
+|
+.B repair-modules
+|
+.B modules-mount
 .SH DESCRIPTION
 Kernel packages stage files under /usr/lib/h96-kernel/KREL and never write /boot.
 Vendor U-Boot on H96 MAX V58 has no try-once slot; boot.scr loads /boot/Image,
@@ -43,6 +51,17 @@ generation at once, so hang, panic or watchdog reset lands on previous kernel.
 Only
 .B confirm
 during trial boot keeps new kernel as default.
+.PP
+Two builds of one release share /usr/lib/modules/KREL, and package upgrade
+replaces that tree. Modules of one build fail BTF validation on another build
+(Invalid argument). Tool keeps module tree of each staged build under
+/var/lib/h96-kernel-switch/modules (hard links), keyed by Image checksum and
+GNU build id. At boot, before udev and systemd-modules-load, modules unit
+compares build id of running kernel (/sys/kernel/notes) with staged Image;
+on mismatch it mounts saved tree of running build read-only over
+/usr/lib/modules/KREL. Fallback, rollback and watchdog reset to earlier build
+of same release so load matching modules. Package upgrade of h96-kernel-KREL
+fails while saved tree is mounted; reboot into package build first.
 .SH COMMANDS
 .TP
 .B list
@@ -51,8 +70,11 @@ generations KREL.gN with roles default (h96ks/cur), trial, trial-previous,
 rollback-target and running (banner of generation Image equals /proc/version).
 .TP
 .B status
-Default release, link targets, generations with roles, recorded trial, last
-results.
+Default release, link targets, generations with roles and module tree source
+(package, saved, missing, no-package), module tree state of running kernel
+(WARN line on mismatch), recorded trial, last results.
+.B list
+also prints WARN line on mismatch.
 .TP
 .B default
 Prints release that boot files start; exit status 1 when unknown.
@@ -66,7 +88,9 @@ First run converts plain-name Image and uInitrd links into h96ks/cur links;
 every conversion step keeps content each boot name resolves to (previous
 generation holds hard links to current files and DTB copy). Refuses when trial
 is recorded, when KREL is running or default and staged Image and DTB equal
-in-boot generation, when /boot is read-only, when
+in-boot generation, when in-boot Image is other build of KREL and no module
+tree of that build is saved or found in h96-kernel deb (apt cache, offline
+repo), when /boot is read-only, when
 extlinux directory exists, or when Image or uInitrd is not link. Also
 refuses while h96-undervolt trial is recorded, and DTB change while
 h96-undervolt change is active (use
@@ -109,6 +133,20 @@ file) and trial= (none or recorded phase) for board DTB.
 .BR h96-undervolt (8)
 uses it to refuse writes into generations.
 .TP
+.B snapshot-modules \fR[\fB\-\-quiet\fR]
+Saves module tree of each fully installed staged kernel build (hard links).
+apt runs it before dpkg (/etc/apt/apt.conf.d/80h96-kernel-switch); package
+postinst runs it once. Skipped while saved tree hides package tree.
+.TP
+.B repair-modules
+Running build without matching module tree: mounts saved tree of running
+build, or builds one from h96-kernel-KREL deb with same build in
+/var/cache/apt/archives or /opt/h96-pkgs (depmod), and mounts it read-only.
+Reboot afterwards loads drivers in order.
+.TP
+.B modules-mount
+Run by h96-kernel-switch-modules.service at boot; writes nothing on disk.
+.TP
 .B dtb-plain
 Turns managed DTB link back into plain file holding content of
 h96ks/cur/fdt (temporary name, read-back, rename). Refuses while trial is
@@ -130,6 +168,10 @@ Generations of last confirm or rollback, used by rollback.
 .TP
 /var/lib/h96-kernel-switch/log, result
 Action log and outcome lines.
+.TP
+/var/lib/h96-kernel-switch/modules/KREL/SHA16/{tree,meta}
+Saved module tree per kernel build; removed when no staged or /boot Image of
+that build is left.
 .TP
 /var/lib/h96-undervolt-trial, /var/lib/h96-undervolt-state
 Read by

@@ -10,15 +10,21 @@ ME=h96-kernel-switch
 R=${H96KS_ROOT:-}  # stub root for tests; empty on live system
 TEST=0
 [ -n "$R" ] && TEST=1
-if [ "$TEST" = 0 ]; then unset H96KS_UNAME H96KS_BOOTID H96KS_HEALTHY H96KS_AVAIL_KB H96KS_DIE_AT H96KS_CUTLOG H96KS_PROCVER; fi
+if [ "$TEST" = 0 ]; then unset H96KS_UNAME H96KS_BOOTID H96KS_HEALTHY H96KS_AVAIL_KB H96KS_DIE_AT H96KS_CUTLOG H96KS_PROCVER H96KS_NOTES; fi
 BOOT=$R/boot
 GD=h96ks           # generation directories, relative to /boot
 CUR=$GD/cur        # link to active generation
-STAGE=$R/usr/lib/h96-kernel
-MODS=$R/usr/lib/modules
+STAGE_REL=/usr/lib/h96-kernel
+MODS_REL=/usr/lib/modules
+STAGE=$R$STAGE_REL
+MODS=$R$MODS_REL
 ST=$R/var/lib/h96-kernel-switch
 TRIAL=$ST/trial
 LAST=$ST/last
+SNAP=$ST/modules   # module trees per kernel build: SNAP/<krel>/<image sha16>/{tree,meta}
+NOTES=${H96KS_NOTES:-/sys/kernel/notes}
+APTC=$R/var/cache/apt/archives
+OREPO=$R/opt/h96-pkgs
 RESERVE_KB=${H96KS_RESERVE_KB:-16384}
 TMPSFX=.h96ks-tmp
 UVFLAG=$R/var/lib/h96-undervolt-trial   # h96-undervolt (h96-tools): trial recorded
@@ -30,7 +36,8 @@ usage() {
 usage: $ME list | status | default | dtb
        $ME try KREL [--auto-confirm] [--keep-dtb]
        $ME confirm | rollback [--keep-dtb] | prune KREL|GEN | in-use KREL|GEN | dtb-plain
-       $ME guard | auto-confirm        (run by systemd units)
+       $ME snapshot-modules [--quiet] | repair-modules
+       $ME guard | auto-confirm | modules-mount        (run by systemd units and apt hook)
 try:      copy staged KREL into new /boot generation, point h96ks/cur at it, arm boot guard;
           same release as default or running kernel: only when staged Image or DTB differs
 confirm:  keep KREL as default; run during trial boot
@@ -41,6 +48,11 @@ in-use:   print roles of KREL or generation GEN (KREL.gN) in boot files (default
 prune:    remove generations of KREL, or one generation GEN, that nothing names
 dtb:      print board DTB path, layout (plain, managed, link), resolved file and trial phase
 dtb-plain: turn managed DTB link back into plain file, same content
+snapshot-modules: keep module tree of each staged kernel build (hard links); apt runs it before dpkg
+repair-modules: running build without its module tree: build tree from saved snapshot or matching
+          h96-kernel deb in apt cache or offline repo, mount it read-only over /usr/lib/modules/KREL
+modules-mount: at boot, before udev and modules-load: when running build differs from package tree,
+          mount saved tree of running build read-only over /usr/lib/modules/KREL
 EOF
 }
 
@@ -230,6 +242,136 @@ kver() {
     v=${v%%$'\n'*}
     echo "${v#Linux version }"
 }
+# GNU build ids (hex) in FILE: Image holds vmlinux and vDSO notes, /sys/kernel/notes running vmlinux note
+bids() {
+    local o
+    grep -obUaP '\x04\x00\x00\x00\x14\x00\x00\x00\x03\x00\x00\x00GNU\x00' "$1" 2>/dev/null | cut -d: -f1 | while read -r o; do
+        od -An -tx1 -v -j $((o + 16)) -N 20 "$1" | tr -d ' \n'; echo
+    done | sort -u | tr '\n' ' '
+}
+id_in() { local i; for i in $1; do case " $2 " in *" $i "*) return 0 ;; esac; done; return 1; }  # ids list
+fsha() { sha256sum < "$1" | cut -d' ' -f1; }
+# release of Image: embedded banner, else generation or link name
+img_krel() { local v; v=$(kver "$1"); [ -n "$v" ] && echo "$v" || echo "$2"; }
+# bind mount (test: record file); source of mount on DIR, empty when none
+mnt_bind() {
+    if [ "$TEST" = 1 ]; then echo "${1#"$R"}" > "$ST/test-mount"; return; fi
+    mount --bind "$1" "$2" && mount -o remount,bind,ro "$2"
+}
+mnt_src() {
+    if [ "$TEST" = 1 ]; then cat "$ST/test-mount" 2>/dev/null || true; return; fi
+    mountpoint -q "$1" 2>/dev/null || return 0
+    findmnt -no FSROOT --mountpoint "$1" 2>/dev/null || true
+}
+snap_dir() { echo "$SNAP/$1/${2:0:16}"; }  # krel sha
+snap_ok() { [ -s "$1/meta" ] && [ -d "$1/tree" ] && grep -qx "SHA=$2" "$1/meta"; }
+snap_by_id() {  # krel id-list: snapshot dir holding module tree of that build
+    local d
+    for d in "$SNAP/$1"/*/; do
+        d=${d%/}
+        [ -s "$d/meta" ] && [ -d "$d/tree" ] || continue
+        id_in "$2" "$(sed -n 's/^IDS=//p' "$d/meta")" && { echo "$d"; return 0; }
+    done
+    return 1
+}
+# snap_put KREL SRC IMG link|move: temp dir, meta, one rename
+snap_put() {
+    local sh d t
+    sh=$(fsha "$3"); d=$(snap_dir "$1" "$sh"); t="$SNAP/$1/.${sh:0:16}$TMPSFX"
+    mkdir -p "$SNAP/$1"
+    rm -rf "$t"; mkdir -p "$t"
+    if [ "$4" = link ]; then
+        cp -al "$2" "$t/tree" 2>/dev/null || { rm -rf "$t/tree"; cp -a "$2" "$t/tree"; }
+    else
+        mv -T "$2" "$t/tree"
+    fi
+    printf 'KREL=%s\nSHA=%s\nIDS=%s\n' "$1" "$sh" "$(bids "$3")" > "$t/meta"
+    sync 2>/dev/null || true
+    cutpoint snap-0
+    rm -rf "$d"
+    mv -T "$t" "$d"
+    fsync_dir "$SNAP/$1"
+    cutpoint snap-1
+    log "modules: saved tree of $1 build ${sh:0:16} ($4)"
+    [ "$TEST" = 1 ] || systemctl enable -q $ME-modules.service 2>/dev/null || true
+}
+# package tree of KREL belongs to staged Image; skipped while hidden by mounted snapshot or package half-installed
+snap_take() {
+    local S=$STAGE/$1 sh
+    [ -f "$S/Image" ] && [ -s "$MODS/$1/modules.dep" ] || return 0
+    [ -z "$(mnt_src "$MODS/$1")" ] || return 0
+    if [ "$TEST" = 0 ]; then
+        [ "$(dpkg-query -W -f='${db:Status-Abbrev}' "h96-kernel-$1" 2>/dev/null)" = "ii " ] || return 0
+    fi
+    sh=$(fsha "$S/Image")
+    snap_ok "$(snap_dir "$1" "$sh")" "$sh" && return 0
+    snap_put "$1" "$MODS/$1" "$S/Image" link
+}
+# snap_from_deb KREL sha|id VALUE: tree from h96-kernel-KREL deb (apt cache, offline repo) whose Image matches
+snap_from_deb() {
+    local f x img
+    for f in "$APTC/h96-kernel-$1"_*.deb $(find "$OREPO" -maxdepth 3 -name "h96-kernel-$1_*.deb" 2>/dev/null | sort); do
+        [ -f "$f" ] || continue
+        mkdir -p "$R/var/tmp"
+        x=$(mktemp -d "$R/var/tmp/$ME-deb.XXXXXX")
+        dpkg-deb -x "$f" "$x" 2>/dev/null || { rm -rf "$x"; continue; }
+        img=$x$STAGE_REL/$1/Image
+        if [ -f "$img" ] && [ -d "$x$MODS_REL/$1" ] &&
+            { { [ "$2" = sha ] && [ "$(fsha "$img")" = "$3" ]; } || { [ "$2" = id ] && id_in "$3" "$(bids "$img")"; }; }; then
+            depmod -a -b "$x" -F "$x$STAGE_REL/$1/System.map" "$1" || { rm -rf "$x"; die "depmod for tree from $f failed"; }
+            snap_put "$1" "$x$MODS_REL/$1" "$img" move
+            rm -rf "$x"
+            say "module tree of $1 build ${3:0:16} taken from $f"
+            return 0
+        fi
+        rm -rf "$x"
+    done
+    return 1
+}
+# drop snapshots whose Image is neither staged nor in /boot; mounted one stays
+snap_gc() {
+    local d k sh keep m
+    [ -d "$SNAP" ] || return 0
+    find "$SNAP" -mindepth 2 -maxdepth 2 -name ".*$TMPSFX" -exec rm -rf {} + 2>/dev/null || true
+    for d in "$SNAP"/*/*/; do
+        d=${d%/}; [ -d "$d" ] || continue
+        k=$(basename "$(dirname "$d")"); sh=$(sed -n 's/^SHA=//p' "$d/meta" 2>/dev/null)
+        keep=""
+        for m in "$STAGE/$k/Image" "$BOOT/$GD/$k".g*/Image "$BOOT/Image-$k" "$BOOT/Image"; do
+            [ -f "$m" ] && [ -n "$sh" ] && [ "$(fsha "$m")" = "$sh" ] && { keep=1; break; }
+        done
+        case "$(mnt_src "$MODS/$k")" in *"${d#"$R"}"*) keep=1 ;; esac
+        [ -n "$keep" ] || { rm -rf "$d"; log "modules: removed tree of $k build ${sh:0:16} (no Image left)"; }
+    done
+    return 0
+}
+# one line: module tree state of running kernel; rc 1 on mismatch
+mod_state() {
+    local K S rid m
+    K=$(krun); S=$STAGE/$K
+    [ -f "$S/Image" ] || { echo "modules: $K not staged by h96-kernel package"; return 0; }
+    rid=$(bids "$NOTES")
+    [ -n "$rid" ] || { echo "modules: no build id in $NOTES"; return 0; }
+    m=$(mnt_src "$MODS/$K")
+    if [ -z "$m" ] && id_in "$rid" "$(bids "$S/Image")"; then echo "modules: package tree matches running kernel"; return 0; fi
+    if [ -n "$m" ] && [ -s "$R${m%/tree}/meta" ] && id_in "$rid" "$(sed -n 's/^IDS=//p' "$R${m%/tree}/meta")"; then
+        echo "modules: saved tree $(basename "${m%/tree}") of running build mounted on $MODS/$K (package tree belongs to other build)"
+        return 0
+    fi
+    echo "WARN: running kernel build differs from module tree in $MODS/$K; modules fail to load. Run '$ME repair-modules'"
+    return 1
+}
+# module tree source of generation: package, saved, missing, or release without package
+gen_mods() {
+    local i=$BOOT/$GD/$1/Image k sh
+    k=$(img_krel "$i" "$(gen_krel "$1")")
+    [ -f "$STAGE/$k/Image" ] || { echo "no-package"; return; }
+    sh=$(fsha "$i")
+    if [ "$(fsha "$STAGE/$k/Image")" = "$sh" ]; then echo package
+    elif snap_ok "$(snap_dir "$k" "$sh")" "$sh"; then echo saved
+    else echo missing; fi
+}
+
 avail_kb() {
     if [ -n "${H96KS_AVAIL_KB:-}" ]; then echo "$H96KS_AVAIL_KB"; return; fi
     df -Pk "$BOOT" | awk 'NR==2 {print $4}'
@@ -333,6 +475,15 @@ cmd_try() {
         die "$BOOT/Image already reports release $K; staged Image and DTB equal in-boot generation"
     fi
     [ "$same" = 0 ] || say "$K: same release, new content (Image or DTB differs from in-boot generation): new generation"
+    # one /usr/lib/modules/K for both builds: fallback needs saved tree of in-boot build
+    snap_take "$K"
+    local pk psh
+    pk=$(img_krel "$BOOT/Image" "$dk")
+    if [ "$pk" = "$K" ] && ! cmp -s "$S/Image" "$BOOT/Image"; then
+        psh=$(fsha "$BOOT/Image")
+        snap_ok "$(snap_dir "$K" "$psh")" "$psh" || snap_from_deb "$K" sha "$psh" ||
+            die "$K: no saved module tree of in-boot build ${psh:0:16}; fallback would run it with modules of staged build (BTF mismatch: no WiFi, GPU, display). Put h96-kernel-$K deb of in-boot build in $APTC, or run '$ME snapshot-modules' before next package upgrade"
+    fi
     if [ "$needdtb" = 1 ] && [ -e "$UVSTATE" ]; then
         die "h96-undervolt change active in $dp; staged DTB would drop it. Run 'h96-undervolt revert' first, or pass --keep-dtb"
     fi
@@ -345,7 +496,14 @@ cmd_try() {
         [ -z "$a" ] || arch=$a
     fi
     say "building initramfs for $K"
-    mkinitramfs -o "$W/initrd.img-$K" "$K" || die "mkinitramfs failed"
+    if [ "$TEST" = 0 ] && [ -n "$(mnt_src "$MODS/$K")" ]; then
+        # saved tree mounted over package tree: build from package tree in private mount namespace
+        # shellcheck disable=SC2016  # positional args of inner shell
+        unshare -m --propagation private sh -c 'umount "$1" && exec mkinitramfs -o "$2" "$3"' _ "$MODS/$K" "$W/initrd.img-$K" "$K" ||
+            die "mkinitramfs failed"
+    else
+        mkinitramfs -o "$W/initrd.img-$K" "$K" || die "mkinitramfs failed"
+    fi
     mkimage -A "$arch" -O linux -T ramdisk -C gzip -n uInitrd -d "$W/initrd.img-$K" "$W/uInitrd-$K" > "$W/mkimage.txt" ||
         die "mkimage failed"
     [ -s "$W/uInitrd-$K" ] || die "empty uInitrd"
@@ -382,6 +540,7 @@ cmd_try() {
     cutpoint switch-1
     log "try $K: armed auto=$auto: $(links_now)"
     drop_unused_gens "$K"
+    snap_gc
     say "next boot starts $K once; previous generation: $pg"
     if [ "$auto" = 1 ]; then
         say "trial boot confirms itself 180 s after boot when multi-user.target is active"
@@ -488,6 +647,7 @@ cmd_confirm() {
     trial_save commit "$T_PENDING"
     cutpoint confirm-0
     commit_finish
+    snap_gc
     say "$K confirmed as default"
 }
 
@@ -548,6 +708,7 @@ cmd_prune() {
         fsync_dir "$BOOT/$GD"
         say "removed $BOOT/$GD/$K"
         log "prune generation $K"
+        snap_gc
         return 0
     fi
     [[ ! $K =~ \.g[0-9]+$ ]] || die "no generation $K in $BOOT/$GD"
@@ -572,6 +733,7 @@ cmd_prune() {
         if [ -f "$d" ] && [ ! -L "$d" ]; then rm -f "$d"; say "removed $d"; fi
     done
     clean_tmp
+    snap_gc
     log "prune $K"
 }
 
@@ -666,6 +828,7 @@ cmd_list() {
         list_gens "$k"
         st_load "$TRIAL" 2>/dev/null || true
     done
+    mod_state | grep '^WARN' || true
 }
 # generation lines of KREL: name, roles, running when banner matches /proc/version
 list_gens() {
@@ -692,13 +855,59 @@ cmd_status() {
         [ -d "$g" ] || continue
         g=$(basename "$g"); r=$(gen_roles "$g")
         echo "generation: $g${r:+ [$r]}"
+        echo "  modules: $(gen_mods "$g")"
     done
+    mod_state || true
     if st_load "$TRIAL" 2>/dev/null; then
         echo "trial: $T_KREL phase=$T_PHASE auto=$T_AUTO pending=${T_PENDING:-none} previous=$T_PREV new=$T_NEW"
     else
         echo "trial: none"
     fi
     [ ! -f "$ST/result" ] || { echo "last results:"; tail -5 "$ST/result"; }
+}
+
+cmd_snapshot() {
+    local d k
+    need_root
+    lock 30
+    for d in "$STAGE"/*/; do
+        k=$(basename "$d"); safe "$k" || continue
+        snap_take "$k"
+        if [ -n "$(mnt_src "$MODS/$k")" ] && [ "${1:-}" = --quiet ]; then
+            echo "$ME: $MODS/$k holds saved tree of running build (read-only); upgrade of h96-kernel-$k fails until reboot into package build" >&2
+        fi
+    done
+    [ "${1:-}" = --quiet ] || say "module trees saved under $SNAP"
+}
+# boot: before udev and modules-load; writes nothing on disk
+cmd_modules_mount() {
+    local K S rid d
+    K=$(krun); S=$STAGE/$K
+    [ -f "$S/Image" ] && [ -d "$MODS/$K" ] || exit 0
+    rid=$(bids "$NOTES")
+    [ -n "$rid" ] || { echo "$ME: no build id in $NOTES"; exit 0; }
+    id_in "$rid" "$(bids "$S/Image")" && { echo "$ME: package tree of $K matches running kernel"; exit 0; }
+    [ -z "$(mnt_src "$MODS/$K")" ] || { echo "$ME: $MODS/$K already mounted"; exit 0; }
+    d=$(snap_by_id "$K" "$rid") || { echo "$ME: WARN running build of $K has no saved module tree; run '$ME repair-modules'" >&2; exit 0; }
+    mnt_bind "$d/tree" "$MODS/$K" || die "mount of $d/tree failed"
+    echo "$ME: saved tree $(basename "$d") of running build mounted read-only on $MODS/$K"
+}
+cmd_repair() {
+    local K rid d
+    need_root
+    lock 30
+    K=$(krun)
+    [ -f "$STAGE/$K/Image" ] || die "$K not staged by h96-kernel package"
+    rid=$(bids "$NOTES")
+    [ -n "$rid" ] || die "no build id in $NOTES"
+    if [ -z "$(mnt_src "$MODS/$K")" ] && id_in "$rid" "$(bids "$STAGE/$K/Image")"; then say "package tree matches running kernel; nothing to do"; return 0; fi
+    [ -z "$(mnt_src "$MODS/$K")" ] || die "$MODS/$K already mounted: $(mnt_src "$MODS/$K")"
+    d=$(snap_by_id "$K" "$rid") || { snap_from_deb "$K" id "$rid" && d=$(snap_by_id "$K" "$rid"); } ||
+        die "no module tree of running build: no saved tree and no h96-kernel-$K deb with this build in $APTC or $OREPO. Boot generation matching package, or install matching h96-kernel-$K version"
+    mnt_bind "$d/tree" "$MODS/$K" || die "mount of $d/tree failed"
+    log "repair-modules: $d/tree mounted on $MODS/$K"
+    say "saved tree $(basename "$d") mounted read-only on $MODS/$K; reboot to load drivers in order (boot unit mounts it again)"
+    if [ "$TEST" = 0 ]; then udevadm trigger --action=add 2>/dev/null || true; fi
 }
 
 W=""
@@ -711,6 +920,9 @@ case "${1:-}" in
     auto-confirm) cmd_confirm auto ;;
     rollback) shift; cmd_rollback "$@" ;;
     guard) cmd_guard ;;
+    snapshot-modules) shift; cmd_snapshot "$@" ;;
+    modules-mount) cmd_modules_mount ;;
+    repair-modules) cmd_repair ;;
     prune) shift; cmd_prune "$@" ;;
     in-use) shift; cmd_in_use "$@" ;;
     dtb) cmd_dtb ;;

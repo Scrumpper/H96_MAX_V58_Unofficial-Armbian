@@ -45,6 +45,19 @@ Switching kernel is one rename of `h96ks/cur`, so U-Boot reads either complete o
 Generation directory is written under hidden temporary name, read back, then renamed into place; it never
 changes afterwards. Retry of same release creates new generation (`.g2`) and removes earlier unused attempt. Same release, new content: `try` of release that is already default or running makes new generation when staged Image or DTB differs from in-boot generation (refused when both are equal); boot guard tells trial boot from fallback by Image banner when generations differ there, else by boot id and `h96ks/cur`. `list`, `status`, `in-use` and `prune` take generation names (`<krel>.g<n>`).
 
+Module tree per kernel build (r14): builds of one release share `/usr/lib/modules/<krel>`, and package upgrade
+replaces it; modules of one build fail BTF validation on another (`Invalid argument`: no Wi-Fi, no Panthor, no
+compositor after fallback). Tool keeps tree of each staged build under `/var/lib/h96-kernel-switch/modules/<krel>/<sha16>`
+(hard links, keyed by Image sha256 and GNU build id): at `try`, from apt hook before dpkg
+(`/etc/apt/apt.conf.d/80h96-kernel-switch`) and from package postinst. `h96-kernel-switch-modules.service` runs before
+`systemd-udevd` and `systemd-modules-load` (no `/boot` access, writes nothing): running build id
+(`/sys/kernel/notes`) differs from staged Image, saved tree of running build mounted read-only over
+`/usr/lib/modules/<krel>`. Fallback, rollback and watchdog reset to earlier build therefore load own modules; boot guard
+needs no module step. `try` of other build of in-boot release refuses unless tree of in-boot build is saved or found in
+`h96-kernel-<krel>` deb (apt cache, `/opt/h96-pkgs`). `status` prints tree source per generation and WARN on mismatch;
+`repair-modules` mounts saved tree or builds one from matching deb. Saved tree costs no space until package upgrade
+replaces package tree, then full tree size (6.12: 125 MB, 6.1: 181 MB) until no Image of that build is left.
+
 8.0 beta image has `Image -> Image-<krel>` and `uInitrd -> uInitrd-<krel>` with plain DTB file. First `try`
 converts this layout in steps that each keep content every boot name resolves to: previous generation holds hard
 links to current `Image-<krel>` and `uInitrd-<krel>` plus DTB copy, `h96ks/cur` points at it, then `uInitrd`,
@@ -140,6 +153,7 @@ generations. `extlinux`, `boot.scr`, `boot.cmd` and `armbianEnv.txt` are never w
 - kernel is not staged, staged checksums fail, or `modules.dep` is missing;
 - staged Image embeds other release than requested;
 - kernel is running or already default, or current Image embeds release asked for, and staged Image and DTB equal in-boot generation;
+- in-boot Image is other build of same release and no module tree of that build is saved or found in deb;
 - `/boot/Image` or `/boot/uInitrd` is not link to plain name or `h96ks/cur`, or names missing file;
 - `/boot/extlinux`, `/boot/boot/extlinux` or `/extlinux` exists (U-Boot reads it before `boot.scr`);
 - `/boot` is not mounted or is read-only;

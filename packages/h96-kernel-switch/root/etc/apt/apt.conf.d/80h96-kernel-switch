@@ -1,0 +1,2 @@
+// h96-kernel-switch: keep module tree of each staged kernel build before dpkg replaces it
+DPkg::Pre-Invoke { "if [ -x /usr/sbin/h96-kernel-switch ]; then /usr/sbin/h96-kernel-switch snapshot-modules --quiet || true; fi"; };

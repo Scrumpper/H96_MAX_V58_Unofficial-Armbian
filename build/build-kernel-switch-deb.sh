@@ -20,7 +20,8 @@ cp "$SRC/debian/copyright" "$R/usr/share/doc/$P/copyright"
 VER=$(sed -n '1s/^[^(]*(\([^)]*\)).*/\1/p' "$SRC/debian/changelog")
 find "$R" -path "$R/DEBIAN" -prune -o -type f -print0 | xargs -0 chmod 0644
 chmod 0755 "$R/usr/sbin/$P"
-for f in prerm postrm; do install -m 0755 "$SRC/debian/$f" "$R/DEBIAN/$f"; done
+for f in postinst prerm postrm; do install -m 0755 "$SRC/debian/$f" "$R/DEBIAN/$f"; done
+(cd "$R" && find etc -type f | sort | sed "s#^#/#") > "$R/DEBIAN/conffiles"
 (cd "$R" && find . -path ./DEBIAN -prune -o -type f -print0 | sort -z | xargs -0 md5sum | sed 's#  \./#  #') > "$R/DEBIAN/md5sums"
 SIZE=$(find "$R" -path "$R/DEBIAN" -prune -o -type f -printf '%s\n' | awk '{s += int(($1 + 1023) / 1024)} END {print s}')
 {
@@ -29,7 +30,7 @@ SIZE=$(find "$R" -path "$R/DEBIAN" -prune -o -type f -printf '%s\n' | awk '{s +=
     echo "Installed-Size: $SIZE"
     sed -n '/^Description:/,$p' "$SRC/debian/control"
 } > "$R/DEBIAN/control"
-chmod 0644 "$R/DEBIAN/control" "$R/DEBIAN/md5sums"
+chmod 0644 "$R/DEBIAN/control" "$R/DEBIAN/md5sums" "$R/DEBIAN/conffiles"
 find "$R" -type d -exec chmod 0755 {} +
 find "$R" -exec touch -h -d "@$SOURCE_DATE_EPOCH" {} +
 if find "$R" -path "$R/DEBIAN" -prune -o -print | sed "s|^$R||" | grep -qE '^/boot(/|$)'; then

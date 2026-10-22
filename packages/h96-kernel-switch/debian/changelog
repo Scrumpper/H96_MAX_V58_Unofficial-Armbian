@@ -1,3 +1,26 @@
+h96-kernel-switch (8.0.0~r14) resolute; urgency=medium
+
+  * Module tree per kernel build: two builds of one release share
+    /usr/lib/modules/KREL and package upgrade replaces it, so fallback to
+    earlier build loaded modules of newer build (BTF Invalid argument: no
+    WiFi, GPU, compositor). Tool saves tree of each staged build under
+    /var/lib/h96-kernel-switch/modules (hard links, keyed by Image sha256
+    and GNU build id): at try, from apt hook before dpkg
+    (/etc/apt/apt.conf.d/80h96-kernel-switch) and from postinst.
+  * New h96-kernel-switch-modules.service, before systemd-udevd and
+    systemd-modules-load: running build differs from package tree, saved
+    tree of running build mounted read-only over /usr/lib/modules/KREL.
+    Enabled with first saved tree.
+  * try of other build of in-boot release refused unless module tree of
+    in-boot build is saved or found in h96-kernel deb (apt cache, offline
+    repo). Initramfs built from package tree also while saved tree mounted.
+  * New commands snapshot-modules, repair-modules, modules-mount; status
+    prints module tree source per generation and WARN line when running
+    build has no matching tree (list prints WARN too); confirm, prune and
+    try drop saved trees no staged or /boot Image needs.
+
+ -- Scrumpper <190908034+Scrumpper@users.noreply.github.com>  Fri, 23 Oct 2026 18:00:00 +0000
+
 h96-kernel-switch (8.0.0~r13) resolute; urgency=medium
 
   * try of release that is already default or running (or that current

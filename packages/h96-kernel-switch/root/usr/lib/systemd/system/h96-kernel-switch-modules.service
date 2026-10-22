@@ -1,0 +1,14 @@
+[Unit]
+Description=H96 kernel switch: saved module tree of running kernel build
+Documentation=man:h96-kernel-switch(8)
+DefaultDependencies=no
+Before=systemd-udevd.service systemd-udev-trigger.service systemd-modules-load.service sysinit.target
+ConditionPathIsDirectory=/var/lib/h96-kernel-switch/modules
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/sbin/h96-kernel-switch modules-mount
+
+[Install]
+WantedBy=sysinit.target
