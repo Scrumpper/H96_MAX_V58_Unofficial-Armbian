@@ -42,7 +42,7 @@ ALLOWLIST = [
     ("bsp-probe-rk806", "ignore", r"^rk806 spi\d+\.\d+: no (sleep|reset|power-off|dvs)-setting|^rk806 spi\d+\.\d+: no power-off pinctrl state"),
     ("bsp-probe-scmi", "ignore", r"^arm-scmi firmware:scmi: Failed\. SCMI protocol \d+ not active"),
     ("bsp-probe-cacheinfo", "ignore", r"^Early cacheinfo failed, ret = -22"),
-    ("bsp-probe-rknpu-region", "ignore", r"^RKNPU [0-9a-f]+\.npu: can't request region for resource"),
+    ("bsp-probe-rknpu-region", "ignore", r"^RKNPU [0-9a-f]+\.npu: (error -EBUSY: )?can't request region for resource"),
     ("bsp-probe-rkvdec-shared-niu", "ignore", r"^mpp_rkvdec2 [0-9a-f]+\.rkvdec-core: shared_niu_[ah] is not found"),
     ("bsp-probe-remotectl", "ignore", r"^\.\. rk pwm remotectl v[\d.]+ init"),
     ("bt-le-cmd-enosys", "ignore", r"^Bluetooth: hci\d+: Opcode 0x2037 failed: -38"),
@@ -57,6 +57,15 @@ ALLOWLIST = [
     ("bsp-probe-rkvenc-opp", "ignore", r"(rkvenc_init:\d+: failed to add venc devfreq|mpp_rkvenc2 [0-9a-f]+\.rkvenc-core: failed to init.?opp)"),
     ("bsp-probe-npu-debugfs", "ignore", r"^debugfs: Directory '[0-9a-f]+\.npu-rknpu' with parent 'vdd_npu_s0' already present"),
     ("bsp-probe-sdhci-hs200", "ignore", r"^sdhci-dwcmshc [0-9a-f]+\.mmc: Can't reduce the clock below 52MHz in HS200/HS400"),
+    # 6.12 kernel probe noise (8.0 RC boot 2026-10-22, post-flash/02-selftest-boot-errlines.txt)
+    # vendor DT drm-logo and drm-cubic-lut nodes left at size 0 by boot loader: nothing to reserve
+    ("612-reserved-mem-empty", "ignore", r"^OF: reserved mem: Reserved memory: failed to reserve memory for node 'drm-(logo|cubic-lut)@0': base 0x0+, size 0 MiB$"),
+    # vendor cpufreq probes before CPU clock provider; deferred probe binds policies (hw check reads them)
+    ("612-cpufreq-clk-defer", "ignore", r"^(cpu cpu0: (failed to get cpu0 clk|cpu0 clk is not ready)|failed to init cpufreq)$"),
+    # BT wake_host pin is IRQ input in board DT; vendor rfkill driver tries output direction once, BT works
+    ("612-bt-wake-host-irq", "ignore", r"^gpio-\d+ \(BT,wake_host\): gpiod_direction_output: tried to set a GPIO tied to an IRQ as output$"),
+    # optional DDR DVFS inputs absent (no VOP latency table, BL31 without stall time call); DVFS runs (8 h soak)
+    ("612-dmc-optional", "ignore", r"^rockchip-dmc dmc: (failed to get vop pn to msch rl|Current ATF unsupported get_stall_time)$"),
     # MPP client probe deferral, repeats until each codec core binds
     ("bsp-probe-mpp-defer", "ignore", r"^mpp_platform: client \d+ driver is not ready!?$"),
     # hot-unplug of a USB pad
@@ -1170,6 +1179,23 @@ def cmd_selftest(args):
        == (None, None), "other adv monitor message is outside allowlist")
     ok(classify("src/adv_monitor.c:btd_adv_monitor_add() Unexpected NULL btd_adv_monitor_manager object upon power down")
        == (None, None), "adv monitor race match is function-specific")
+    for msg, aid in (
+            ("RKNPU fdab0000.npu: error -EBUSY: can't request region for resource [mem 0xfdad0000-0xfdadffff]", "bsp-probe-rknpu-region"),
+            ("RKNPU fdab0000.npu: can't request region for resource [mem 0xfdab0000-0xfdabffff]", "bsp-probe-rknpu-region"),
+            ("OF: reserved mem: Reserved memory: failed to reserve memory for node 'drm-logo@0': base 0x0000000000000000, size 0 MiB", "612-reserved-mem-empty"),
+            ("OF: reserved mem: Reserved memory: failed to reserve memory for node 'drm-cubic-lut@0': base 0x0000000000000000, size 0 MiB", "612-reserved-mem-empty"),
+            ("cpu cpu0: failed to get cpu0 clk", "612-cpufreq-clk-defer"),
+            ("cpu cpu0: cpu0 clk is not ready", "612-cpufreq-clk-defer"),
+            ("failed to init cpufreq", "612-cpufreq-clk-defer"),
+            ("gpio-0 (BT,wake_host): gpiod_direction_output: tried to set a GPIO tied to an IRQ as output", "612-bt-wake-host-irq"),
+            ("rockchip-dmc dmc: failed to get vop pn to msch rl", "612-dmc-optional"),
+            ("rockchip-dmc dmc: Current ATF unsupported get_stall_time", "612-dmc-optional")):
+        ok(classify(msg) == (aid, "ignore"), "6.12 probe line in %s" % aid)
+    for msg in ("OF: reserved mem: Reserved memory: failed to reserve memory for node 'drm-logo@0': base 0x0000000010000000, size 16 MiB",
+                "cpu cpu4: failed to get cpu4 clk", "rockchip-dmc dmc: failed to set rate",
+                "WARNING: CPU: 3 PID: 1 at drivers/gpu/drm/drm_gem.c:100 drm_gem_object_free",
+                "Internal error: Oops: 0000000096000004 [#1] PREEMPT SMP"):
+        ok(classify(msg) == (None, None), "outside allowlist: %s" % msg[:40])
     r = budget_results("t", "x", [("k", "rk806 spi2.0: no sleep-setting state"), ("k", "new error 12"), ("k", "new error 13")])
     ok(r[0].status == FAIL and "2 outside" in r[0].evidence and "1 distinct" in r[0].evidence, "budget counts unknown lines and groups digits")
 
