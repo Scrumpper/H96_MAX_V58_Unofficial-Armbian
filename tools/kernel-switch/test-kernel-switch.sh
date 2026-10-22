@@ -528,5 +528,40 @@ done
 mod_base; rm -rf "$STD/modules"
 ok "mismatch with no saved tree: modules-mount warns, mounts nothing" 'B=b3 ID=$IDA km modules-mount 2>&1 | grep -q "WARN running build" && [ -z "$(mnt)" ]'
 
+echo "== 17 r15: initramfs mount before switch_root, running role by build id, upgrade notice"
+IB=${IB:-$HERE/../../packages/h96-kernel-switch/root/usr/share/initramfs-tools/scripts/init-bottom/h96-kernel-switch}
+HK=$HERE/../../packages/h96-kernel-switch/root/usr/share/initramfs-tools/hooks/h96-kernel-switch
+DI=$HERE/../../packages/h96-kernel-switch/root/usr/lib/systemd/system/modprobe@.service.d/h96-kernel-switch.conf
+mkdir -p "$W/ib"
+printf '#!/bin/sh\necho "mount $*" >> "%s/ib/mounts"\n' "$W" > "$W/ib/mount"
+printf '#!/bin/sh\necho %s\n' "$NEWK" > "$W/ib/uname"
+chmod +x "$W/ib/mount" "$W/ib/uname"
+ib() { rm -f "$W/ib/mounts"; PATH="$W/ib:$PATH" rootmnt=$R H96KS_NOTES=$W/notes-$1 sh "$IB" > "$W/ib/out" 2>&1; }
+mod_base
+ok "try saves staged.meta (size, mtime, inode and build ids of staged Image)" 'B=b3 ID=$IDA km snapshot-modules --quiet; grep -q "^SIG=$(stat -c "%s %Y %i" $SK/Image)$" $SD/staged.meta && grep -q "^IDS=.*$IDB" $SD/staged.meta'
+ib $IDA
+ok "init-bottom, running A, package B, saved A: bind mount of saved tree A, then read-only remount" '[ "$(sed -n 1p $W/ib/mounts)" = "mount -o bind $(dirname "$(grep -l "IDS=.*$IDA" $SD/*/meta)")/tree $R/usr/lib/modules/$NEWK" ] && grep -qx "mount -o remount,bind,ro $R/usr/lib/modules/$NEWK" $W/ib/mounts && grep -q "mounted read-only" $W/ib/out'
+ib $IDB
+ok "init-bottom, running build B = package: no mount" '[ ! -e $W/ib/mounts ]'
+touch -d @1700000000 "$SK/Image"; ib $IDA
+ok "init-bottom, staged Image changed since staged.meta: no mount (boot unit decides)" '[ ! -e $W/ib/mounts ]'
+B=b3 ID=$IDA km snapshot-modules --quiet
+rm -rf "$(dirname "$(grep -l "IDS=.*$IDA" $SD/*/meta)")"; ib $IDA
+ok "init-bottom, no saved tree of running build: no mount, message" '[ ! -e $W/ib/mounts ] && grep -q "no saved module tree" $W/ib/out'
+rm -rf "$STD/modules"; ib $IDA
+ok "init-bottom without staged.meta: no mount, silent" '[ ! -e $W/ib/mounts ] && [ ! -s $W/ib/out ]'
+printf 'copy_exec() { echo "copy $*" >> "%s/ib/copies"; }\n' "$W" > "$W/ib/hookfn"
+rm -f "$W/ib/copies"; H96KS_HOOKFN=$W/ib/hookfn sh "$HK"
+ok "initramfs hook copies tools of init-bottom script into /usr/libexec/h96-kernel-switch" '[ "$(grep -c " /usr/libexec/h96-kernel-switch/" $W/ib/copies)" -ge 7 ] && grep -q "/mount$" $W/ib/copies && grep -q "/od$" $W/ib/copies && grep -q "/stat$" $W/ib/copies'
+ok "modprobe@ drop-in orders after modules unit" 'grep -qx "After=h96-kernel-switch-modules.service" "$DI"'
+# running role by build id when banners are identical
+setup; stage "$B1" dtb-1; pkg $IDA "$B1" dep-A
+ks try $NEWK > /dev/null; B=b2 ID=$IDA km guard; B=b2 ID=$IDA km confirm > /dev/null
+pkg $IDB "$B1" dep-B
+B=b3 ID=$IDA km try $NEWK > /dev/null
+ok "same banner, build ids differ: list marks only generation of running build id (A = g1)" 'B=b3 ID=$IDA km list > $W/l; grep -q "^  $NEWK.g1 .*running" $W/l && ! grep -q "^  $NEWK.g2 .*running" $W/l'
+ok "same banner: running build B marks g2 only" 'B=b3 ID=$IDB km list > $W/l; grep -q "^  $NEWK.g2 .*running" $W/l && ! grep -q "^  $NEWK.g1 .*running" $W/l'
+ok "notice about mounted saved tree printed without --quiet too" 'echo /var/lib/h96-kernel-switch/modules/x/y/tree > $STD/test-mount; B=b3 ID=$IDA km snapshot-modules 2>&1 | grep -q "upgrade of h96-kernel-$NEWK fails until reboot"; r=$?; rm -f $STD/test-mount; [ $r = 0 ]'
+
 echo "kernel-switch stub tests: $pass pass, $fail fail"
 [ "$fail" = 0 ]

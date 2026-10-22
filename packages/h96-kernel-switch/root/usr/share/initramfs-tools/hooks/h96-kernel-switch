@@ -1,0 +1,11 @@
+#!/bin/sh
+# h96-kernel-switch: tools of init-bottom script, independent of busybox applet set
+PREREQ=""
+prereqs() { echo "$PREREQ"; }
+case "$1" in prereqs) prereqs; exit 0 ;; esac
+# shellcheck source=/dev/null
+. "${H96KS_HOOKFN:-/usr/share/initramfs-tools/hook-functions}"
+for b in od stat mount sed grep cut tr basename; do
+    p=$(command -v "$b") || continue
+    copy_exec "$p" "/usr/libexec/h96-kernel-switch/$b"
+done

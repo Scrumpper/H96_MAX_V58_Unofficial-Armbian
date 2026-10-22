@@ -1,3 +1,20 @@
+h96-kernel-switch (8.0.0~r15) resolute; urgency=medium
+
+  * Initramfs init-bottom script and hook: before switch_root, running
+    build differs from staged Image (build ids in staged.meta, trusted
+    while size, mtime and inode of staged Image match), saved tree of
+    running build mounted read-only on real root, so modules PID1 loads
+    at startup (ipv6) and first modprobe@ units already match (box: 3
+    BTF validation failures per fallback boot on r14). Every uInitrd
+    that try builds carries it; modules unit stays second line.
+  * modprobe@.service drop-in: After=h96-kernel-switch-modules.service.
+  * list marks generation running by GNU build id of its Image; banner
+    only when build id is missing (identical banners marked both).
+  * snapshot-modules prints mounted-tree upgrade notice without --quiet
+    too. Manual: generation numbers reused after prune.
+
+ -- Scrumpper <190908034+Scrumpper@users.noreply.github.com>  Fri, 23 Oct 2026 23:00:00 +0000
+
 h96-kernel-switch (8.0.0~r14) resolute; urgency=medium
 
   * Module tree per kernel build: two builds of one release share

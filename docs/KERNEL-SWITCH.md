@@ -58,6 +58,14 @@ needs no module step. `try` of other build of in-boot release refuses unless tre
 `repair-modules` mounts saved tree or builds one from matching deb. Saved tree costs no space until package upgrade
 replaces package tree, then full tree size (6.12: 125 MB, 6.1: 181 MB) until no Image of that build is left.
 
+r15: initramfs `init-bottom` script (in every `uInitrd` that `try` builds; hook copies its tools) does same build-id
+check before `switch_root` and mounts saved tree on real root, so modules PID1 loads at startup (`ipv6`) and first
+`modprobe@` units already match; `modprobe@.service` drop-in orders after modules unit, which stays second line
+(generations made before r15 have no initramfs script). Staged build ids live in
+`/var/lib/h96-kernel-switch/modules/<krel>/staged.meta`, trusted only while size, mtime and inode of staged Image
+match. `list` marks generation `running` by Image build id (banner only without build id). Generation numbers are
+reused: after `prune`, next `try` takes lowest free number.
+
 8.0 beta image has `Image -> Image-<krel>` and `uInitrd -> uInitrd-<krel>` with plain DTB file. First `try`
 converts this layout in steps that each keep content every boot name resolves to: previous generation holds hard
 links to current `Image-<krel>` and `uInitrd-<krel>` plus DTB copy, `h96ks/cur` points at it, then `uInitrd`,

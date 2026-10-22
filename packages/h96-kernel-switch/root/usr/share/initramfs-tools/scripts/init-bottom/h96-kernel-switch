@@ -1,0 +1,36 @@
+#!/bin/sh
+# h96-kernel-switch: before switch_root, mount saved module tree of running build on real root when package tree
+# belongs to other build, so modules PID1 and early units load already match; boot unit stays second line.
+PREREQ=""
+prereqs() { echo "$PREREQ"; }
+case "$1" in prereqs) prereqs; exit 0 ;; esac
+PATH=/usr/libexec/h96-kernel-switch:$PATH
+r=${rootmnt:-/root}
+K=$(uname -r)
+S=$r/usr/lib/h96-kernel/$K/Image
+M=$r/var/lib/h96-kernel-switch/modules/$K
+D=$r/usr/lib/modules/$K
+say() { echo "h96-kernel-switch: $*" > /dev/kmsg 2>/dev/null || echo "h96-kernel-switch: $*"; }
+[ -f "$S" ] && [ -f "$M/staged.meta" ] && [ -d "$D" ] || exit 0
+# running build id: GNU build-id note in /sys/kernel/notes
+hex=$(od -An -tx1 -v "${H96KS_NOTES:-/sys/kernel/notes}" 2>/dev/null | tr -d ' \n')
+rest=${hex#*040000001400000003000000474e5500}
+[ "$rest" != "$hex" ] || exit 0
+rid=$(echo "$rest" | cut -c1-40)
+# staged ids trusted only while staged Image is file they were read from; else boot unit decides
+grep -qx "SIG=$(stat -c '%s %Y %i' "$S")" "$M/staged.meta" || exit 0
+case " $(sed -n 's/^IDS=//p' "$M/staged.meta") " in *" $rid "*) exit 0 ;; esac
+for d in "$M"/*/; do
+    [ -f "${d}meta" ] && [ -d "${d}tree" ] || continue
+    case " $(sed -n 's/^IDS=//p' "${d}meta") " in
+    *" $rid "*)
+        if mount -o bind "${d}tree" "$D" && mount -o remount,bind,ro "$D"; then
+            say "saved module tree $(basename "$d") of running build mounted read-only on /usr/lib/modules/$K"
+        else
+            say "mount of saved module tree $(basename "$d") failed"
+        fi
+        exit 0 ;;
+    esac
+done
+say "running build of $K has no saved module tree"
+exit 0

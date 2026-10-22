@@ -19,7 +19,7 @@ gzip -9n -c "$SRC/debian/changelog" > "$R/usr/share/doc/$P/changelog.gz"
 cp "$SRC/debian/copyright" "$R/usr/share/doc/$P/copyright"
 VER=$(sed -n '1s/^[^(]*(\([^)]*\)).*/\1/p' "$SRC/debian/changelog")
 find "$R" -path "$R/DEBIAN" -prune -o -type f -print0 | xargs -0 chmod 0644
-chmod 0755 "$R/usr/sbin/$P"
+chmod 0755 "$R/usr/sbin/$P" "$R/usr/share/initramfs-tools/hooks/$P" "$R/usr/share/initramfs-tools/scripts/init-bottom/$P"
 for f in postinst prerm postrm; do install -m 0755 "$SRC/debian/$f" "$R/DEBIAN/$f"; done
 (cd "$R" && find etc -type f | sort | sed "s#^#/#") > "$R/DEBIAN/conffiles"
 (cd "$R" && find . -path ./DEBIAN -prune -o -type f -print0 | sort -z | xargs -0 md5sum | sed 's#  \./#  #') > "$R/DEBIAN/md5sums"
