@@ -10,7 +10,7 @@ ME=h96-kernel-switch
 R=${H96KS_ROOT:-}  # stub root for tests; empty on live system
 TEST=0
 [ -n "$R" ] && TEST=1
-if [ "$TEST" = 0 ]; then unset H96KS_UNAME H96KS_BOOTID H96KS_HEALTHY H96KS_AVAIL_KB H96KS_DIE_AT H96KS_CUTLOG; fi
+if [ "$TEST" = 0 ]; then unset H96KS_UNAME H96KS_BOOTID H96KS_HEALTHY H96KS_AVAIL_KB H96KS_DIE_AT H96KS_CUTLOG H96KS_PROCVER; fi
 BOOT=$R/boot
 GD=h96ks           # generation directories, relative to /boot
 CUR=$GD/cur        # link to active generation
@@ -29,13 +29,16 @@ usage() {
     cat <<EOF
 usage: $ME list | status | default | dtb
        $ME try KREL [--auto-confirm] [--keep-dtb]
-       $ME confirm | rollback [--keep-dtb] | prune KREL | in-use KREL | dtb-plain
+       $ME confirm | rollback [--keep-dtb] | prune KREL|GEN | in-use KREL|GEN | dtb-plain
        $ME guard | auto-confirm        (run by systemd units)
-try:      copy staged KREL into new /boot generation, point h96ks/cur at it, arm boot guard
+try:      copy staged KREL into new /boot generation, point h96ks/cur at it, arm boot guard;
+          same release as default or running kernel: only when staged Image or DTB differs
 confirm:  keep KREL as default; run during trial boot
 rollback: cancel pending trial, or return to kernel that was default before last confirm
 default:  print release that boot files start
-in-use:   print roles of KREL in boot files (default, trial, trial-previous, rollback-target); rc 1 when none
+in-use:   print roles of KREL or generation GEN (KREL.gN) in boot files (default, trial, trial-previous,
+          rollback-target); rc 1 when none
+prune:    remove generations of KREL, or one generation GEN, that nothing names
 dtb:      print board DTB path, layout (plain, managed, link), resolved file and trial phase
 dtb-plain: turn managed DTB link back into plain file, same content
 EOF
@@ -207,6 +210,19 @@ default_krel() {
         case "$t" in Image-?*) safe "$t" && echo "${t#Image-}" ;; *) return 1 ;; esac
     fi
 }
+# full banner line of Image ("Linux version KREL (...) #N ... date"); empty when not found
+kbanner() { grep -a -o -m1 'Linux version [^[:cntrl:]]*' "$1" 2>/dev/null | head -n1; }
+procver() { if [ -n "${H96KS_PROCVER:-}" ]; then echo "$H96KS_PROCVER"; else head -n1 /proc/version 2>/dev/null; fi; }
+# running kernel is trial generation T_NEW: release decides; same release: banner decides when generations differ
+booted_new() {
+    [ "$(krun)" = "$T_KREL" ] || return 1
+    [ "$(gen_krel "$T_PREV")" = "$T_KREL" ] || return 0
+    local bn bp
+    bn=$(kbanner "$BOOT/$GD/$T_NEW/Image")
+    bp=$(kbanner "$BOOT/$GD/$T_PREV/Image")
+    [ -n "$bn" ] && [ "$bn" != "$bp" ] || return 0   # same banner: boot id and h96ks/cur decide
+    [ "$(procver)" = "$bn" ]
+}
 # release string embedded in uncompressed arm64 Image; empty when not found
 kver() {
     local v
@@ -288,14 +304,13 @@ cmd_try() {
     [ -s "$MODS/$K/modules.dep" ] || die "$MODS/$K/modules.dep missing (depmod not run)"
     check_link Image
     check_link uInitrd
-    local dk sv cv
+    local dk sv cv same=0
     dk=$(default_krel) || dk=""
-    [ "$dk" != "$K" ] || die "$K is already default (Image -> $(readlink "$BOOT/Image"))"
-    [ "$K" != "$(krun)" ] || die "$K is running; trial boot of same release cannot be told apart from fallback"
     sv=$(kver "$S/Image")
     [ -z "$sv" ] || [ "$sv" = "$K" ] || die "staged Image reports release $sv, not $K"
     cv=$(kver "$BOOT/Image")
-    [ "$cv" != "$K" ] || die "$BOOT/Image already reports release $K; trial cannot be told apart from fallback"
+    # same release as default, running or in-boot Image: new generation when staged content differs (checked below)
+    if [ "$dk" = "$K" ] || [ "$K" = "$(krun)" ] || [ "$cv" = "$K" ]; then same=1; fi
     DTBN=$(fdtfile)
     local dp="$BOOT/dtb/$DTBN" sd="$S/dtb/$DTBN" fsrc needdtb=0 rel
     [ -f "$dp" ] || die "$dp missing"
@@ -312,6 +327,12 @@ cmd_try() {
     else
         fsrc=$dp
     fi
+    if [ "$same" = 1 ] && cmp -s "$S/Image" "$BOOT/Image" && cmp -s "$fsrc" "$dp"; then
+        [ "$dk" != "$K" ] || die "$K is already default (Image -> $(readlink "$BOOT/Image")); staged Image and DTB equal in-boot generation"
+        [ "$K" != "$(krun)" ] || die "$K is running; staged Image and DTB equal in-boot generation"
+        die "$BOOT/Image already reports release $K; staged Image and DTB equal in-boot generation"
+    fi
+    [ "$same" = 0 ] || say "$K: same release, new content (Image or DTB differs from in-boot generation): new generation"
     if [ "$needdtb" = 1 ] && [ -e "$UVSTATE" ]; then
         die "h96-undervolt change active in $dp; staged DTB would drop it. Run 'h96-undervolt revert' first, or pass --keep-dtb"
     fi
@@ -419,7 +440,7 @@ cmd_guard() {
         armed)
             if [ "$T_ABOOT" = "$B" ]; then
                 log "guard: run in arming boot: no action"
-            elif [ "$(krun)" = "$K" ]; then
+            elif booted_new; then
                 # trial boot: fall back first, so hang or watchdog reset lands on previous kernel
                 trial_save trial "$B"
                 cutpoint guard-0
@@ -454,7 +475,7 @@ cmd_confirm() {
         die "no trial recorded"
     fi
     local K=$T_KREL
-    if [ "$T_PHASE" != trial ] || [ "$T_PENDING" != "$(bootid)" ] || [ "$(krun)" != "$K" ]; then
+    if [ "$T_PHASE" != trial ] || [ "$T_PENDING" != "$(bootid)" ] || ! booted_new; then
         [ "$mode" = auto ] && { log "auto-confirm: no trial running in this boot"; exit 0; }
         die "no trial of $K running in this boot (phase $T_PHASE, running $(krun))"
     fi
@@ -514,11 +535,22 @@ cmd_rollback() {
     say "$CUR -> $to; reboot to use it (rollback again returns to $T_PREV)"
 }
 
+is_gen() { [[ $1 =~ \.g[0-9]+$ ]] && [ -d "$BOOT/$GD/$1" ]; }
+
 cmd_prune() {
     local K=${1:-}
-    safe "$K" || die "usage: $ME prune KREL"
+    safe "$K" || die "usage: $ME prune KREL|GEN"
     need_root
     lock
+    if is_gen "$K"; then
+        case "$(gen_refs)" in *" $K "*) die "generation $K still named by $CUR, trial or last confirm" ;; esac
+        rm -rf "${BOOT:?}/$GD/$K"
+        fsync_dir "$BOOT/$GD"
+        say "removed $BOOT/$GD/$K"
+        log "prune generation $K"
+        return 0
+    fi
+    [[ ! $K =~ \.g[0-9]+$ ]] || die "no generation $K in $BOOT/$GD"
     [ "$(krun)" != "$K" ] || die "$K is running"
     DTBN=$(fdtfile)
     local refs g f d dbase
@@ -543,9 +575,28 @@ cmd_prune() {
     log "prune $K"
 }
 
+# roles of one generation: default (h96ks/cur), trial, trial-previous, rollback-target
+gen_roles() {
+    local G=$1 roles="" c
+    c=$(cur_gen 2>/dev/null || true)
+    [ "$c" != "$G" ] || roles="$roles default"
+    if st_load "$TRIAL" 2>/dev/null; then
+        [ "$T_NEW" != "$G" ] || roles="$roles trial"
+        [ "$T_PREV" != "$G" ] || roles="$roles trial-previous"
+    fi
+    if st_load "$LAST" 2>/dev/null && [ "$c" = "$T_NEW" ] && [ "$T_PREV" = "$G" ]; then roles="$roles rollback-target"; fi
+    echo "${roles# }"
+}
+
 cmd_in_use() {
     local K=${1:-} roles="" g
-    safe "$K" || die "usage: $ME in-use KREL"
+    safe "$K" || die "usage: $ME in-use KREL|GEN"
+    if is_gen "$K"; then
+        roles=$(gen_roles "$K")
+        [ -n "$roles" ] || return 1
+        echo "$roles"
+        return 0
+    fi
     [ "$(default_krel 2>/dev/null || true)" != "$K" ] || roles="$roles default"
     if st_load "$TRIAL" 2>/dev/null; then
         [ "$(gen_krel "$T_NEW")" != "$K" ] || roles="$roles trial"
@@ -612,6 +663,19 @@ cmd_list() {
         if [ -n "$(gens_of "$k")" ] || [ -f "$BOOT/Image-$k" ]; then flags="$flags in-boot"; fi
         [ -z "${T_NEW:-}" ] || [ "$(gen_krel "$T_NEW")" != "$k" ] || flags="$flags trial:$T_PHASE"
         echo "$k${flags:+ [${flags# }]}"
+        list_gens "$k"
+        st_load "$TRIAL" 2>/dev/null || true
+    done
+}
+# generation lines of KREL: name, roles, running when banner matches /proc/version
+list_gens() {
+    local g r b
+    for g in $(gens_of "$1"); do
+        r=$(gen_roles "$g")
+        b=$(kbanner "$BOOT/$GD/$g/Image")
+        if [ "$(krun)" = "$1" ] && [ -n "$b" ] && [ "$b" = "$(procver)" ]; then r="$r running"; fi
+        r=${r# }
+        echo "  $g${r:+ [$r]}"
     done
 }
 
@@ -623,6 +687,12 @@ cmd_status() {
     echo "uInitrd -> $(readlink "$BOOT/uInitrd" 2>/dev/null || echo '?')"
     [ -z "$DTBN" ] || echo "dtb/$DTBN -> $(readlink "$BOOT/dtb/$DTBN" 2>/dev/null || echo 'plain file')"
     echo "$CUR -> $(cur_gen 2>/dev/null || echo none)"
+    local g r
+    for g in "$BOOT/$GD"/*.g*; do
+        [ -d "$g" ] || continue
+        g=$(basename "$g"); r=$(gen_roles "$g")
+        echo "generation: $g${r:+ [$r]}"
+    done
     if st_load "$TRIAL" 2>/dev/null; then
         echo "trial: $T_KREL phase=$T_PHASE auto=$T_AUTO pending=${T_PENDING:-none} previous=$T_PREV new=$T_NEW"
     else

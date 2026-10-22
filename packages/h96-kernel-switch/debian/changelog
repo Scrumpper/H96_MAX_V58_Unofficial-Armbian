@@ -1,3 +1,17 @@
+h96-kernel-switch (8.0.0~r13) resolute; urgency=medium
+
+  * try of release that is already default or running (or that current
+    Image embeds) makes new generation when staged Image or DTB differs
+    from in-boot generation; refused as before when both are equal.
+  * Boot guard and confirm tell trial boot from fallback by Image banner
+    (build number and date) when generations of same release differ
+    there, else by boot id and h96ks/cur as before.
+  * list prints generations under each release with roles default,
+    trial, trial-previous, rollback-target and running; status prints
+    generation lines; in-use and prune take generation names KREL.gN.
+
+ -- Scrumpper <190908034+Scrumpper@users.noreply.github.com>  Fri, 23 Oct 2026 06:00:00 +0000
+
 h96-kernel-switch (8.0.0~r12) resolute; urgency=medium
 
   * New read-only command dtb: board DTB path, layout (plain, managed,

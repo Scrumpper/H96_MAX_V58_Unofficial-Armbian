@@ -43,7 +43,7 @@ kernel set in one generation directory and points every boot name through one li
 
 Switching kernel is one rename of `h96ks/cur`, so U-Boot reads either complete old set or complete new set.
 Generation directory is written under hidden temporary name, read back, then renamed into place; it never
-changes afterwards. Retry of same release creates new generation (`.g2`) and removes earlier unused attempt.
+changes afterwards. Retry of same release creates new generation (`.g2`) and removes earlier unused attempt. Same release, new content: `try` of release that is already default or running makes new generation when staged Image or DTB differs from in-boot generation (refused when both are equal); boot guard tells trial boot from fallback by Image banner when generations differ there, else by boot id and `h96ks/cur`. `list`, `status`, `in-use` and `prune` take generation names (`<krel>.g<n>`).
 
 8.0 beta image has `Image -> Image-<krel>` and `uInitrd -> uInitrd-<krel>` with plain DTB file. First `try`
 converts this layout in steps that each keep content every boot name resolves to: previous generation holds hard
@@ -139,7 +139,7 @@ generations. `extlinux`, `boot.scr`, `boot.cmd` and `armbianEnv.txt` are never w
 - DTB would change while `h96-undervolt` change is active (`/var/lib/h96-undervolt-state`), unless `--keep-dtb`;
 - kernel is not staged, staged checksums fail, or `modules.dep` is missing;
 - staged Image embeds other release than requested;
-- kernel is running or already default, or current Image embeds release asked for;
+- kernel is running or already default, or current Image embeds release asked for, and staged Image and DTB equal in-boot generation;
 - `/boot/Image` or `/boot/uInitrd` is not link to plain name or `h96ks/cur`, or names missing file;
 - `/boot/extlinux`, `/boot/boot/extlinux` or `/extlinux` exists (U-Boot reads it before `boot.scr`);
 - `/boot` is not mounted or is read-only;

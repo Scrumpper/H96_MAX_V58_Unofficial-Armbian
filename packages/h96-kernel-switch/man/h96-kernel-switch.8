@@ -1,4 +1,4 @@
-.TH H96-KERNEL-SWITCH 8 "2026-10-18" "h96-kernel-switch" "System Administration"
+.TH H96-KERNEL-SWITCH 8 "2026-10-23" "h96-kernel-switch" "System Administration"
 .SH NAME
 h96-kernel-switch \- boot staged kernel as guarded trial, confirm or roll back
 .SH SYNOPSIS
@@ -46,10 +46,13 @@ during trial boot keeps new kernel as default.
 .SH COMMANDS
 .TP
 .B list
-Staged kernels with flags running, default, in-boot, trial.
+Staged kernels with flags running, default, in-boot, trial; below each, its
+generations KREL.gN with roles default (h96ks/cur), trial, trial-previous,
+rollback-target and running (banner of generation Image equals /proc/version).
 .TP
 .B status
-Default release, link targets, recorded trial, last results.
+Default release, link targets, generations with roles, recorded trial, last
+results.
 .TP
 .B default
 Prints release that boot files start; exit status 1 when unknown.
@@ -62,11 +65,18 @@ temporary directory, enables guard units, records trial, then moves h96ks/cur.
 First run converts plain-name Image and uInitrd links into h96ks/cur links;
 every conversion step keeps content each boot name resolves to (previous
 generation holds hard links to current files and DTB copy). Refuses when trial
-is recorded, when KREL is running or default, when /boot is read-only, when
+is recorded, when KREL is running or default and staged Image and DTB equal
+in-boot generation, when /boot is read-only, when
 extlinux directory exists, or when Image or uInitrd is not link. Also
 refuses while h96-undervolt trial is recorded, and DTB change while
 h96-undervolt change is active (use
 .BR \-\-keep\-dtb ).
+Same release, new content: when KREL is default or running but staged Image or
+DTB differs from in-boot generation,
+.B try
+makes new generation KREL.gN+1; boot guard tells trial boot from fallback by
+Image banner (build number and date) when generations differ there, else by
+boot id and h96ks/cur.
 .B \-\-auto\-confirm
 confirms trial 180 s after boot when multi-user.target is active.
 .B \-\-keep\-dtb
@@ -83,13 +93,14 @@ DTB of target generation, since rollback switches Image and uInitrd only;
 .B \-\-keep\-dtb
 rolls back with current DTB.
 .TP
-.BI prune " KREL"
+.BI prune " KREL|GEN"
 Removes generations and plain-name files of KREL from /boot unless h96ks/cur,
-boot links or records name them.
+boot links or records name them. With generation name GEN (KREL.gN): removes
+that generation only, unless h96ks/cur or records name it.
 .TP
-.BI in-use " KREL"
-Prints roles of KREL in boot files: default, trial, trial-previous,
-rollback-target; exit status 1 when none. Kernel packages use it to skip
+.BI in-use " KREL|GEN"
+Prints roles of KREL, or of generation GEN, in boot files: default, trial,
+trial-previous, rollback-target; exit status 1 when none. Kernel packages use it to skip
 install hint and to refuse removal.
 .TP
 .B dtb

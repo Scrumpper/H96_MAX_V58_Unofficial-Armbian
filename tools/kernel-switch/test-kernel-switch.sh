@@ -117,7 +117,9 @@ ok "missing modules.dep refused" '! ks try $NEWK 2>/dev/null'
 setup; mkdir "$R/boot/extlinux"
 ok "existing extlinux refused" 'ks try $NEWK 2>&1 | grep -q "extlinux exists" && ! ks try $NEWK 2>/dev/null && [ ! -e $R/boot/h96ks ] && [ "$(img)" = Image-$OLDK ]'
 rmdir "$R/boot/extlinux"
-ok "running KREL refused" '! U=$NEWK ks try $NEWK 2>/dev/null'
+ok "running KREL with staged Image and DTB equal to in-boot files refused" 'cp $R/boot/Image-$OLDK $SK/Image && cp $R/boot/dtb/$DN $SK/dtb/$DN && (cd $SK && sha256sum Image System.map config > SHA256SUMS.kernel) && (cd $SK/dtb && sha256sum $DN > SHA256SUMS.dtb) && U=$NEWK ks try $NEWK 2>&1 | grep -q "is running; staged Image and DTB equal in-boot generation"'
+setup
+ok "running KREL with differing staged Image accepted (r13: same release, new content)" 'U=$NEWK ks try $NEWK > /dev/null && [ "$(phase)" = armed ]'
 setup; rm "$R/boot/Image"; cp "$R/boot/Image-$OLDK" "$R/boot/Image"
 ok "plain Image file refused" '! ks try $NEWK 2>/dev/null'
 setup; rm "$SK/dtb/$DN"
@@ -125,7 +127,10 @@ ok "missing staged DTB refused without --keep-dtb" '! ks try $NEWK 2>/dev/null'
 setup; printf 'x\0Linux version 6.1.99-other (gcc) #1\0' > "$SK/Image"; (cd "$SK" && sha256sum Image System.map config > SHA256SUMS.kernel)
 ok "staged Image reporting other release refused" 'ks try $NEWK 2>&1 | grep -q "reports release 6.1.99-other"'
 setup; printf 'x\0Linux version %s (gcc) #1\0' "$NEWK" > "$R/boot/Image-$OLDK"
-ok "current Image reporting trial release refused" 'ks try $NEWK 2>&1 | grep -q "already reports release $NEWK"'
+ok "current Image reporting trial release, staged content differs: accepted" 'ks try $NEWK > /dev/null && [ "$(phase)" = armed ]'
+setup; printf 'x\0Linux version %s (gcc) #1\0' "$NEWK" > "$R/boot/Image-$OLDK"; cp "$R/boot/Image-$OLDK" "$SK/Image"; cp "$R/boot/dtb/$DN" "$SK/dtb/$DN"
+(cd "$SK" && sha256sum Image System.map config > SHA256SUMS.kernel); (cd "$SK/dtb" && sha256sum "$DN" > SHA256SUMS.dtb)
+ok "current Image reporting trial release, staged content equal: refused" 'ks try $NEWK 2>&1 | grep -q "already reports release $NEWK; staged Image and DTB equal"'
 setup; printf 'x\0Linux version %s (gcc) #1\0' "$NEWK" > "$SK/Image"; (cd "$SK" && sha256sum Image System.map config > SHA256SUMS.kernel)
 ok "staged Image reporting own release accepted" 'ks try $NEWK > /dev/null && [ "$(phase)" = armed ]'
 setup; before=$(blist)
@@ -349,6 +354,87 @@ for cp in $cps; do
     first=$(boot_as)
     U=$NEWK ks dtb-plain > /dev/null 2>&1
     ok "cut in dtb-plain at $cp: rc 99, boot $first is new set, rerun leaves plain DTB, no tmp" '[ $rc = 99 ] && [ "$first" = $NEWK ] && [ ! -L $R/boot/dtb/$DN ] && on_new && invariant'
+done
+
+
+echo "== 15 same release, new content (r13): try makes new generation"
+B1="Linux version $NEWK (b@h) (gcc 16.1) #1 SMP PREEMPT Tue Oct 20 2026"
+B2="Linux version $NEWK (b@h) (gcc 16.1) #2 SMP PREEMPT Thu Oct 22 2026"
+stage() {  # banner dtb-text
+    printf 'img\0%s\n\0' "$1" > "$SK/Image"; (cd "$SK" && sha256sum Image System.map config > SHA256SUMS.kernel)
+    echo "$2" > "$SK/dtb/$DN"; (cd "$SK/dtb" && sha256sum "$DN" > SHA256SUMS.dtb)
+}
+kss() { H96KS_UNAME=${U:-$NEWK} H96KS_BOOTID=${B:-b1} H96KS_PROCVER=${PV:-$B1} bash "$KS" "$@"; }
+# confirmed default NEWK.g1 (banner B1), running it
+same_base() {
+    setup; stage "$B1" dtb-1
+    ks try $NEWK > /dev/null; U=$NEWK B=b2 PV=$B1 kss guard; U=$NEWK B=b2 PV=$B1 kss confirm > /dev/null
+    rm -f "$STD/last"   # earlier confirm forgotten: only same-release history below
+    stage "$B2" dtb-2
+}
+bimg() { kbn "$R/boot/Image"; }
+kbn() { grep -a -o -m1 'Linux version [^[:cntrl:]]*' "$1" | head -n1; }
+same_base; before=$(blist)
+stage "$B1" dtb-1
+ok "same release, staged Image and DTB equal in-boot generation: refused, /boot byte-identical" 'B=b3 kss try $NEWK 2>&1 | grep -q "already default.*equal in-boot generation" && [ "$(blist)" = "$before" ] && [ ! -e $STD/trial ]'
+stage "$B1" dtb-2
+ok "same release, only DTB differs: accepted" 'B=b3 kss try $NEWK > /dev/null && [ "$(phase)" = armed ] && [ "$(cur)" = $NEWK.g2 ]'
+same_base
+out=$(B=b3 kss try $NEWK 2>&1); rc=$?
+ok "same release, Image differs: rc 0, message, new generation g2, previous g1" '[ $rc = 0 ] && echo "$out" | grep -q "same release, new content" && [ "$(cur)" = $NEWK.g2 ] && grep -qx "PREV=$NEWK.g1" $STD/trial && grep -qx "NEW=$NEWK.g2" $STD/trial && [ "$(bimg)" = "$B2" ]'
+ok "list: both generations with roles" 'B=b3 kss list > $W/l; grep -qx "  $NEWK.g1 \[trial-previous running\]" $W/l && grep -qx "  $NEWK.g2 \[default trial\]" $W/l'
+ok "status: generation lines" 'B=b3 kss status | grep -qx "generation: $NEWK.g2 \[default trial\]"'
+ok "in-use per generation" '[ "$(kss in-use $NEWK.g1)" = trial-previous ] && [ "$(kss in-use $NEWK.g2)" = "default trial" ]'
+ok "prune of either generation refused during trial" '! B=b3 kss prune $NEWK.g1 2>/dev/null && ! B=b3 kss prune $NEWK.g2 2>/dev/null && ! B=b3 kss prune $NEWK 2>/dev/null'
+B=b3 PV=$B1 kss guard
+ok "guard in arming boot: no action" '[ "$(phase)" = armed ] && [ "$(cur)" = $NEWK.g2 ]'
+U=$NEWK B=b4 PV=$B2 kss guard
+ok "trial boot (banner of g2 running): falls back to g1 at once, phase trial" '[ "$(phase)" = trial ] && [ "$(cur)" = $NEWK.g1 ] && [ "$(bimg)" = "$B1" ]'
+ok "confirm refused when banner shows g1 running" '! U=$NEWK B=b4 PV=$B1 kss confirm 2>/dev/null'
+U=$NEWK B=b4 PV=$B2 kss confirm > /dev/null
+ok "confirm: g2 default, last PREV g1" '[ "$(cur)" = $NEWK.g2 ] && [ ! -e $STD/trial ] && grep -qx "PREV=$NEWK.g1" $STD/last && grep -qx "NEW=$NEWK.g2" $STD/last && [ "$(kss in-use $NEWK.g1)" = rollback-target ]'
+ok "list after confirm: g2 default running, g1 rollback-target" 'B=b5 PV=$B2 kss list > $W/l; grep -qx "  $NEWK.g2 \[default running\]" $W/l && grep -qx "  $NEWK.g1 \[rollback-target\]" $W/l'
+ok "prune of rollback target g1 refused" '! B=b5 PV=$B2 kss prune $NEWK.g1 2>/dev/null'
+U=$NEWK B=b5 PV=$B2 kss rollback > /dev/null
+ok "rollback after confirmed same-release trial: back to g1" '[ "$(cur)" = $NEWK.g1 ] && [ "$(bimg)" = "$B1" ] && grep -qx "NEW=$NEWK.g1" $STD/last && [ "$(cat $R/boot/dtb/$DN)" = dtb-1 ]'
+U=$NEWK B=b6 PV=$B1 kss rollback > /dev/null
+ok "rollback again: back to g2" '[ "$(cur)" = $NEWK.g2 ] && [ "$(bimg)" = "$B2" ]'
+rm -f "$STD/last"
+ok "prune of old generation g1 once nothing names it" 'B=b7 PV=$B2 kss prune $NEWK.g1 > /dev/null && [ ! -e $R/boot/h96ks/$NEWK.g1 ] && [ -d $R/boot/h96ks/$NEWK.g2 ] && invariant'
+ok "prune of unknown generation refused" 'B=b7 PV=$B2 kss prune $NEWK.g9 2>&1 | grep -q "no generation $NEWK.g9"'
+same_base; B=b3 kss try $NEWK > /dev/null
+U=$NEWK B=b4 PV=$B1 kss guard
+ok "armed, but g1 booted (banner g1): not-booted, back on g1, trial cleared" '[ ! -e $STD/trial ] && [ "$(cur)" = $NEWK.g1 ] && grep -q "not-booted $NEWK" $STD/result'
+same_base; B=b3 kss try $NEWK > /dev/null
+U=$NEWK B=b4 PV=$B2 kss guard; U=$NEWK B=b5 PV=$B1 kss guard
+ok "trial boot not confirmed: next boot on g1, reverted" '[ "$(cur)" = $NEWK.g1 ] && [ ! -e $STD/trial ] && grep -q "reverted $NEWK: boot b4" $STD/result'
+# identical banners: boot id and h96ks/cur decide
+setup; stage "$B1" dtb-1; ks try $NEWK > /dev/null; U=$NEWK B=b2 PV=$B1 kss guard; U=$NEWK B=b2 PV=$B1 kss confirm > /dev/null
+stage "$B1" dtb-3; printf 'extra' >> "$SK/Image"; (cd "$SK" && sha256sum Image System.map config > SHA256SUMS.kernel)
+B=b3 kss try $NEWK > /dev/null; U=$NEWK B=b4 PV=$B1 kss guard
+ok "same banner in both generations: next boot after arming counts as trial boot" '[ "$(phase)" = trial ] && [ "$(cur)" = $NEWK.g1 ]'
+U=$NEWK B=b4 PV=$B1 kss confirm > /dev/null
+ok "same banner: confirm in trial boot keeps g2" '[ "$(cur)" = $NEWK.g2 ] && [ ! -e $STD/trial ]'
+# /boot space
+same_base; before=$(blist)
+out=$(H96KS_AVAIL_KB=1000 B=b3 kss try $NEWK 2>&1); rc=$?
+ok "same release, low /boot space: refused, /boot byte-identical" '[ $rc != 0 ] && echo "$out" | grep -q "KiB free, needs" && [ "$(blist)" = "$before" ] && [ ! -e $STD/trial ]'
+# power loss during same-release try and confirm
+same_base; cps=$(B=b3 H96KS_PROCVER=$B1 H96KS_UNAME=$NEWK H96KS_BOOTID=b3 cutpoints bash "$KS" try $NEWK)
+ok "same-release try reaches copy and switch cut points" 'echo "$cps" | grep -q "copy-0 copy-1 switch-0 switch-1"'
+for cp in $cps; do
+    same_base
+    H96KS_DIE_AT=$cp B=b3 kss try $NEWK > /dev/null 2>&1; rc=$?
+    # boots until settled: each boot runs generation h96ks/cur names
+    n=4; while [ -e "$STD/trial" ] && [ $n -lt 8 ]; do
+        pv=$(bimg); U=$NEWK B=b$n PV=$pv kss guard 2>/dev/null; n=$((n + 1)); done
+    ok "same-release cut at $cp: rc 99, settles on g1 (B1), no record, no tmp" '[ $rc = 99 ] && [ "$(bimg)" = "$B1" ] && [ ! -e $STD/trial ] && invariant'
+done
+for cp in confirm-0 commit-1 commit-2; do
+    same_base; B=b3 kss try $NEWK > /dev/null; U=$NEWK B=b4 PV=$B2 kss guard
+    U=$NEWK B=b4 PV=$B2 H96KS_DIE_AT=$cp kss confirm > /dev/null 2>&1
+    n=5; while [ -e "$STD/trial" ] && [ $n -lt 9 ]; do pv=$(bimg); U=$NEWK B=b$n PV=$pv kss guard 2>/dev/null; n=$((n + 1)); done
+    ok "same-release cut in confirm at $cp: guard completes confirm, g2 default" '[ "$(cur)" = $NEWK.g2 ] && [ "$(bimg)" = "$B2" ] && [ ! -e $STD/trial ] && grep -qx "NEW=$NEWK.g2" $STD/last && invariant'
 done
 
 echo "kernel-switch stub tests: $pass pass, $fail fail"
