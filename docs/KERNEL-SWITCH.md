@@ -45,7 +45,7 @@ Switching kernel is one rename of `h96ks/cur`, so U-Boot reads either complete o
 Generation directory is written under hidden temporary name, read back, then renamed into place; it never
 changes afterwards. Retry of same release creates new generation (`.g2`) and removes earlier unused attempt. Same release, new content: `try` of release that is already default or running makes new generation when staged Image or DTB differs from in-boot generation (refused when both are equal); boot guard tells trial boot from fallback by Image banner when generations differ there, else by boot id and `h96ks/cur`. `list`, `status`, `in-use` and `prune` take generation names (`<krel>.g<n>`).
 
-Module tree per kernel build (r14): builds of one release share `/usr/lib/modules/<krel>`, and package upgrade
+Module tree per kernel build: builds of one release share `/usr/lib/modules/<krel>`, and package upgrade
 replaces it; modules of one build fail BTF validation on another (`Invalid argument`: no Wi-Fi, no Panthor, no
 compositor after fallback). Tool keeps tree of each staged build under `/var/lib/h96-kernel-switch/modules/<krel>/<sha16>`
 (hard links, keyed by Image sha256 and GNU build id): at `try`, from apt hook before dpkg
@@ -58,17 +58,15 @@ needs no module step. `try` of other build of in-boot release refuses unless tre
 `repair-modules` mounts saved tree or builds one from matching deb. Saved tree costs no space until package upgrade
 replaces package tree, then full tree size (6.12: 125 MB, 6.1: 181 MB) until no Image of that build is left.
 
-r15: initramfs `init-bottom` script (in every `uInitrd` that `try` builds; hook copies its tools) does same build-id
-check before `switch_root` and mounts saved tree on real root, so modules PID1 loads at startup (`ipv6`) and first
-`modprobe@` units already match; `modprobe@.service` drop-in orders after modules unit, which stays second line
-(generations made before r15 have no initramfs script). Staged build ids live in
-`/var/lib/h96-kernel-switch/modules/<krel>/staged.meta` (r16: note offsets, see below). `list` marks generation `running` by Image build id (banner only without build id). Generation numbers are
-reused: after `prune`, next `try` takes lowest free number.
-
-r16: initramfs hook copies one hex dumper only (`gnuod`, else `hexdump`; never file over 1 MiB, so not Rust coreutils
-multicall binary); script uses busybox applets otherwise (scratch `mkinitramfs`: +56 KB compressed). `staged.meta`
-records build-id note offsets; script reads staged build ids there (no size, mtime or inode, so rootfs copied into
-image keeps working).
+Initramfs `init-bottom` script (in every `uInitrd` that `try` builds) does same build-id check before `switch_root`
+and mounts saved tree on real root, so modules PID1 loads at startup (`ipv6`) and first `modprobe@` units already
+match; `modprobe@.service` drop-in orders after modules unit, which stays second line (generations made by earlier
+versions of this tool have no initramfs script). Initramfs hook copies one hex dumper only (`gnuod`, else `hexdump`;
+never file over 1 MiB, so not Rust coreutils multicall binary); script uses busybox applets otherwise (scratch
+`mkinitramfs`: +56 KB compressed). Staged build ids live in `/var/lib/h96-kernel-switch/modules/<krel>/staged.meta`
+with build-id note offsets; script reads staged build ids there (no size, mtime or inode, so rootfs copied into image
+keeps working). `list` marks generation `running` by Image build id (banner only without build id). Generation
+numbers are reused: after `prune`, next `try` takes lowest free number.
 
 8.0 beta image has `Image -> Image-<krel>` and `uInitrd -> uInitrd-<krel>` with plain DTB file. First `try`
 converts this layout in steps that each keep content every boot name resolves to: previous generation holds hard

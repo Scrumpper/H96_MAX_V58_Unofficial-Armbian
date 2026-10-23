@@ -1,3 +1,10 @@
+h96-kernel-switch (8.0.0~r17) resolute; urgency=medium
+
+  * Manual: generations made by earlier versions of this tool lack
+    initramfs script (was internal version label). Code unchanged.
+
+ -- Scrumpper <190908034+Scrumpper@users.noreply.github.com>  Sat, 24 Oct 2026 14:00:00 +0000
+
 h96-kernel-switch (8.0.0~r16) resolute; urgency=medium
 
   * Initramfs hook copies one hex dumper only (gnuod, else hexdump; any
