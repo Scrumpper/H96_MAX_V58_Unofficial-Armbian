@@ -1,11 +1,15 @@
 #!/bin/sh
-# h96-kernel-switch: tools of init-bottom script, independent of busybox applet set
+# h96-kernel-switch: one small hex dumper for init-bottom script (busybox-initramfs has no od); never multicall binary
 PREREQ=""
 prereqs() { echo "$PREREQ"; }
 case "$1" in prereqs) prereqs; exit 0 ;; esac
 # shellcheck source=/dev/null
 . "${H96KS_HOOKFN:-/usr/share/initramfs-tools/hook-functions}"
-for b in od stat mount sed grep cut tr basename; do
-    p=$(command -v "$b") || continue
-    copy_exec "$p" "/usr/libexec/h96-kernel-switch/$b"
+for c in gnuod:od hexdump:hexdump; do
+    p=$(command -v "${c%%:*}") || continue
+    # Rust coreutils serves every name from one 10 MB binary: skip anything over 1 MiB
+    [ "$(wc -c < "$(readlink -f "$p")")" -le 1048576 ] || continue
+    copy_exec "$p" "/usr/libexec/h96-kernel-switch/${c#*:}"
+    exit 0
 done
+echo "h96-kernel-switch: no gnuod or hexdump; initramfs module tree mount disabled (boot unit still mounts)" >&2

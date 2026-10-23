@@ -185,12 +185,15 @@ Saved module tree per kernel build; removed when no staged or /boot Image of
 that build is left.
 .TP
 /var/lib/h96-kernel-switch/modules/KREL/staged.meta
-Size, mtime, inode and build ids of staged Image; initramfs script trusts
-build ids only while staged Image still matches.
+Offsets of build-id notes and build ids of staged Image; initramfs script
+reads ids at these offsets, so changed staged Image leaves decision to boot
+unit and image copy (new inode, mtime) keeps it valid.
 .TP
 /usr/share/initramfs-tools/scripts/init-bottom/h96-kernel-switch, hooks/h96-kernel-switch
-Initramfs script and hook (copies od, stat, mount, sed, grep, cut, tr,
-basename into /usr/libexec/h96-kernel-switch of initramfs).
+Initramfs script and hook. Hook copies one hex dumper (gnuod, else hexdump;
+never file over 1 MiB such as Rust coreutils multicall binary) into
+/usr/libexec/h96-kernel-switch of initramfs; script uses busybox applets for
+everything else.
 .TP
 /var/lib/h96-undervolt-trial, /var/lib/h96-undervolt-state
 Read by

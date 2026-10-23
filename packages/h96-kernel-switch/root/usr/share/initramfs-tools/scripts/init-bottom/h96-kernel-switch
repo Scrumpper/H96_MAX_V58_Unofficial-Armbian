@@ -4,22 +4,35 @@
 PREREQ=""
 prereqs() { echo "$PREREQ"; }
 case "$1" in prereqs) prereqs; exit 0 ;; esac
-PATH=/usr/libexec/h96-kernel-switch:$PATH
+H=${H96KS_LIBEXEC:-/usr/libexec/h96-kernel-switch}   # hex dumper copied by hook (busybox-initramfs has no od)
 r=${rootmnt:-/root}
-K=$(uname -r)
+K=${H96KS_UNAME:-$(uname -r)}
 S=$r/usr/lib/h96-kernel/$K/Image
 M=$r/var/lib/h96-kernel-switch/modules/$K
 D=$r/usr/lib/modules/$K
+NOTE=040000001400000003000000474e5500
 say() { echo "h96-kernel-switch: $*" > /dev/kmsg 2>/dev/null || echo "h96-kernel-switch: $*"; }
+# hx FILE [OFF N]: bytes as one hex string
+if [ -x "$H/od" ]; then
+    hx() { if [ -n "$2" ]; then "$H/od" -An -tx1 -v -j "$2" -N "$3" "$1"; else "$H/od" -An -tx1 -v "$1"; fi 2>/dev/null | tr -d ' \n'; }
+elif [ -x "$H/hexdump" ]; then
+    hx() { if [ -n "$2" ]; then "$H/hexdump" -v -s "$2" -n "$3" -e '1/1 "%02x"' "$1"; else "$H/hexdump" -v -e '1/1 "%02x"' "$1"; fi 2>/dev/null; }
+else
+    exit 0
+fi
 [ -f "$S" ] && [ -f "$M/staged.meta" ] && [ -d "$D" ] || exit 0
-# running build id: GNU build-id note in /sys/kernel/notes
-hex=$(od -An -tx1 -v "${H96KS_NOTES:-/sys/kernel/notes}" 2>/dev/null | tr -d ' \n')
-rest=${hex#*040000001400000003000000474e5500}
+hex=$(hx "${H96KS_NOTES:-/sys/kernel/notes}")
+rest=${hex#*"$NOTE"}
 [ "$rest" != "$hex" ] || exit 0
 rid=$(echo "$rest" | cut -c1-40)
-# staged ids trusted only while staged Image is file they were read from; else boot unit decides
-grep -qx "SIG=$(stat -c '%s %Y %i' "$S")" "$M/staged.meta" || exit 0
-case " $(sed -n 's/^IDS=//p' "$M/staged.meta") " in *" $rid "*) exit 0 ;; esac
+# staged build ids read at recorded note offsets; changed staged Image (no note there): boot unit decides
+offs=$(sed -n 's/^OFFS=//p' "$M/staged.meta")
+[ -n "$offs" ] || exit 0
+for o in $offs; do
+    n=$(hx "$S" "$o" 36)
+    case "$n" in "$NOTE"*) ;; *) exit 0 ;; esac
+    [ "$(echo "$n" | cut -c33-72)" != "$rid" ] || exit 0
+done
 for d in "$M"/*/; do
     [ -f "${d}meta" ] && [ -d "${d}tree" ] || continue
     case " $(sed -n 's/^IDS=//p' "${d}meta") " in

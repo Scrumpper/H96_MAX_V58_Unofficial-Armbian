@@ -528,31 +528,59 @@ done
 mod_base; rm -rf "$STD/modules"
 ok "mismatch with no saved tree: modules-mount warns, mounts nothing" 'B=b3 ID=$IDA km modules-mount 2>&1 | grep -q "WARN running build" && [ -z "$(mnt)" ]'
 
-echo "== 17 r15: initramfs mount before switch_root, running role by build id, upgrade notice"
+echo "== 17 r15/r16: initramfs mount before switch_root, running role by build id, upgrade notice"
 IB=${IB:-$HERE/../../packages/h96-kernel-switch/root/usr/share/initramfs-tools/scripts/init-bottom/h96-kernel-switch}
-HK=$HERE/../../packages/h96-kernel-switch/root/usr/share/initramfs-tools/hooks/h96-kernel-switch
+HK=${HK:-$HERE/../../packages/h96-kernel-switch/root/usr/share/initramfs-tools/hooks/h96-kernel-switch}
 DI=$HERE/../../packages/h96-kernel-switch/root/usr/lib/systemd/system/modprobe@.service.d/h96-kernel-switch.conf
-mkdir -p "$W/ib"
-printf '#!/bin/sh\necho "mount $*" >> "%s/ib/mounts"\n' "$W" > "$W/ib/mount"
-printf '#!/bin/sh\necho %s\n' "$NEWK" > "$W/ib/uname"
-chmod +x "$W/ib/mount" "$W/ib/uname"
-ib() { rm -f "$W/ib/mounts"; PATH="$W/ib:$PATH" rootmnt=$R H96KS_NOTES=$W/notes-$1 sh "$IB" > "$W/ib/out" 2>&1; }
+mkdir -p "$W/ib/od" "$W/ib/hd" "$W/ib/none"
+printf '#!/bin/sh\necho "mount $*" >> "%s/ib/mounts"\n' "$W" > "$W/ib/mount"; chmod +x "$W/ib/mount"
+ln -sf "$(command -v gnuod || command -v od)" "$W/ib/od/od"; ln -sf "$(command -v hexdump)" "$W/ib/hd/hexdump"
+ib() {  # running-id [libexec-dir] [shell]
+    rm -f "$W/ib/mounts"
+    PATH="$W/ib:$PATH" rootmnt=$R H96KS_UNAME=$NEWK H96KS_NOTES=$W/notes-$1 H96KS_LIBEXEC=$W/ib/${2:-od} ${3:-sh} "$IB" > "$W/ib/out" 2>&1
+}
+tree_of() { dirname "$(grep -l "IDS=.*$1" "$SD"/*/meta)"; }
 mod_base
-ok "try saves staged.meta (size, mtime, inode and build ids of staged Image)" 'B=b3 ID=$IDA km snapshot-modules --quiet; grep -q "^SIG=$(stat -c "%s %Y %i" $SK/Image)$" $SD/staged.meta && grep -q "^IDS=.*$IDB" $SD/staged.meta'
-ib $IDA
-ok "init-bottom, running A, package B, saved A: bind mount of saved tree A, then read-only remount" '[ "$(sed -n 1p $W/ib/mounts)" = "mount -o bind $(dirname "$(grep -l "IDS=.*$IDA" $SD/*/meta)")/tree $R/usr/lib/modules/$NEWK" ] && grep -qx "mount -o remount,bind,ro $R/usr/lib/modules/$NEWK" $W/ib/mounts && grep -q "mounted read-only" $W/ib/out'
-ib $IDB
-ok "init-bottom, running build B = package: no mount" '[ ! -e $W/ib/mounts ]'
-touch -d @1700000000 "$SK/Image"; ib $IDA
-ok "init-bottom, staged Image changed since staged.meta: no mount (boot unit decides)" '[ ! -e $W/ib/mounts ]'
 B=b3 ID=$IDA km snapshot-modules --quiet
-rm -rf "$(dirname "$(grep -l "IDS=.*$IDA" $SD/*/meta)")"; ib $IDA
+ok "staged.meta: note offsets and build ids of staged Image (no inode)" 'o=$(grep -obUaP "\x04\x00\x00\x00\x14\x00\x00\x00\x03\x00\x00\x00GNU\x00" $SK/Image | cut -d: -f1); grep -qx "OFFS=$o " $SD/staged.meta && grep -q "^IDS=.*$IDB" $SD/staged.meta && ! grep -q "^SIG=" $SD/staged.meta'
+ib $IDA od
+ok "init-bottom (od), running A, package B, saved A: bind mount of tree A, then read-only remount" '[ "$(sed -n 1p $W/ib/mounts)" = "mount -o bind $(tree_of $IDA)/tree $R/usr/lib/modules/$NEWK" ] && grep -qx "mount -o remount,bind,ro $R/usr/lib/modules/$NEWK" $W/ib/mounts && grep -q "mounted read-only" $W/ib/out'
+ib $IDA hd
+ok "init-bottom (hexdump): same mount of tree A" '[ "$(sed -n 1p $W/ib/mounts)" = "mount -o bind $(tree_of $IDA)/tree $R/usr/lib/modules/$NEWK" ]'
+ib $IDA none
+ok "init-bottom without hex dumper: exits, no mount" '[ ! -e $W/ib/mounts ]'
+ib $IDB od
+ok "init-bottom, running build B = package: no mount" '[ ! -e $W/ib/mounts ]'
+ib $IDB hd
+ok "init-bottom (hexdump), running build B = package: no mount" '[ ! -e $W/ib/mounts ]'
+cp -p "$SK/Image" "$W/img.keep"; printf 'X' | cat - "$W/img.keep" > "$SK/Image"; ib $IDA od
+ok "init-bottom, staged Image changed (no note at recorded offset): no mount (boot unit decides)" '[ ! -e $W/ib/mounts ]'
+cp -p "$W/img.keep" "$SK/Image"; touch -d @1700000000 "$SK/Image"; ib $IDA od
+ok "init-bottom, staged Image copied with new mtime and inode (image build): still mounts" '[ "$(sed -n 1p $W/ib/mounts)" = "mount -o bind $(tree_of $IDA)/tree $R/usr/lib/modules/$NEWK" ]'
+if command -v busybox > /dev/null; then
+    ib $IDA od "busybox sh"
+    ok "init-bottom under busybox sh, running A: selects tree A and calls mount (stub or applet)" 'grep -q "mounted read-only\|mount of saved module tree $(basename $(tree_of $IDA)) failed" $W/ib/out'
+    ib $IDB od "busybox sh"
+    ok "init-bottom under busybox sh, running B: no mount, silent" '[ ! -e $W/ib/mounts ] && [ ! -s $W/ib/out ]'
+fi
+rm -rf "$(tree_of $IDA)"; ib $IDA od
 ok "init-bottom, no saved tree of running build: no mount, message" '[ ! -e $W/ib/mounts ] && grep -q "no saved module tree" $W/ib/out'
-rm -rf "$STD/modules"; ib $IDA
+rm -rf "$STD/modules"; ib $IDA od
 ok "init-bottom without staged.meta: no mount, silent" '[ ! -e $W/ib/mounts ] && [ ! -s $W/ib/out ]'
+# hook: one small dumper, never multicall binary
 printf 'copy_exec() { echo "copy $*" >> "%s/ib/copies"; }\n' "$W" > "$W/ib/hookfn"
-rm -f "$W/ib/copies"; H96KS_HOOKFN=$W/ib/hookfn sh "$HK"
-ok "initramfs hook copies tools of init-bottom script into /usr/libexec/h96-kernel-switch" '[ "$(grep -c " /usr/libexec/h96-kernel-switch/" $W/ib/copies)" -ge 7 ] && grep -q "/mount$" $W/ib/copies && grep -q "/od$" $W/ib/copies && grep -q "/stat$" $W/ib/copies'
+mkdir -p "$W/hk1" "$W/hk2" "$W/hk3"
+for b in readlink basename wc; do for d in hk1 hk2 hk3; do ln -sf "$(command -v $b)" "$W/$d/$b"; done; done
+ln -sf "$(command -v gnuod || command -v hexdump)" "$W/hk1/gnuod"; ln -sf "$(command -v hexdump)" "$W/hk1/hexdump"
+ln -sf "$(command -v hexdump)" "$W/hk2/hexdump"
+head -c 2000000 /dev/zero > "$W/hk3/coreutils"; chmod +x "$W/hk3/coreutils"; ln -sf "$W/hk3/coreutils" "$W/hk3/gnuod"
+hk() { rm -f "$W/ib/copies"; PATH="$W/$1" H96KS_HOOKFN=$W/ib/hookfn /bin/sh "$HK" > "$W/ib/hout" 2>&1; }
+hk hk1
+ok "hook: gnuod present: one copy, as od" '[ "$(wc -l < $W/ib/copies)" = 1 ] && grep -q " /usr/libexec/h96-kernel-switch/od$" $W/ib/copies'
+hk hk2
+ok "hook: only hexdump: one copy, as hexdump" '[ "$(wc -l < $W/ib/copies)" = 1 ] && grep -q " /usr/libexec/h96-kernel-switch/hexdump$" $W/ib/copies'
+hk hk3
+ok "hook: gnuod is >1 MiB multicall binary: nothing copied, message" '[ ! -e $W/ib/copies ] && grep -q "no gnuod or hexdump" $W/ib/hout'
 ok "modprobe@ drop-in orders after modules unit" 'grep -qx "After=h96-kernel-switch-modules.service" "$DI"'
 # running role by build id when banners are identical
 setup; stage "$B1" dtb-1; pkg $IDA "$B1" dep-A

@@ -250,6 +250,7 @@ bids() {
     done | sort -u | tr '\n' ' '
     return 0
 }
+noffs() { grep -obUaP '\x04\x00\x00\x00\x14\x00\x00\x00\x03\x00\x00\x00GNU\x00' "$1" 2>/dev/null | cut -d: -f1 | tr '\n' ' '; return 0; }
 id_in() { local i; for i in $1; do case " $2 " in *" $i "*) return 0 ;; esac; done; return 1; }  # ids list
 fsha() { sha256sum < "$1" | cut -d' ' -f1; }
 # release of Image: embedded banner, else generation or link name
@@ -309,11 +310,11 @@ snap_take() {
     snap_ok "$(snap_dir "$1" "$sh")" "$sh" && return 0
     snap_put "$1" "$MODS/$1" "$S/Image" link
 }
-# build ids of staged Image with size, mtime, inode of that file: initramfs script trusts ids only while these match
+# offsets of build-id notes in staged Image: initramfs script reads ids there (content check, survives image copy)
 staged_meta() {
     local S=$STAGE/$1/Image f="$SNAP/$1/staged.meta"
     mkdir -p "$SNAP/$1"
-    printf 'SIG=%s\nIDS=%s\n' "$(stat -c '%s %Y %i' "$S")" "$(bids "$S")" > "$f.tmp"
+    printf 'OFFS=%s\nIDS=%s\n' "$(noffs "$S")" "$(bids "$S")" > "$f.tmp"
     mv -f "$f.tmp" "$f"
 }
 # snap_from_deb KREL sha|id VALUE: tree from h96-kernel-KREL deb (apt cache, offline repo) whose Image matches

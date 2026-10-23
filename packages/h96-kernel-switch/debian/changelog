@@ -1,3 +1,18 @@
+h96-kernel-switch (8.0.0~r16) resolute; urgency=medium
+
+  * Initramfs hook copies one hex dumper only (gnuod, else hexdump; any
+    file over 1 MiB skipped): r15 copied Rust coreutils multicall binary
+    once per tool name (51 MB unpacked, uInitrd +23 MB). Scratch
+    mkinitramfs: +56 KB compressed, +79 KB unpacked over no hook.
+    init-bottom script uses busybox applets for sed, grep, cut, tr,
+    basename, uname and mount.
+  * staged.meta records offsets of build-id notes instead of size, mtime
+    and inode; init-bottom reads build ids of staged Image there, so
+    copy of rootfs into image (new inodes) keeps initramfs mount working
+    and changed staged Image leaves decision to boot unit.
+
+ -- Scrumpper <190908034+Scrumpper@users.noreply.github.com>  Sat, 24 Oct 2026 03:00:00 +0000
+
 h96-kernel-switch (8.0.0~r15) resolute; urgency=medium
 
   * Initramfs init-bottom script and hook: before switch_root, running
