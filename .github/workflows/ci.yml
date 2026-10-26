@@ -46,12 +46,12 @@ jobs:
       - name: check-docs
         run: |
           set -euo pipefail
-          mapfile -t docs < <(git ls-files -- '*.md')
+          mapfile -t docs < <(git ls-files -- '*.md' ':!build/userland/pkgs')
           python3 tools/docs/check-docs.py "${docs[@]}"
       - name: strip-articles check
         run: |
           set -euo pipefail
-          mapfile -t docs < <(git ls-files -- '*.md')
+          mapfile -t docs < <(git ls-files -- '*.md' ':!build/userland/pkgs')
           python3 tools/docs/strip-articles.py --check "${docs[@]}"
       - name: privacy grep
         run: |
@@ -96,6 +96,8 @@ jobs:
           git ls-files -z | while IFS= read -r -d '' f; do
             [ -f "$f" ] || continue
             case "$f" in
+              # package payload, pinned by build/userland/pkgs.manifest
+              build/userland/pkgs/*) continue ;;
               *.sh) echo "$f" >> "$t/sh.list"; continue ;;
               *.py) echo "$f" >> "$t/py.list"; continue ;;
             esac
@@ -178,7 +180,7 @@ jobs:
         run: |
           set -euo pipefail
           pat='(192\.168|10\.[0-9]{1,3}|172\.(1[6-9]|2[0-9]|3[01]))\.[0-9]{1,3}\.[0-9]{1,3}|/home/[a-z_][a-z0-9_-]*/'
-          if grep -rnIE "$pat" build tools/ci; then echo "::error::PII pattern in packaging sources"; exit 1; fi
+          if grep -rnIE --exclude-dir=pkgs "$pat" build tools/ci; then echo "::error::PII pattern in packaging sources"; exit 1; fi
           echo "build/ and tools/ci/ clean"
       - name: build kernel and DTB debs from placeholder inputs
         run: |
