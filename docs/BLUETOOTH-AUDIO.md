@@ -90,7 +90,7 @@ All are open reimplementations, no vendor blob.
 
 ## 8.0 packages
 
-On 8.0 beta images, `h96-audio` package installs Bluetooth audio files: `30-h96-bluetooth.conf`
+On 8.0 images, `h96-audio` package installs Bluetooth audio files: `30-h96-bluetooth.conf`
 in `/etc/wireplumber/wireplumber.conf.d/`, `rfcomm.conf` in `/etc/modules-load.d/`,
 `h96-rfcomm.service` and `bt-sco-hci.service` in `/usr/lib/systemd/system/`,
 `h96-bt-policy.py` in `/usr/lib/h96/` with `20-h96-policy.conf` drop-in for

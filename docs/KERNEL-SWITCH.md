@@ -1,8 +1,8 @@
 # Kernel switch and rollback
 
 `h96-kernel-switch` boots kernel staged by `h96-kernel-<krel>` package as guarded trial, then keeps it on
-confirm or falls back to previous kernel. Planning document for 8.0; tool is tested in stub root only and has
-not booted on hardware.
+confirm or falls back to previous kernel. Package `h96-kernel-switch` is included in 8.0 image; it selects between
+default kernel `6.12.69-h96v58-8.0` and fallback kernel `6.1.172-h96v58-8.0`.
 
 ## Contents
 
@@ -59,7 +59,7 @@ needs no module step. `try` of other build of in-boot release refuses unless tre
 replaces package tree, then full tree size (6.12: 125 MB, 6.1: 181 MB) until no Image of that build is left.
 
 Initramfs `init-bottom` script (in every `uInitrd` that `try` builds) does same build-id check before `switch_root`
-and mounts saved tree on real root, so modules PID1 loads at startup (`ipv6`) and first `modprobe@` units already
+and mounts saved tree on target root filesystem, so modules PID1 loads at startup (`ipv6`) and first `modprobe@` units already
 match; `modprobe@.service` drop-in orders after modules unit, which stays second line (generations made by earlier
 versions of this tool have no initramfs script). Initramfs hook copies one hex dumper only (`gnuod`, else `hexdump`;
 never file over 1 MiB, so not Rust coreutils multicall binary); script uses busybox applets otherwise (scratch
@@ -68,7 +68,7 @@ with build-id note offsets; script reads staged build ids there (no size, mtime 
 keeps working). `list` marks generation `running` by Image build id (banner only without build id). Generation
 numbers are reused: after `prune`, next `try` takes lowest free number.
 
-8.0 beta image has `Image -> Image-<krel>` and `uInitrd -> uInitrd-<krel>` with plain DTB file. First `try`
+Layout before first `try` has `Image -> Image-<krel>` and `uInitrd -> uInitrd-<krel>` with plain DTB file. First `try`
 converts this layout in steps that each keep content every boot name resolves to: previous generation holds hard
 links to current `Image-<krel>` and `uInitrd-<krel>` plus DTB copy, `h96ks/cur` points at it, then `uInitrd`,
 `Image` and (when needed) DTB path move onto `h96ks/cur`.

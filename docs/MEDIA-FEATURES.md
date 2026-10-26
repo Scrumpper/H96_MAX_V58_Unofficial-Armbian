@@ -6,7 +6,7 @@ Sources under `packages/bsp/h96-max-v58/` (tools/, lib/, systemd/, udev/, mpv/,
 wireplumber/, pipewire/, etc-h96/, modules-load.d/).
 
 Paths below are v6.x and v7.x locations (`/usr/local/bin`, `/usr/local/lib/h96`, `/opt`).
-On 8.0 beta images, `h96-media` package installs media commands in `/usr/bin` and
+On 8.0 images, `h96-media` package installs media commands in `/usr/bin` and
 `/usr/sbin`, helpers in `/usr/lib/h96`, video stack archive in `/usr/lib/h96/video`, units
 in `/usr/lib/systemd/system` and udev rules in `/usr/lib/udev/rules.d`; `h96-gaming` carries
 pad rules, emulators and Steam front end.
@@ -17,8 +17,8 @@ pad rules, emulators and Steam front end.
   maps CEC remote keys to uinput events. Needs /dev/cec0 from dw-hdmi-qp CEC
   block + v4l-utils (cec-ctl). v6.2 kernel enables dw-hdmi-qp vendor CEC adapter on
   HDMI0 (`cec-enable` DT property), so /dev/cec0 exists: TV remote controls box, box
-  puts TV in standby and wakes it (verified on Sony TV). Off by default:
-  `sudo systemctl enable --now h96-cec.service`. Kernels before v6.2 do not build
+  puts TV in standby and wakes it (verified on Sony TV). On by default since v8.0
+  (v7.2 and earlier: off); `sudo systemctl disable --now h96-cec.service` turns it off. Kernels before v6.2 do not build
   CEC adapter, so /dev/cec0 never appears there.
 - **h96-hdr** - mpv HDR10 handling: tone-map HDR10 to SDR via vo=gpu-next/libplacebo
   (reliable path; true passthrough is X11-limited on this stack).
@@ -108,11 +108,8 @@ Why it needs v5.0 kernel:
   kernel with `CONFIG_PSI=y` (`PSI_DEFAULT_DISABLED` off) from armbian/linux-rockchip
   `rk-6.1-rkr5.1`, commit `95e85f6c`. Binder (`CONFIG_ANDROID_BINDER_IPC`/`BINDERFS`) is
   built in as well. `h96-waydroid status` verifies both.
-- V5.0 build was Image-only, with kernel release string unchanged at 6.1.115 and
-  vendor modules kept. As of v6.0 release string is `6.1.115-h96` and full
-  module set is rebuilt from same source and configuration as Image with
-  `CONFIG_MODVERSIONS=y`; modules live in `/lib/modules/6.1.115-h96`. Existing install
-  cannot `apt upgrade` into either kernel; it needs new image.
+- Both 8.0 kernels (`6.12.69-h96v58-8.0` default, `6.1.172-h96v58-8.0` fallback) carry
+  PSI. Kernels arrive with image releases, not through `apt upgrade`.
 
 Image profiles:
 - `init gapps|vanilla` - official Waydroid LineageOS 20 image
