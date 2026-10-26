@@ -33,9 +33,7 @@ GPL-2.0. See [`LICENSE`](LICENSE) and [`CREDITS.md`](CREDITS.md).
 
 ---
 
-## Release images (v6.2)
-
-Current release is **v6.2**, shipped as one pre-built full image. It boots to
+##  shipped as one pre-built full image. It boots to
 text console and does not pre-install desktop. v6.2 updates native Steam route over
 v6.1 and reworks audio: flat EQ file restores device setup on PipeWire 1.6, and Bluetooth
 headset microphone, codecs and reconnect behaviour change.
