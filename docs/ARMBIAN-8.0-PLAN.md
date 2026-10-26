@@ -1,8 +1,8 @@
 # Armbian 8.0 plan and status
 
 Status of 8.0 work for H96 MAX V58 (RK3588). Planning document, not release note.
-Dated 2026-10-18. 8.0 is in beta: beta images are built and flashed on test hardware, none
-is published, and current release stays v7.2.
+Dated 2026-10-18 and kept as written then (6.1 kernel line, beta milestones). Released v8.0 moved to kernel
+6.12.69 as default with 6.1.172 fallback; see [README](../README.md) and [CHANGELOG.md](../CHANGELOG.md).
 
 ## Contents
 

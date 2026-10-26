@@ -1,8 +1,8 @@
-# [UNOFFICIAL] H96 Max V58 · Armbian on RK3588 · open GPU stack · v7.2, 8.0 beta
+# [UNOFFICIAL] H96 Max V58 · Armbian on RK3588 · open GPU stack · v8.0
 
 > **Device:** H96 Max V58 (Rockchip RK3588, 8 GB RAM, 64 GB eMMC)
 > **Status:** Unofficial, community built, not affiliated with Armbian project
-> **Releases:** v7.2 is current published image. 8.0 is in beta and not released.
+> **Releases:** v8.0, Ubuntu image and Debian Edition image, on [Releases page](https://github.com/Scrumpper/H96_MAX_V58_Unofficial-Armbian/releases).
 
 ---
 
@@ -25,7 +25,7 @@ composites on Mali-G610, Vulkan runs on PanVK, and video decodes on Rockchip VPU
 |---|---|
 | SoC | Rockchip RK3588 |
 | CPU | 4x Cortex-A76 up to 2208 MHz, 4x Cortex-A55 up to 1800 MHz |
-| GPU | ARM Mali-G610 MC4, open Panthor driver + Mesa 26.1.4 |
+| GPU | ARM Mali-G610 MC4, open Panthor driver + Mesa |
 | RAM | 8 GB |
 | Storage | 64 GB eMMC |
 | Display | HDMI0 (DW-HDMI-QP), one output |
@@ -33,26 +33,25 @@ composites on Mali-G610, Vulkan runs on PanVK, and video decodes on Rockchip VPU
 | Wireless | Broadcom BCM43752 / AP6275P WiFi 6, on **PCIe** |
 | Bluetooth | Broadcom BCM4362A2 |
 | Front panel | TM1650 VFD, 4 digits plus status icons |
-| Base OS | Armbian 26.05 / Ubuntu 26.04 Resolute |
-| Kernel | v7.2: `6.1.172-h96v58-7.1`. 8.0 beta: `6.1.172-h96v58-8.0`. Both on Rockchip `rk-6.1-rkr7.2` BSP line. |
+| Base OS | Ubuntu image: Armbian 26.05 / Ubuntu 26.04 Resolute. Debian Edition: Debian 13 trixie. |
+| Kernel | Default `6.12.69-h96v58-8.0` (Rockchip `rk-6.12-rkr1`); fallback `6.1.172-h96v58-8.0` (Rockchip `rk-6.1-rkr7.2`), selected with `h96-kernel-switch`. |
 
 ---
 
-## Armbian 8.0 (beta)
+## Armbian 8.0
 
-8.0 is platform release, in beta, not published. It adds no new media or gaming features.
+8.0 is platform release over v7.2.
 
-| Area | 8.0 beta |
+| Area | 8.0 |
 |---|---|
-| Kernel | Package `h96-kernel-6.1.172-h96v58-8.0`; payload staged in `/usr/lib/h96-kernel/<krel>/`, modules in `/usr/lib/modules/<krel>/`. Image build copies boot files into `/boot`. |
-| Device tree | Package `h96-dtb-6.1.172-h96v58-8.0`, built from vendor base DTB plus overlay source. |
+| Kernels | 6.12.69 default: Panthor GPU interface 1.5, RAM scaling, eMMC software queue, hardening options. 6.1.172 fallback: same feature set as v7.2 kernel. Packages `h96-kernel-<krel>` and `h96-dtb-<krel>`; modules in `/usr/lib/modules/<krel>/`. |
+| Kernel switch | `h96-kernel-switch try <krel>` boots kernel as trial; `confirm` keeps it, reboot without confirm returns to previous kernel. See [docs/KERNEL-SWITCH.md](docs/KERNEL-SWITCH.md). |
 | Userland | Packages `h96-base`, `h96-boot`, `h96-net`, `h96-audio`, `h96-desktop`, `h96-media`, `h96-tools`, `h96-gaming`. Commands in `/usr/bin` and `/usr/sbin`, helpers in `/usr/lib/h96`, settings in `/etc/h96`. Nothing packaged under `/usr/local` or `/opt`. |
 | GPU | Mesa only (Panfrost GL, PanVK Vulkan). `libmali` removed. |
-| Desktop | KDE Plasma on X11, installed on demand. |
-| Steam | `steam-arm-setup` package from Steam ARM project; `h96-steam` front end. |
-| First boot | One planned reboot. |
-
-Rollback from 8.0 beta: reflash v7.2 image.
+| Power | New Power Save profile; DDR scales 528 to 2112 MHz on kernel 6.12. |
+| Display | FreeSync with `sudo h96-vrr on` (off by default); HDMI-CEC TV remote on by default; experimental Plasma (Wayland) session beside default Plasma (X11). |
+| Steam | Steam ARM 3.1 from package `steam-arm-setup`, `h96-steam` front end. |
+| Editions | Ubuntu image and Debian Edition ([docs/DEBIAN-EDITION.md](docs/DEBIAN-EDITION.md)). |
 
 ---
 
@@ -84,8 +83,8 @@ Rollback from 8.0 beta: reflash v7.2 image.
 armbian-config  ->  System  ->  Desktop
 ```
 
-KDE Plasma runs on X11 with LightDM. Wayland is not used: on this BSP it breaks GPU
-compositing and mpv. KDE keeps installing packages in background after first login; wait
+KDE Plasma runs on X11 with LightDM by default. Plasma (Wayland) session is experimental:
+`sudo h96-autologin-setup --session plasma`. KDE keeps installing packages in background after first login; wait
 ten minutes or more before judging anything missing, and do not reboot or unplug box
 while it installs.
 
@@ -94,13 +93,14 @@ while it installs.
 ## Flashing
 
 **Needed:** Linux host, `rkdeveloptool`, USB-A to USB-A data cable, `MiniLoaderAll.bin` and
-image from release download. Flashing erases eMMC; back up first (`h96-backup`).
+image from release zip. Flashing erases eMMC; back up first (`h96-backup`). Scripted:
+`python3 flash.py --verify` from unpacked release folder. By hand:
 
 ```bash
-# 1. Check and decompress
-sha256sum -c --ignore-missing SHA256SUMS
-xz -dk H96-MAX-V58_Unofficial-Armbian_<version>.img.xz
-sha256sum -c SHA256SUMS
+# 1. Check and decompress (Debian Edition: ..._v8.0-debian.img)
+sha256sum -c *.sha256 FLASHER-SHA256SUMS.txt
+xz -dk H96-MAX-V58_Unofficial-Armbian_v8.0.img.xz
+sha256sum -c H96-MAX-V58_Unofficial-Armbian_v8.0.img.sha256
 
 # 2. Loader mode: on running box run  sudo reboot loader
 #    or pinhole: power off, hold pinhole (rear, between antenna posts),
@@ -115,22 +115,22 @@ rkdeveloptool ld                     # Maskrom
 
 # 4. Write, read back, compare, reset
 rkdeveloptool db MiniLoaderAll.bin
-rkdeveloptool wl 0 H96-MAX-V58_Unofficial-Armbian_<version>.img
+rkdeveloptool wl 0 H96-MAX-V58_Unofficial-Armbian_v8.0.img
 rkdeveloptool rl 0 <sectors> readback.img   # sectors = image bytes / 512
 sha256sum readback.img               # equal to .img sha256
 rkdeveloptool rd
 ```
 
 **Never interrupt `wl` once it starts.** On read-back mismatch, repeat `db` and `wl` before
-reset. First boot shows console on HDMI and runs setup before SSH answers; 8.0 beta
-reboots once, v7.2 twice. Network can take minutes after reboot, and DHCP address can
+reset. First boot shows console on HDMI and runs setup before SSH answers, then reboots
+once. Network can take minutes after reboot, and DHCP address can
 change.
 
 ```bash
 ssh root@<ip>     # password: 1234
 ```
 
-v7.2 release download includes complete flashing guide (`FLASHING.md`), scripted flasher
+Release zip includes complete flashing guide (`FLASHING.md`), scripted flasher
 (`flash.py`) and command reference (`COMMANDS.md`).
 
 ---
@@ -152,8 +152,10 @@ v7.2 release download includes complete flashing guide (`FLASHING.md`), scripted
 - **Kernel arrives with image releases**, not through `apt upgrade`.
 - **Anti-cheat titles do not run** under x86-on-arm64 emulation; Steam snap does not work
   on this GPU stack.
-- **8.0 beta:** no try-once kernel slot, no signed update bundles yet; boot 1 journal is
-  not kept.
+- **Power off** enters firmware standby and restarts about 45 s later (hardware watchdog);
+  unplug power after shutdown.
+- **Plasma (Wayland) session is experimental:** 4K60 video drops frames at 3840x2160
+  output, no RGB range control, no VRR.
 
 ---
 
@@ -163,7 +165,7 @@ Full detail in [CHANGELOG.md](CHANGELOG.md) and release downloads.
 
 | Version | Key change |
 |---|---|
-| **8.0 beta** | Platform release, not published: kernel, DTB and userland as dpkg packages; files out of `/usr/local` and `/opt`; `libmali` removed |
+| **v8.0** | Kernel 6.12.69 default with 6.1.172 fallback and `h96-kernel-switch`; Panthor GPU interface 1.5; RAM scaling; kernel, DTB and userland as dpkg packages; `libmali` removed; Debian Edition |
 | **v7.2** | First-boot repairs, time zone sync, autologin set once, kernel guard against foreign updaters, Steam ARM 2.3.1 |
 | **v7.1** | Kernel `6.1.172-h96v58-7.1`: AV1 hardware decode, HDR10 playback (opt-in), IEC958 channel status, RGA 2D jobs |
 | **v7.0** | Kernel `6.1.172-h96v58-7.0` on Rockchip `rk-6.1-rkr7.2` base |
@@ -180,12 +182,12 @@ Earlier revisions were closed-blob GPU builds and are superseded.
 
 ## About this repository
 
-Repo publishes **hardware bring-up sources** (device tree, overlays, kernel config, kernel
-patches, board file, front-panel daemon, Bluetooth firmware, BSP files from v6.x) under
-GPL-2.0, plus Armbian 8.0 groundwork: DTB overlay source and tree-diff gate, kernel
-package builder, `h96-selftest` and CI. 8.0 userland package sources and kernel patch
-series are not published here yet; for complete feature set use pre-built release image. See
-[README.md](README.md) for build steps.
+Repo publishes board sources under GPL-2.0: device tree overlay source and tree-diff gate,
+kernel configuration, kernel and device tree package builder, `h96-kernel-switch`,
+`h96-selftest`, CI, front-panel daemon and board support files. Rebuild and verify steps:
+[docs/REPRODUCE.md](docs/REPRODUCE.md) (Ubuntu image) and
+[docs/REPRODUCE-DEBIAN.md](docs/REPRODUCE-DEBIAN.md) (Debian Edition). Docs index:
+[docs/README.md](docs/README.md).
 
 ---
 
@@ -194,7 +196,7 @@ series are not published here yet; for complete feature set use pre-built releas
 | Component | Credit |
 |---|---|
 | Base | [Armbian](https://www.armbian.com) |
-| BSP kernel (6.1.x RK3588) | [Armbian linux-rockchip](https://github.com/armbian/linux-rockchip), Rockchip |
+| BSP kernel (RK3588) | [Armbian linux-rockchip](https://github.com/armbian/linux-rockchip), Rockchip |
 | Open GPU | [Panthor](https://docs.kernel.org/gpu/panthor.html) + [Mesa](https://mesa3d.org) (Panfrost, PanVK) |
 | Hardware video | [Rockchip MPP](https://github.com/rockchip-linux/mpp), [mpv](https://mpv.io) |
 | Desktop tooling | [armbian-config](https://github.com/armbian/configng) |
