@@ -1,0 +1,2 @@
+# h96-ddc-i2c-gpio overlay exposes the dead HDMI DDC pins as i2c bus "i2c-ddc"; grants the video group read/write so ddcutil, h96-brightness, and KDE PowerDevil can control monitor brightness over DDC/CI without root.
+KERNEL=="i2c-[0-9]*", SUBSYSTEM=="i2c-dev", ATTR{name}=="i2c-ddc", GROUP="video", MODE="0660"

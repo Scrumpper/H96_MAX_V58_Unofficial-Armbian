@@ -1,0 +1,953 @@
+#!/bin/bash
+# h96-kernel-switch: boot a staged kernel as guarded trial, confirm or roll back.
+# Image, uInitrd and (once it differs) board DTB link through /boot/h96ks/cur into one generation directory;
+# one rename of h96ks/cur switches all three. Never touches extlinux, boot.scr, boot.cmd or armbianEnv.txt.
+set -euo pipefail
+umask 022
+export LC_ALL=C
+
+ME=h96-kernel-switch
+R=${H96KS_ROOT:-}  # stub root for tests; empty on live system
+TEST=0
+[ -n "$R" ] && TEST=1
+if [ "$TEST" = 0 ]; then unset H96KS_UNAME H96KS_BOOTID H96KS_HEALTHY H96KS_AVAIL_KB H96KS_DIE_AT H96KS_CUTLOG H96KS_PROCVER H96KS_NOTES; fi
+BOOT=$R/boot
+GD=h96ks           # generation directories, relative to /boot
+CUR=$GD/cur        # link to active generation
+STAGE_REL=/usr/lib/h96-kernel
+MODS_REL=/usr/lib/modules
+STAGE=$R$STAGE_REL
+MODS=$R$MODS_REL
+ST=$R/var/lib/h96-kernel-switch
+TRIAL=$ST/trial
+LAST=$ST/last
+SNAP=$ST/modules   # module trees per kernel build: SNAP/<krel>/<image sha16>/{tree,meta}
+NOTES=${H96KS_NOTES:-$R/sys/kernel/notes}  # stub root: no host notes
+APTC=$R/var/cache/apt/archives
+OREPO=$R/opt/h96-pkgs
+RESERVE_KB=${H96KS_RESERVE_KB:-16384}
+TMPSFX=.h96ks-tmp
+UVFLAG=$R/var/lib/h96-undervolt-trial   # h96-undervolt (h96-tools): trial recorded
+UVSTATE=$R/var/lib/h96-undervolt-state  # h96-undervolt: DTB change active
+KEYS="PHASE KREL MODE AUTO PENDING ABOOT PREV NEW"
+
+usage() {
+    cat <<EOF
+usage: $ME list | status | default | dtb
+       $ME try KREL [--auto-confirm] [--keep-dtb]
+       $ME confirm | rollback [--keep-dtb] | prune KREL|GEN | in-use KREL|GEN | dtb-plain
+       $ME snapshot-modules [--quiet] | repair-modules
+       $ME guard | auto-confirm | modules-mount        (run by systemd units and apt hook)
+try:      copy staged KREL into new /boot generation, point h96ks/cur at it, arm boot guard;
+          same release as default or running kernel: only when staged Image or DTB differs
+confirm:  keep KREL as default; run during trial boot
+rollback: cancel pending trial, or return to kernel that was default before last confirm
+default:  print release that boot files start
+in-use:   print roles of KREL or generation GEN (KREL.gN) in boot files (default, trial, trial-previous,
+          rollback-target); rc 1 when none
+prune:    remove generations of KREL, or one generation GEN, that nothing names
+dtb:      print board DTB path, layout (plain, managed, link), resolved file and trial phase
+dtb-plain: turn managed DTB link back into plain file, same content
+snapshot-modules: keep module tree of each staged kernel build (hard links); apt runs it before dpkg
+repair-modules: running build without its module tree: build tree from saved snapshot or matching
+          h96-kernel deb in apt cache or offline repo, mount it read-only over /usr/lib/modules/KREL
+modules-mount: at boot, before udev and modules-load: when running build differs from package tree,
+          mount saved tree of running build read-only over /usr/lib/modules/KREL
+EOF
+}
+
+die() { echo "$ME: $*" >&2; exit 1; }
+say() { echo "$ME: $*"; }
+log() {
+    mkdir -p "$ST"
+    echo "$(date -Is) $(bootid) $(krun) $*" >> "$ST/log"
+    sync "$ST/log" 2>/dev/null || true
+    [ "$TEST" = 1 ] || logger -t "$ME" -- "$*" 2>/dev/null || true
+}
+result() { echo "$(date -Is) $*" >> "$ST/result"; sync "$ST/result" 2>/dev/null || true; log "$*"; }
+krun() { echo "${H96KS_UNAME:-$(uname -r)}"; }
+bootid() { echo "${H96KS_BOOTID:-$(cat /proc/sys/kernel/random/boot_id 2>/dev/null || echo none)}"; }
+healthy() {
+    if [ "$TEST" = 1 ]; then [ "${H96KS_HEALTHY:-1}" = 1 ]; return; fi
+    systemctl is-active -q multi-user.target
+}
+# power cut simulation and cut point trace for tests
+cutpoint() {
+    [ "$TEST" = 1 ] || return 0
+    [ -z "${H96KS_CUTLOG:-}" ] || echo "$1" >> "$H96KS_CUTLOG"
+    if [ "${H96KS_DIE_AT:-}" = "$1" ]; then echo "test: power cut at $1" >&2; exit 99; fi
+}
+fsync_dir() { sync "$1" 2>/dev/null || sync; }
+safe() { [[ $1 =~ ^[A-Za-z0-9][A-Za-z0-9._+-]*$ ]] && [[ $1 != *..* ]]; }
+safe_path() { [[ $1 =~ ^[A-Za-z0-9][A-Za-z0-9._+/-]*$ ]] && [[ $1 != *..* ]] && [[ $1 != */ ]]; }
+need_root() { [ "$TEST" = 1 ] || [ "$(id -u)" = 0 ] || die "run as root"; }
+lock() {
+    mkdir -p "$ST"
+    exec 9> "$ST/lock"
+    flock -w "${1:-0}" 9 || die "another $ME run holds $ST/lock"
+}
+
+# state files: KEY=VALUE lines, safe values only
+st_load() {  # file
+    local k v
+    for k in $KEYS; do printf -v "T_$k" '%s' ""; done
+    [ -f "$1" ] || return 1
+    while IFS='=' read -r k v; do
+        case " $KEYS " in *" $k "*) ;; *) return 2 ;; esac
+        [ -z "$v" ] || safe_path "$v" || return 2
+        printf -v "T_$k" '%s' "$v"
+    done < "$1"
+    case "$T_PHASE" in armed|trial|commit|done) ;; *) return 2 ;; esac
+    return 0
+}
+st_save() {  # file KEY=VALUE...
+    local f=$1 t="$1.tmp" kv
+    shift
+    : > "$t"
+    for kv in "$@"; do echo "$kv" >> "$t"; done
+    sync "$t" 2>/dev/null || true
+    mv -f "$t" "$f"
+    fsync_dir "$ST"
+}
+trial_save() {  # phase [pending]
+    st_save "$TRIAL" "PHASE=$1" "KREL=$T_KREL" "MODE=$T_MODE" "AUTO=$T_AUTO" "PENDING=${2:-}" "ABOOT=$T_ABOOT" \
+        "PREV=$T_PREV" "NEW=$T_NEW"
+    T_PHASE=$1 T_PENDING=${2:-}
+}
+trial_clear() { rm -f "$TRIAL"; fsync_dir "$ST"; }
+
+# relink NAME TARGET: atomic link swap inside /boot
+relink() {
+    local l="$BOOT/$1" t
+    t="$(dirname "$l")/.$(basename "$l")$TMPSFX"
+    ln -sfn "$2" "$t"
+    mv -Tf "$t" "$l"
+    fsync_dir "$(dirname "$l")"
+}
+clean_tmp() {
+    [ -d "$BOOT" ] || return 0
+    find "$BOOT" -xdev -name ".*$TMPSFX" -prune -exec rm -rf {} + 2>/dev/null || true
+    fsync_dir "$BOOT"
+}
+
+# generations: /boot/h96ks/<krel>.g<n>/{Image,uInitrd,fdt}, never changed once renamed into place
+gen_krel() { echo "${1%.g*}"; }
+gen_ok() { safe "$1" && [ -f "$BOOT/$GD/$1/Image" ] && [ -f "$BOOT/$GD/$1/uInitrd" ] && [ -f "$BOOT/$GD/$1/fdt" ]; }
+gen_cmp() { cmp -s "$2" "$1/Image" && cmp -s "$3" "$1/uInitrd" && cmp -s "$4" "$1/fdt"; }  # dir img ini fdt
+gen_same() { gen_cmp "$BOOT/$GD/$1" "$2" "$3" "$4"; }  # gen img ini fdt
+cur_gen() {
+    local g
+    g=$(readlink "$BOOT/$CUR" 2>/dev/null) || return 1
+    safe "$g" || return 1
+    echo "$g"
+}
+gens_of() {  # krel: generation names of exactly this release
+    local g
+    for g in "$BOOT/$GD/$1".g*; do
+        [ -d "$g" ] || continue
+        g=$(basename "$g")
+        [[ ${g#"$1".g} =~ ^[0-9]+$ ]] && echo "$g"
+    done
+    return 0
+}
+new_gen_name() {  # krel
+    local n=1
+    while [ -e "$BOOT/$GD/$1.g$n" ]; do n=$((n + 1)); done
+    echo "$1.g$n"
+}
+# mkgen NAME IMG INI FDT link|copy: temp dir, read-back, rename into place
+mkgen() {
+    local t="$BOOT/$GD/.$1$TMPSFX"
+    rm -rf "$t"
+    mkdir -p "$t"
+    if [ "$5" = link ]; then
+        if ! ln "$(realpath "$2")" "$t/Image" || ! ln "$(realpath "$3")" "$t/uInitrd"; then die "hard link inside $BOOT failed"; fi
+    else
+        cp "$2" "$t/Image"
+        cp "$3" "$t/uInitrd"
+        chmod 0644 "$t/Image" "$t/uInitrd"
+    fi
+    cp "$4" "$t/fdt"
+    chmod 0644 "$t/fdt"
+    sync "$t/Image" "$t/uInitrd" "$t/fdt" 2>/dev/null || sync
+    gen_cmp "$t" "$2" "$3" "$4" || die "read-back of $1 failed"
+    fsync_dir "$t"
+    mv -T "$t" "$BOOT/$GD/$1"
+    fsync_dir "$BOOT/$GD"
+}
+flip() {  # gen why: one rename switches every name that links through h96ks/cur
+    if gen_ok "$1"; then
+        relink "$CUR" "$1"
+        log "$2: $CUR -> $1"
+    else
+        log "$2: generation $1 missing, links left as found: $(links_now)"
+        echo "$(date -Is) gen-missing $1" >> "$ST/result"
+    fi
+}
+links_now() {
+    local d=""
+    [ -z "${DTBN:-}" ] || d=$(readlink "$BOOT/dtb/$DTBN" 2>/dev/null || echo plain)
+    echo "Image=$(readlink "$BOOT/Image" 2>/dev/null) uInitrd=$(readlink "$BOOT/uInitrd" 2>/dev/null) dtb=$d cur=$(readlink "$BOOT/$CUR" 2>/dev/null)"
+}
+
+fdtfile() {
+    local f
+    f=$(sed -n 's/^fdtfile=//p' "$BOOT/armbianEnv.txt" 2>/dev/null | tail -1 | tr -d '\r')
+    [ -n "$f" ] || die "no fdtfile= in $BOOT/armbianEnv.txt"
+    safe_path "$f" || die "unsafe fdtfile: $f"
+    echo "$f"
+}
+# DTB link target: relative path from DTB directory to h96ks/cur/fdt, inside /boot
+dtb_rel() {
+    local d pb
+    pb=$(realpath "$BOOT")
+    d=$(realpath "$BOOT/dtb/$(dirname "$DTBN")")
+    case "$d/" in "$pb"/*) ;; *) die "$BOOT/dtb/$(dirname "$DTBN") resolves outside $BOOT" ;; esac
+    realpath -s -m --relative-to="$d" "$pb/$CUR/fdt"
+}
+check_link() {  # NAME: Image or uInitrd must be link to plain name or through h96ks/cur
+    local t
+    [ -L "$BOOT/$1" ] || die "$BOOT/$1 is not a link; tool needs link layout"
+    t=$(readlink "$BOOT/$1")
+    [ "$t" = "$CUR/$1" ] || safe "$t" || die "$BOOT/$1 points at $t; expected plain file name or $CUR/$1"
+    [ -f "$BOOT/$1" ] || die "$BOOT/$1 points at missing file"
+}
+default_krel() {
+    local t g
+    t=$(readlink "$BOOT/Image" 2>/dev/null) || return 1
+    if [ "$t" = "$CUR/Image" ]; then
+        g=$(cur_gen) || return 1
+        gen_krel "$g"
+    else
+        case "$t" in Image-?*) safe "$t" && echo "${t#Image-}" ;; *) return 1 ;; esac
+    fi
+}
+# full banner line of Image ("Linux version KREL (...) #N ... date"); empty when not found
+kbanner() { grep -a -o -m1 'Linux version [^[:cntrl:]]*' "$1" 2>/dev/null | head -n1; }
+procver() { if [ -n "${H96KS_PROCVER:-}" ]; then echo "$H96KS_PROCVER"; else head -n1 /proc/version 2>/dev/null; fi; }
+# running kernel is trial generation T_NEW: release decides; same release: banner decides when generations differ
+booted_new() {
+    [ "$(krun)" = "$T_KREL" ] || return 1
+    [ "$(gen_krel "$T_PREV")" = "$T_KREL" ] || return 0
+    local bn bp
+    bn=$(kbanner "$BOOT/$GD/$T_NEW/Image")
+    bp=$(kbanner "$BOOT/$GD/$T_PREV/Image")
+    [ -n "$bn" ] && [ "$bn" != "$bp" ] || return 0   # same banner: boot id and h96ks/cur decide
+    [ "$(procver)" = "$bn" ]
+}
+# release string embedded in uncompressed arm64 Image; empty when not found
+kver() {
+    local v
+    v=$(grep -a -o -m1 'Linux version [^ ]*' "$1" 2>/dev/null) || true
+    v=${v%%$'\n'*}
+    echo "${v#Linux version }"
+}
+# GNU build ids (hex) in FILE: Image holds vmlinux and vDSO notes, /sys/kernel/notes running vmlinux note
+bids() {
+    local o
+    grep -obUaP '\x04\x00\x00\x00\x14\x00\x00\x00\x03\x00\x00\x00GNU\x00' "$1" 2>/dev/null | cut -d: -f1 | while read -r o; do
+        od -An -tx1 -v -j $((o + 16)) -N 20 "$1" | tr -d ' \n'; echo
+    done | sort -u | tr '\n' ' '
+    return 0
+}
+noffs() { grep -obUaP '\x04\x00\x00\x00\x14\x00\x00\x00\x03\x00\x00\x00GNU\x00' "$1" 2>/dev/null | cut -d: -f1 | tr '\n' ' '; return 0; }
+id_in() { local i; for i in $1; do case " $2 " in *" $i "*) return 0 ;; esac; done; return 1; }  # ids list
+fsha() { sha256sum < "$1" | cut -d' ' -f1; }
+# release of Image: embedded banner, else generation or link name
+img_krel() { local v; v=$(kver "$1"); [ -n "$v" ] && echo "$v" || echo "$2"; }
+# bind mount (test: record file); source of mount on DIR, empty when none
+mnt_bind() {
+    if [ "$TEST" = 1 ]; then echo "${1#"$R"}" > "$ST/test-mount"; return; fi
+    mount --bind "$1" "$2" && mount -o remount,bind,ro "$2"
+}
+mnt_src() {
+    if [ "$TEST" = 1 ]; then cat "$ST/test-mount" 2>/dev/null || true; return; fi
+    mountpoint -q "$1" 2>/dev/null || return 0
+    findmnt -no FSROOT --mountpoint "$1" 2>/dev/null || true
+}
+snap_dir() { echo "$SNAP/$1/${2:0:16}"; }  # krel sha
+snap_ok() { [ -s "$1/meta" ] && [ -d "$1/tree" ] && grep -qx "SHA=$2" "$1/meta"; }
+snap_by_id() {  # krel id-list: snapshot dir holding module tree of that build
+    local d
+    for d in "$SNAP/$1"/*/; do
+        d=${d%/}
+        [ -s "$d/meta" ] && [ -d "$d/tree" ] || continue
+        id_in "$2" "$(sed -n 's/^IDS=//p' "$d/meta")" && { echo "$d"; return 0; }
+    done
+    return 1
+}
+# snap_put KREL SRC IMG link|move: temp dir, meta, one rename
+snap_put() {
+    local sh d t
+    sh=$(fsha "$3"); d=$(snap_dir "$1" "$sh"); t="$SNAP/$1/.${sh:0:16}$TMPSFX"
+    mkdir -p "$SNAP/$1"
+    rm -rf "$t"; mkdir -p "$t"
+    if [ "$4" = link ]; then
+        cp -al "$2" "$t/tree" 2>/dev/null || { rm -rf "$t/tree"; cp -a "$2" "$t/tree"; }
+    else
+        mv -T "$2" "$t/tree"
+    fi
+    printf 'KREL=%s\nSHA=%s\nIDS=%s\n' "$1" "$sh" "$(bids "$3")" > "$t/meta"
+    sync 2>/dev/null || true
+    cutpoint snap-0
+    rm -rf "$d"
+    mv -T "$t" "$d"
+    fsync_dir "$SNAP/$1"
+    cutpoint snap-1
+    log "modules: saved tree of $1 build ${sh:0:16} ($4)"
+    [ "$TEST" = 1 ] || systemctl enable -q $ME-modules.service 2>/dev/null || true
+}
+# package tree of KREL belongs to staged Image; skipped while hidden by mounted snapshot or package half-installed
+snap_take() {
+    local S=$STAGE/$1 sh
+    [ -f "$S/Image" ] && [ -s "$MODS/$1/modules.dep" ] || return 0
+    [ -z "$(mnt_src "$MODS/$1")" ] || return 0
+    if [ "$TEST" = 0 ]; then
+        [ "$(dpkg-query -W -f='${db:Status-Abbrev}' "h96-kernel-$1" 2>/dev/null)" = "ii " ] || return 0
+    fi
+    staged_meta "$1"
+    sh=$(fsha "$S/Image")
+    snap_ok "$(snap_dir "$1" "$sh")" "$sh" && return 0
+    snap_put "$1" "$MODS/$1" "$S/Image" link
+}
+# offsets of build-id notes in staged Image: initramfs script reads ids there (content check, survives image copy)
+staged_meta() {
+    local S=$STAGE/$1/Image f="$SNAP/$1/staged.meta"
+    mkdir -p "$SNAP/$1"
+    printf 'OFFS=%s\nIDS=%s\n' "$(noffs "$S")" "$(bids "$S")" > "$f.tmp"
+    mv -f "$f.tmp" "$f"
+}
+# snap_from_deb KREL sha|id VALUE: tree from h96-kernel-KREL deb (apt cache, offline repo) whose Image matches
+snap_from_deb() {
+    local f x img
+    for f in "$APTC/h96-kernel-$1"_*.deb $(find "$OREPO" -maxdepth 3 -name "h96-kernel-$1_*.deb" 2>/dev/null | sort); do
+        [ -f "$f" ] || continue
+        mkdir -p "$R/var/tmp"
+        x=$(mktemp -d "$R/var/tmp/$ME-deb.XXXXXX")
+        dpkg-deb -x "$f" "$x" 2>/dev/null || { rm -rf "$x"; continue; }
+        img=$x$STAGE_REL/$1/Image
+        if [ -f "$img" ] && [ -d "$x$MODS_REL/$1" ] &&
+            { { [ "$2" = sha ] && [ "$(fsha "$img")" = "$3" ]; } || { [ "$2" = id ] && id_in "$3" "$(bids "$img")"; }; }; then
+            depmod -a -b "$x" -F "$x$STAGE_REL/$1/System.map" "$1" || { rm -rf "$x"; die "depmod for tree from $f failed"; }
+            snap_put "$1" "$x$MODS_REL/$1" "$img" move
+            rm -rf "$x"
+            say "module tree of $1 build ${3:0:16} taken from $f"
+            return 0
+        fi
+        rm -rf "$x"
+    done
+    return 1
+}
+# drop snapshots whose Image is neither staged nor in /boot; mounted one stays
+snap_gc() {
+    local d k sh keep m
+    [ -d "$SNAP" ] || return 0
+    find "$SNAP" -mindepth 2 -maxdepth 2 -name ".*$TMPSFX" -exec rm -rf {} + 2>/dev/null || true
+    for d in "$SNAP"/*/*/; do
+        d=${d%/}; [ -d "$d" ] || continue
+        k=$(basename "$(dirname "$d")"); sh=$(sed -n 's/^SHA=//p' "$d/meta" 2>/dev/null)
+        keep=""
+        for m in "$STAGE/$k/Image" "$BOOT/$GD/$k".g*/Image "$BOOT/Image-$k" "$BOOT/Image"; do
+            [ -f "$m" ] && [ -n "$sh" ] && [ "$(fsha "$m")" = "$sh" ] && { keep=1; break; }
+        done
+        case "$(mnt_src "$MODS/$k")" in *"${d#"$R"}"*) keep=1 ;; esac
+        [ -n "$keep" ] || { rm -rf "$d"; log "modules: removed tree of $k build ${sh:0:16} (no Image left)"; }
+    done
+    return 0
+}
+# one line: module tree state of running kernel; rc 1 on mismatch
+mod_state() {
+    local K S rid m
+    K=$(krun); S=$STAGE/$K
+    [ -f "$S/Image" ] || { echo "modules: $K not staged by h96-kernel package"; return 0; }
+    rid=$(bids "$NOTES")
+    [ -n "$rid" ] || { echo "modules: no build id in $NOTES"; return 0; }
+    m=$(mnt_src "$MODS/$K")
+    if [ -z "$m" ] && id_in "$rid" "$(bids "$S/Image")"; then echo "modules: package tree matches running kernel"; return 0; fi
+    if [ -n "$m" ] && [ -s "$R${m%/tree}/meta" ] && id_in "$rid" "$(sed -n 's/^IDS=//p' "$R${m%/tree}/meta")"; then
+        echo "modules: saved tree $(basename "${m%/tree}") of running build mounted on $MODS/$K (package tree belongs to other build)"
+        return 0
+    fi
+    echo "WARN: running kernel build differs from module tree in $MODS/$K; modules fail to load. Run '$ME repair-modules'"
+    return 1
+}
+# module tree source of generation: package, saved, missing, or release without package
+gen_mods() {
+    local i=$BOOT/$GD/$1/Image k sh
+    k=$(img_krel "$i" "$(gen_krel "$1")")
+    [ -f "$STAGE/$k/Image" ] || { echo "no-package"; return; }
+    sh=$(fsha "$i")
+    if [ "$(fsha "$STAGE/$k/Image")" = "$sh" ]; then echo package
+    elif snap_ok "$(snap_dir "$k" "$sh")" "$sh"; then echo saved
+    else echo missing; fi
+}
+
+avail_kb() {
+    if [ -n "${H96KS_AVAIL_KB:-}" ]; then echo "$H96KS_AVAIL_KB"; return; fi
+    df -Pk "$BOOT" | awk 'NR==2 {print $4}'
+}
+kb() { echo $(( ($(stat -c %s "$1") + 1023) / 1024 )); }
+preflight() {
+    local e
+    for e in "$BOOT/extlinux" "$BOOT/boot/extlinux" "$R/extlinux"; do
+        [ ! -e "$e" ] || die "$e exists; U-Boot reads it before boot.scr, links would have no effect"
+    done
+    if [ "$TEST" = 0 ]; then
+        mountpoint -q /boot || die "/boot is not mounted"
+        case ",$(findmnt -no OPTIONS --target /boot)," in *,ro,*) die "/boot is mounted read-only" ;; esac
+    fi
+}
+enable_units() {
+    [ "$TEST" = 0 ] || return 0
+    systemctl daemon-reload
+    systemctl enable -q $ME-guard.service $ME-confirm.timer
+    systemctl is-enabled -q $ME-guard.service || die "$ME-guard.service not enabled; trial not armed"
+}
+
+# move Image, uInitrd (and DTB when $1=1) onto h96ks/cur; every step keeps content each boot name resolves to
+ensure_layout() {
+    local dp="$BOOT/dtb/$DTBN" rel g=""
+    rel=$(dtb_rel)
+    mkdir -p "$BOOT/$GD"
+    if [ "$(readlink "$BOOT/Image")" = "$CUR/Image" ] && [ "$(readlink "$BOOT/uInitrd")" = "$CUR/uInitrd" ] &&
+        { [ "$1" = 0 ] || [ "$(readlink "$dp" 2>/dev/null)" = "$rel" ]; }; then
+        return 0
+    fi
+    g=$(cur_gen) || g=""
+    if [ -z "$g" ] || ! gen_ok "$g" || ! gen_same "$g" "$BOOT/Image" "$BOOT/uInitrd" "$dp"; then
+        g=$(new_gen_name "$(default_krel || echo boot)")
+        mkgen "$g" "$BOOT/Image" "$BOOT/uInitrd" "$dp" link
+        cutpoint conv-gen
+        relink "$CUR" "$g"
+        log "layout: $CUR -> $g (current boot files)"
+    fi
+    cutpoint conv-cur
+    [ "$(readlink "$BOOT/uInitrd")" = "$CUR/uInitrd" ] || relink uInitrd "$CUR/uInitrd"
+    cutpoint conv-ini
+    [ "$(readlink "$BOOT/Image")" = "$CUR/Image" ] || relink Image "$CUR/Image"
+    cutpoint conv-img
+    if [ "$1" = 1 ] && [ "$(readlink "$dp" 2>/dev/null)" != "$rel" ]; then
+        relink "dtb/$DTBN" "$rel"
+        log "layout: $dp -> $rel"
+    fi
+    cutpoint conv-dtb
+}
+
+cmd_try() {
+    local K="" auto=0 keepdtb=0 a
+    for a in "$@"; do
+        case "$a" in
+            --auto-confirm) auto=1 ;;
+            --keep-dtb) keepdtb=1 ;;
+            -*) die "unknown option $a" ;;
+            *) [ -z "$K" ] || die "one KREL only"; K=$a ;;
+        esac
+    done
+    [ -n "$K" ] || die "usage: $ME try KREL [--auto-confirm] [--keep-dtb]"
+    safe "$K" || die "bad KREL: $K"
+    need_root
+    lock
+    preflight
+    if [ -e "$TRIAL" ]; then die "trial already recorded ($TRIAL); confirm, rollback or reboot first"; fi
+    [ ! -e "$UVFLAG" ] || die "h96-undervolt trial recorded; run 'h96-undervolt confirm' or 'h96-undervolt revert' first"
+    local S=$STAGE/$K
+    [ -f "$S/Image" ] && [ -f "$S/SHA256SUMS.kernel" ] || die "$K not staged in $STAGE (install h96-kernel-$K)"
+    (cd "$S" && sha256sum -c --status SHA256SUMS.kernel) || die "$S fails SHA256SUMS.kernel"
+    [ -s "$MODS/$K/modules.dep" ] || die "$MODS/$K/modules.dep missing (depmod not run)"
+    check_link Image
+    check_link uInitrd
+    local dk sv cv same=0
+    dk=$(default_krel) || dk=""
+    sv=$(kver "$S/Image")
+    [ -z "$sv" ] || [ "$sv" = "$K" ] || die "staged Image reports release $sv, not $K"
+    cv=$(kver "$BOOT/Image")
+    # same release as default, running or in-boot Image: new generation when staged content differs (checked below)
+    if [ "$dk" = "$K" ] || [ "$K" = "$(krun)" ] || [ "$cv" = "$K" ]; then same=1; fi
+    DTBN=$(fdtfile)
+    local dp="$BOOT/dtb/$DTBN" sd="$S/dtb/$DTBN" fsrc needdtb=0 rel
+    [ -f "$dp" ] || die "$dp missing"
+    if [ -L "$dp" ]; then
+        rel=$(dtb_rel)
+        a=$(readlink "$dp")
+        [ "$a" = "$rel" ] || safe "$a" || die "$dp points at $a; expected plain file name or $rel"
+    fi
+    if [ "$keepdtb" = 0 ]; then
+        [ -f "$sd" ] || die "$sd missing (install h96-dtb-$K, or pass --keep-dtb)"
+        (cd "$S/dtb" && sha256sum -c --status SHA256SUMS.dtb) || die "$S/dtb fails SHA256SUMS.dtb"
+        fsrc=$sd
+        cmp -s "$sd" "$dp" || needdtb=1
+    else
+        fsrc=$dp
+    fi
+    if [ "$same" = 1 ] && cmp -s "$S/Image" "$BOOT/Image" && cmp -s "$fsrc" "$dp"; then
+        [ "$dk" != "$K" ] || die "$K is already default (Image -> $(readlink "$BOOT/Image")); staged Image and DTB equal in-boot generation"
+        [ "$K" != "$(krun)" ] || die "$K is running; staged Image and DTB equal in-boot generation"
+        die "$BOOT/Image already reports release $K; staged Image and DTB equal in-boot generation"
+    fi
+    [ "$same" = 0 ] || say "$K: same release, new content (Image or DTB differs from in-boot generation): new generation"
+    # one /usr/lib/modules/K for both builds: fallback needs saved tree of in-boot build
+    snap_take "$K"
+    local pk psh
+    pk=$(img_krel "$BOOT/Image" "$dk")
+    if [ "$pk" = "$K" ] && ! cmp -s "$S/Image" "$BOOT/Image"; then
+        psh=$(fsha "$BOOT/Image")
+        snap_ok "$(snap_dir "$K" "$psh")" "$psh" || snap_from_deb "$K" sha "$psh" ||
+            die "$K: no saved module tree of in-boot build ${psh:0:16}; fallback would run it with modules of staged build (BTF mismatch: no WiFi, GPU, display). Put h96-kernel-$K deb of in-boot build in $APTC, or run '$ME snapshot-modules' before next package upgrade"
+    fi
+    if [ "$needdtb" = 1 ] && [ -e "$UVSTATE" ]; then
+        die "h96-undervolt change active in $dp; staged DTB would drop it. Run 'h96-undervolt revert' first, or pass --keep-dtb"
+    fi
+    # initramfs for K: mkinitramfs and mkimage only, outside /boot
+    mkdir -p "$R/var/tmp"
+    local arch=arm64
+    W=$(mktemp -d "$R/var/tmp/$ME.XXXXXX")
+    if [ -f "$R/etc/armbian-release" ]; then
+        a=$(sed -n 's/^INITRD_ARCH=//p' "$R/etc/armbian-release" | tail -1)
+        [ -z "$a" ] || arch=$a
+    fi
+    say "building initramfs for $K"
+    if [ "$TEST" = 0 ] && [ -n "$(mnt_src "$MODS/$K")" ]; then
+        # saved tree mounted over package tree: build from package tree in private mount namespace
+        # shellcheck disable=SC2016  # positional args of inner shell
+        unshare -m --propagation private sh -c 'umount "$1" && exec mkinitramfs -o "$2" "$3"' _ "$MODS/$K" "$W/initrd.img-$K" "$K" ||
+            die "mkinitramfs failed"
+    else
+        mkinitramfs -o "$W/initrd.img-$K" "$K" || die "mkinitramfs failed"
+    fi
+    mkimage -A "$arch" -O linux -T ramdisk -C gzip -n uInitrd -d "$W/initrd.img-$K" "$W/uInitrd-$K" > "$W/mkimage.txt" ||
+        die "mkimage failed"
+    [ -s "$W/uInitrd-$K" ] || die "empty uInitrd"
+    clean_tmp
+    # reuse identical generation of K from earlier attempt
+    local ng="" g
+    for g in $(gens_of "$K"); do
+        if gen_ok "$g" && gen_same "$g" "$S/Image" "$W/uInitrd-$K" "$fsrc"; then ng=$g; break; fi
+    done
+    # space: new generation, DTB copy for layout generation (Image, uInitrd hard links), reserve
+    local need have
+    need=$(kb "$dp")
+    [ -n "$ng" ] || need=$((need + $(kb "$S/Image") + $(kb "$W/uInitrd-$K") + $(kb "$fsrc")))
+    have=$(avail_kb)
+    if [ $((need + RESERVE_KB)) -gt "$have" ]; then
+        die "/boot has $have KiB free, needs $need KiB plus $RESERVE_KB KiB reserve; prune old kernels first"
+    fi
+    log "try $K: need $need KiB, free $have KiB"
+    ensure_layout "$needdtb"
+    local pg
+    pg=$(cur_gen) || die "$CUR missing after layout step"
+    gen_ok "$pg" || die "current generation $pg incomplete"
+    if [ -z "$ng" ]; then
+        ng=$(new_gen_name "$K")
+        cutpoint copy-0
+        mkgen "$ng" "$S/Image" "$W/uInitrd-$K" "$fsrc" copy
+    fi
+    cutpoint copy-1
+    enable_units
+    T_KREL=$K T_MODE=trial T_AUTO=$auto T_ABOOT=$(bootid) T_PREV=$pg T_NEW=$ng
+    trial_save armed
+    cutpoint switch-0
+    flip "$ng" "try $K"
+    cutpoint switch-1
+    log "try $K: armed auto=$auto: $(links_now)"
+    drop_unused_gens "$K"
+    snap_gc
+    say "next boot starts $K once; previous generation: $pg"
+    if [ "$auto" = 1 ]; then
+        say "trial boot confirms itself 180 s after boot when multi-user.target is active"
+    else
+        say "after reboot run '$ME confirm' to keep $K; reboot without confirm returns to previous kernel"
+    fi
+}
+
+# generations named by cur, trial record or last confirm
+gen_refs() {
+    local f refs
+    refs=" $(cur_gen || true) "
+    for f in "$TRIAL" "$LAST"; do
+        if st_load "$f"; then refs="$refs$T_PREV $T_NEW "; fi
+    done
+    echo "$refs"
+}
+# remove generations of KREL that nothing names (earlier attempts)
+drop_unused_gens() {
+    local refs g
+    refs=$(gen_refs)
+    for g in $(gens_of "$1"); do
+        case "$refs" in *" $g "*) continue ;; esac
+        rm -rf "${BOOT:?}/$GD/$g"
+        log "removed unused generation $g"
+    done
+    fsync_dir "$BOOT/$GD"
+}
+
+# commit: cur on NEW, last confirm written, record cleared; guard repeats it after power loss
+commit_finish() {
+    flip "$T_NEW" "$T_MODE $T_KREL"
+    cutpoint commit-1
+    st_save "$LAST" "PHASE=done" "KREL=$T_KREL" "PREV=$T_PREV" "NEW=$T_NEW"
+    cutpoint commit-2
+    trial_clear
+    result "$T_MODE $T_KREL: $(links_now)"
+}
+
+# boot-time resolution of recorded trial
+cmd_guard() {
+    lock 30
+    [ -e "$TRIAL" ] || exit 0
+    local rc=0
+    st_load "$TRIAL" || rc=$?
+    if [ "$rc" != 0 ]; then
+        mv -f "$TRIAL" "$TRIAL.bad-$(date +%s)"
+        fsync_dir "$ST"
+        log "guard: unreadable trial record moved aside; links left as found: $(links_now)"
+        exit 0
+    fi
+    clean_tmp
+    local K=$T_KREL B
+    B=$(bootid)
+    case "$T_PHASE" in
+        armed)
+            if [ "$T_ABOOT" = "$B" ]; then
+                log "guard: run in arming boot: no action"
+            elif booted_new; then
+                # trial boot: fall back first, so hang or watchdog reset lands on previous kernel
+                trial_save trial "$B"
+                cutpoint guard-0
+                flip "$T_PREV" "guard: trial boot of $K started"
+                if [ "$T_AUTO" = 1 ]; then log "guard: auto-confirm due 180 s after boot"; fi
+            else
+                flip "$T_PREV" "guard: armed for $K but running $(krun)"
+                trial_clear
+                result "not-booted $K: running $(krun)"
+            fi
+            ;;
+        trial)
+            if [ "$T_PENDING" = "$B" ]; then
+                flip "$T_PREV" "guard: rerun in trial boot"
+            else
+                flip "$T_PREV" "guard: trial boot $T_PENDING ended without confirm"
+                trial_clear
+                result "reverted $K: boot $T_PENDING not confirmed"
+            fi
+            ;;
+        commit) commit_finish ;;
+        done) trial_clear ;;
+    esac
+}
+
+cmd_confirm() {
+    local mode=${1:-manual}
+    need_root
+    lock 30
+    if ! st_load "$TRIAL"; then
+        [ "$mode" = auto ] && exit 0
+        die "no trial recorded"
+    fi
+    local K=$T_KREL
+    if [ "$T_PHASE" != trial ] || [ "$T_PENDING" != "$(bootid)" ] || ! booted_new; then
+        [ "$mode" = auto ] && { log "auto-confirm: no trial running in this boot"; exit 0; }
+        die "no trial of $K running in this boot (phase $T_PHASE, running $(krun))"
+    fi
+    gen_ok "$T_NEW" || die "trial generation $T_NEW missing in $BOOT/$GD"
+    if [ "$mode" = auto ]; then
+        [ "$T_AUTO" = 1 ] || { log "auto-confirm: not chosen for $K"; exit 0; }
+        healthy || { log "auto-confirm: multi-user.target not active; $K not confirmed"; exit 0; }
+    fi
+    T_MODE=confirmed-$mode
+    trial_save commit "$T_PENDING"
+    cutpoint confirm-0
+    commit_finish
+    snap_gc
+    say "$K confirmed as default"
+}
+
+cmd_rollback() {
+    local keepdtb=0 a
+    for a in "$@"; do
+        case "$a" in --keep-dtb) keepdtb=1 ;; *) die "usage: $ME rollback [--keep-dtb]" ;; esac
+    done
+    need_root
+    lock
+    local rc=0
+    st_load "$TRIAL" || rc=$?
+    if [ "$rc" = 0 ]; then
+        case "$T_PHASE" in
+            armed|trial)
+                flip "$T_PREV" "rollback: trial of $T_KREL cancelled"
+                trial_clear
+                result "cancelled $T_KREL"
+                say "trial of $T_KREL cancelled; $CUR -> $T_PREV"
+                return 0 ;;
+            commit) die "unfinished $T_MODE of $T_KREL recorded; run '$ME guard' to finish it first" ;;
+        esac
+    elif [ "$rc" = 2 ]; then
+        die "trial record unreadable; inspect $TRIAL"
+    fi
+    st_load "$LAST" || die "nothing to roll back (no confirmed switch recorded)"
+    local cg
+    cg=$(cur_gen) || die "$CUR missing; no rollback"
+    [ "$cg" = "$T_NEW" ] || die "$CUR -> $cg differs from last confirmed generation $T_NEW; no rollback"
+    [ "$(readlink "$BOOT/Image")" = "$CUR/Image" ] && [ "$(readlink "$BOOT/uInitrd")" = "$CUR/uInitrd" ] ||
+        die "Image or uInitrd no longer links through $CUR; no rollback"
+    gen_ok "$T_PREV" || die "previous generation $T_PREV missing; no rollback"
+    # plain DTB does not follow h96ks/cur (dtb-plain, --keep-dtb)
+    DTBN=$(fdtfile)
+    local dp="$BOOT/dtb/$DTBN"
+    if [ "$keepdtb" = 0 ] && [ ! -L "$dp" ] && ! cmp -s "$dp" "$BOOT/$GD/$T_PREV/fdt"; then
+        die "$dp is plain file and differs from DTB of $T_PREV; rollback switches Image and uInitrd only. Pass --keep-dtb to roll back with current DTB"
+    fi
+    preflight
+    local to=$T_PREV
+    T_KREL=$(gen_krel "$to") T_MODE=rollback T_AUTO=0 T_ABOOT=$(bootid) T_PREV=$T_NEW T_NEW=$to
+    trial_save commit
+    cutpoint rollback-0
+    commit_finish
+    say "$CUR -> $to; reboot to use it (rollback again returns to $T_PREV)"
+}
+
+is_gen() { [[ $1 =~ \.g[0-9]+$ ]] && [ -d "$BOOT/$GD/$1" ]; }
+
+cmd_prune() {
+    local K=${1:-}
+    safe "$K" || die "usage: $ME prune KREL|GEN"
+    need_root
+    lock
+    if is_gen "$K"; then
+        case "$(gen_refs)" in *" $K "*) die "generation $K still named by $CUR, trial or last confirm" ;; esac
+        rm -rf "${BOOT:?}/$GD/$K"
+        fsync_dir "$BOOT/$GD"
+        say "removed $BOOT/$GD/$K"
+        log "prune generation $K"
+        snap_gc
+        return 0
+    fi
+    [[ ! $K =~ \.g[0-9]+$ ]] || die "no generation $K in $BOOT/$GD"
+    [ "$(krun)" != "$K" ] || die "$K is running"
+    DTBN=$(fdtfile)
+    local refs g f d dbase
+    refs=$(gen_refs)
+    for g in $(gens_of "$K"); do
+        case "$refs" in *" $g "*) die "generation $g still named by $CUR, trial or last confirm" ;; esac
+    done
+    dbase=$(basename "$DTBN")
+    refs=" $(readlink "$BOOT/Image" 2>/dev/null || true) $(readlink "$BOOT/uInitrd" 2>/dev/null || true) $(readlink "$BOOT/dtb/$DTBN" 2>/dev/null || true) "
+    for f in "Image-$K" "uInitrd-$K" "$dbase-$K"; do
+        case "$refs" in *" $f "*) die "$f still named by boot link" ;; esac
+    done
+    for g in $(gens_of "$K"); do
+        rm -rf "${BOOT:?}/$GD/$g"
+        say "removed $BOOT/$GD/$g"
+    done
+    for f in "Image-$K" "uInitrd-$K" "dtb/$(dirname "$DTBN")/$dbase-$K"; do
+        d=$BOOT/$f
+        if [ -f "$d" ] && [ ! -L "$d" ]; then rm -f "$d"; say "removed $d"; fi
+    done
+    clean_tmp
+    snap_gc
+    log "prune $K"
+}
+
+# roles of one generation: default (h96ks/cur), trial, trial-previous, rollback-target
+gen_roles() {
+    local G=$1 roles="" c
+    c=$(cur_gen 2>/dev/null || true)
+    [ "$c" != "$G" ] || roles="$roles default"
+    if st_load "$TRIAL" 2>/dev/null; then
+        [ "$T_NEW" != "$G" ] || roles="$roles trial"
+        [ "$T_PREV" != "$G" ] || roles="$roles trial-previous"
+    fi
+    if st_load "$LAST" 2>/dev/null && [ "$c" = "$T_NEW" ] && [ "$T_PREV" = "$G" ]; then roles="$roles rollback-target"; fi
+    echo "${roles# }"
+}
+
+cmd_in_use() {
+    local K=${1:-} roles="" g
+    safe "$K" || die "usage: $ME in-use KREL|GEN"
+    if is_gen "$K"; then
+        roles=$(gen_roles "$K")
+        [ -n "$roles" ] || return 1
+        echo "$roles"
+        return 0
+    fi
+    [ "$(default_krel 2>/dev/null || true)" != "$K" ] || roles="$roles default"
+    if st_load "$TRIAL" 2>/dev/null; then
+        [ "$(gen_krel "$T_NEW")" != "$K" ] || roles="$roles trial"
+        [ "$(gen_krel "$T_PREV")" != "$K" ] || roles="$roles trial-previous"
+    fi
+    if st_load "$LAST" 2>/dev/null; then
+        g=$(cur_gen 2>/dev/null || true)
+        if [ "$g" = "$T_NEW" ] && [ "$(gen_krel "$T_PREV")" = "$K" ]; then roles="$roles rollback-target"; fi
+    fi
+    [ -n "$roles" ] || return 1
+    echo "${roles# }"
+}
+
+# read-only: board DTB layout for h96-undervolt and status
+cmd_dtb() {
+    DTBN=$(fdtfile)
+    local dp="$BOOT/dtb/$DTBN" lay=plain tr=none rc=0
+    [ -e "$dp" ] || die "$dp missing"
+    if [ -L "$dp" ]; then
+        if [ "$(readlink "$dp")" = "$(dtb_rel)" ]; then lay=managed; else lay="link"; fi
+    fi
+    if [ -e "$TRIAL" ]; then
+        st_load "$TRIAL" || rc=$?
+        if [ "$rc" = 0 ]; then tr=$T_PHASE; else tr=unreadable; fi
+    fi
+    printf 'path=%s\nlayout=%s\nfile=%s\ntrial=%s\n' "$dp" "$lay" "$(realpath "$dp")" "$tr"
+}
+
+# managed DTB link -> plain file with content of h96ks/cur/fdt; one rename
+cmd_dtb_plain() {
+    need_root
+    lock
+    preflight
+    clean_tmp
+    [ ! -e "$TRIAL" ] || die "trial recorded ($TRIAL); confirm, rollback or reboot first"
+    DTBN=$(fdtfile)
+    local dp="$BOOT/dtb/$DTBN" t
+    [ -L "$dp" ] && [ "$(readlink "$dp")" = "$(dtb_rel)" ] || die "$dp is not link to $CUR/fdt; nothing to do"
+    [ -f "$dp" ] || die "$dp points at missing file"
+    t="$(dirname "$dp")/.$(basename "$dp")$TMPSFX"
+    cp "$dp" "$t"
+    chmod 0644 "$t"
+    sync "$t" 2>/dev/null || sync
+    cmp -s "$t" "$dp" || die "read-back of $t failed"
+    cutpoint plain-0
+    mv -Tf "$t" "$dp"
+    fsync_dir "$(dirname "$dp")"
+    cutpoint plain-1
+    log "dtb-plain: $dp plain file, content of $(cur_gen || echo none)/fdt"
+    say "$dp is plain file now, content unchanged"
+    say "try without --keep-dtb links it again when staged DTB differs; rollback refuses while DTB differs from previous generation"
+}
+
+cmd_list() {
+    local d k flags def
+    def=$(default_krel 2>/dev/null || true)
+    st_load "$TRIAL" 2>/dev/null || true
+    for d in "$STAGE"/*/; do
+        [ -f "$d/Image" ] || continue
+        k=$(basename "$d")
+        flags=""
+        [ "$k" != "$(krun)" ] || flags="$flags running"
+        [ "$def" != "$k" ] || flags="$flags default"
+        if [ -n "$(gens_of "$k")" ] || [ -f "$BOOT/Image-$k" ]; then flags="$flags in-boot"; fi
+        [ -z "${T_NEW:-}" ] || [ "$(gen_krel "$T_NEW")" != "$k" ] || flags="$flags trial:$T_PHASE"
+        echo "$k${flags:+ [${flags# }]}"
+        list_gens "$k"
+        st_load "$TRIAL" 2>/dev/null || true
+    done
+    mod_state | grep '^WARN' || true
+}
+# generation lines of KREL: name, roles, running when banner matches /proc/version
+list_gens() {
+    local g r b ri gi
+    for g in $(gens_of "$1"); do
+        r=$(gen_roles "$g")
+        if [ "$(krun)" = "$1" ]; then
+            # running: build id of generation Image; banner only when either side has no build id
+            ri=$(bids "$NOTES"); gi=$(bids "$BOOT/$GD/$g/Image")
+            if [ -n "$ri" ] && [ -n "$gi" ]; then
+                if id_in "$ri" "$gi"; then r="$r running"; fi
+            else
+                b=$(kbanner "$BOOT/$GD/$g/Image")
+                if [ -n "$b" ] && [ "$b" = "$(procver)" ]; then r="$r running"; fi
+            fi
+        fi
+        r=${r# }
+        echo "  $g${r:+ [$r]}"
+    done
+}
+
+cmd_status() {
+    DTBN=$(fdtfile 2>/dev/null || true)
+    echo "running: $(krun)"
+    echo "default: $(default_krel 2>/dev/null || echo '?')"
+    echo "Image -> $(readlink "$BOOT/Image" 2>/dev/null || echo '?')"
+    echo "uInitrd -> $(readlink "$BOOT/uInitrd" 2>/dev/null || echo '?')"
+    [ -z "$DTBN" ] || echo "dtb/$DTBN -> $(readlink "$BOOT/dtb/$DTBN" 2>/dev/null || echo 'plain file')"
+    echo "$CUR -> $(cur_gen 2>/dev/null || echo none)"
+    local g r
+    for g in "$BOOT/$GD"/*.g*; do
+        [ -d "$g" ] || continue
+        g=$(basename "$g"); r=$(gen_roles "$g")
+        echo "generation: $g${r:+ [$r]}"
+        echo "  modules: $(gen_mods "$g")"
+    done
+    mod_state || true
+    if st_load "$TRIAL" 2>/dev/null; then
+        echo "trial: $T_KREL phase=$T_PHASE auto=$T_AUTO pending=${T_PENDING:-none} previous=$T_PREV new=$T_NEW"
+    else
+        echo "trial: none"
+    fi
+    [ ! -f "$ST/result" ] || { echo "last results:"; tail -5 "$ST/result"; }
+}
+
+cmd_snapshot() {
+    local d k
+    need_root
+    lock 30
+    for d in "$STAGE"/*/; do
+        k=$(basename "$d"); safe "$k" || continue
+        snap_take "$k"
+        if [ -n "$(mnt_src "$MODS/$k")" ]; then
+            echo "$ME: $MODS/$k holds saved tree of running build (read-only); upgrade of h96-kernel-$k fails until reboot into package build" >&2
+        fi
+    done
+    [ "${1:-}" = --quiet ] || say "module trees saved under $SNAP"
+}
+# boot: before udev and modules-load; writes nothing on disk
+cmd_modules_mount() {
+    local K S rid d
+    K=$(krun); S=$STAGE/$K
+    [ -f "$S/Image" ] && [ -d "$MODS/$K" ] || exit 0
+    rid=$(bids "$NOTES")
+    [ -n "$rid" ] || { echo "$ME: no build id in $NOTES"; exit 0; }
+    id_in "$rid" "$(bids "$S/Image")" && { echo "$ME: package tree of $K matches running kernel"; exit 0; }
+    [ -z "$(mnt_src "$MODS/$K")" ] || { echo "$ME: $MODS/$K already mounted"; exit 0; }
+    d=$(snap_by_id "$K" "$rid") || { echo "$ME: WARN running build of $K has no saved module tree; run '$ME repair-modules'" >&2; exit 0; }
+    mnt_bind "$d/tree" "$MODS/$K" || die "mount of $d/tree failed"
+    echo "$ME: saved tree $(basename "$d") of running build mounted read-only on $MODS/$K"
+}
+cmd_repair() {
+    local K rid d
+    need_root
+    lock 30
+    K=$(krun)
+    [ -f "$STAGE/$K/Image" ] || die "$K not staged by h96-kernel package"
+    rid=$(bids "$NOTES")
+    [ -n "$rid" ] || die "no build id in $NOTES"
+    if [ -z "$(mnt_src "$MODS/$K")" ] && id_in "$rid" "$(bids "$STAGE/$K/Image")"; then say "package tree matches running kernel; nothing to do"; return 0; fi
+    [ -z "$(mnt_src "$MODS/$K")" ] || die "$MODS/$K already mounted: $(mnt_src "$MODS/$K")"
+    d=$(snap_by_id "$K" "$rid") || { snap_from_deb "$K" id "$rid" && d=$(snap_by_id "$K" "$rid"); } ||
+        die "no module tree of running build: no saved tree and no h96-kernel-$K deb with this build in $APTC or $OREPO. Boot generation matching package, or install matching h96-kernel-$K version"
+    mnt_bind "$d/tree" "$MODS/$K" || die "mount of $d/tree failed"
+    log "repair-modules: $d/tree mounted on $MODS/$K"
+    say "saved tree $(basename "$d") mounted read-only on $MODS/$K; reboot to load drivers in order (boot unit mounts it again)"
+    if [ "$TEST" = 0 ]; then udevadm trigger --action=add 2>/dev/null || true; fi
+}
+
+W=""
+trap '[ -z "$W" ] || rm -rf "$W"' EXIT
+DTBN=""
+
+case "${1:-}" in
+    try) shift; cmd_try "$@" ;;
+    confirm) cmd_confirm manual ;;
+    auto-confirm) cmd_confirm auto ;;
+    rollback) shift; cmd_rollback "$@" ;;
+    guard) cmd_guard ;;
+    snapshot-modules) shift; cmd_snapshot "$@" ;;
+    modules-mount) cmd_modules_mount ;;
+    repair-modules) cmd_repair ;;
+    prune) shift; cmd_prune "$@" ;;
+    in-use) shift; cmd_in_use "$@" ;;
+    dtb) cmd_dtb ;;
+    dtb-plain) cmd_dtb_plain ;;
+    default) default_krel || exit 1 ;;
+    list) cmd_list ;;
+    status) cmd_status ;;
+    -h|--help|help) usage ;;
+    *) usage >&2; exit 2 ;;
+esac

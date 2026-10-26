@@ -1,0 +1,10 @@
+[Unit]
+Description=H96 time zone sync (/etc/timezone follows /etc/localtime)
+Documentation=file:/usr/share/doc/h96-base/COMMANDS.md
+
+[Service]
+Type=oneshot
+ExecStart=/usr/sbin/h96-timezone-sync
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,32 @@
+#!/bin/sh
+# divert v7.2-edited files of other packages before unpack
+set -e
+case "$1" in
+install|upgrade)
+  ;;
+esac
+R="${DPKG_ROOT:-}"
+if [ "$1" = install ] && [ -z "${2:-}" ]; then
+  while read -r k v p; do
+    if [ "$k" = f ] && [ -f "$R$p" ] && [ ! -L "$R$p" ] && [ "$(sha256sum < "$R$p" | cut -d" " -f1)" = "$v" ]; then
+      mv -f "$R$p" "$R$p.h96-v72"
+    elif [ "$k" = l ] && [ -L "$R$p" ] && [ "$(readlink "$R$p")" = "$v" ]; then
+      mv -f "$R$p" "$R$p.h96-v72"
+    fi
+  done <<'EOF'
+f 50daea94815e284bf93fb95fbf0e4abf001366d75dd5ca99822583e5913809af /etc/sudoers.d/h96-perf
+f 52f6f7243fb3f60c60a2786db80bd1ec8eefdf2855b6e895a613c4ead4ce7f67 /etc/systemd/system/h96-leds.service
+f 3eeb41b5940d00d192e9718a3a5106d318400375f9570ca34b2d1ea3ad0d5e13 /usr/local/bin/h96-backup
+f cf585a083829c21167f6df78ab7f04dce2eebaf420eff9e0cb2c2701bfe3185c /usr/local/bin/h96-backup-gui
+f c329e254ec532e2aca4d1fcbb0a8eb13bd17d9e541e69dd6f01cc4d995a5a555 /usr/local/bin/h96-bench
+f ffe6cdf8a86b989ad85a8cb3fe1f5cc5da6ac5d4f5c53634c1333714e22c55e1 /usr/local/bin/h96-leds
+f 84bd2b874608b65dfa49ff9fedcd89b2b61100c03e4f2a1c140cf4d21adea324 /usr/local/bin/h96-perf
+f 594b36395025cf22169d2ffe800e169fa566d78a9b5668cec27fec3fa4b0f096 /usr/local/bin/h96-restore
+f d5885b1e43e74edb794734134aba460857e0a8d7c8ddda6a676ad14ea0117a39 /usr/local/bin/h96-vfd
+f aa7f9557f58a71f2d1b9f53f09bf7b2e4271eaef6953078351d5f5bf2ee682a6 /usr/local/bin/h96-vm
+f 45b961a46d25a6cb40afba190139b28e848ce61e4747435dbb0f365416d9a44c /usr/local/bin/scrumptop
+f f7ca6bf5b59b104ac5c90a7b01c3d2d101a16bb228b4b62f40d3cd65e8c7dce3 /usr/local/sbin/h96-undervolt
+f 8af324a0fd2461e54edf85a8a9436032cbdd354ae01f250dea73054561afc5bb /usr/local/share/h96-undervolt-README.md
+EOF
+fi
+exit 0

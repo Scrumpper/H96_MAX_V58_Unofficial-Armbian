@@ -1,0 +1,37 @@
+# path in v7.2 rootfs (unowned there unless noted, absent in trixie base)	reason
+/etc/udev/rules.d/50-mali.rules	GPU node permissions (F5 row s8-mali-udev)
+/etc/udev/rules.d/99-mali.rules	GPU node permissions (F5 row s8-mali-udev)
+/etc/udev/rules.d/99-mali-gdm.rules	render node mode 0666 (F5 row s8-mali-udev)
+/etc/udev/rules.d/99-rockchip-media.rules	MPP/RGA device nodes for video stack
+/etc/udev/rules.d/99-thermal.rules	thermal zone permissions as Ubuntu 8.0
+/usr/lib/firmware/brcm/fw_bcm43752a2_pcie_ag.bin	AP6275P Wi-Fi firmware named in h96-net bcmdhd options
+/usr/lib/firmware/brcm/clm_bcm43752a2_pcie_ag.blob	AP6275P Wi-Fi regulatory blob
+/usr/lib/firmware/brcm/nvram_ap6275p.txt	AP6275P Wi-Fi nvram named in h96-net bcmdhd options
+/etc/netplan/00-default-use-network-manager.yaml	NetworkManager renderer as Ubuntu 8.0
+/etc/NetworkManager/conf.d/00-armbian-readme.conf	Armbian NetworkManager note as Ubuntu 8.0
+/etc/modprobe.d/brcmfmac.conf	brcmfmac options as Ubuntu 8.0 (brcmfmac blacklisted by h96-net)
+/etc/systemd/sleep.conf.d/00-disable.conf	suspend off as Ubuntu 8.0
+/etc/apt/sources.list.d/box64.sources	box64 Debian-built repo as Ubuntu 8.0 (keyring in h96-gaming)
+/etc/apt/sources.list.d/box86.sources	box86 Debian-built repo as Ubuntu 8.0 (keyring in h96-gaming)
+/etc/apt/preferences.d/03-h96-box64	box64 0.4.3 pin (deb carried in offline repo)
+/etc/sysctl.d/99-sysctl.conf	link to /etc/sysctl.conf as Ubuntu 8.0
+/etc/systemd/system/apt-daily.service	mask as Ubuntu 8.0 (no apt lock race on first boot)
+/etc/systemd/system/apt-daily-upgrade.service	mask as Ubuntu 8.0
+/etc/systemd/system/man-db.service	mask as Ubuntu 8.0
+/etc/systemd/system/armbian-ramlog.service	mask as Ubuntu 8.0 (ramlog off, F5 row s5-ramlog)
+/etc/systemd/system/systemd-networkd-wait-online.service	mask as Ubuntu 8.0 (NetworkManager renderer)
+/usr/local/lib/h96/steam/steam-arm-fex-mesa-26.1.8-x86_64-i386.tar.zst	FEX x86 Mesa provider for h96-steam (Steam ARM release asset, v7.2 base payload; F5 row s8-fex-mesa-provider moves it to /usr/lib/h96/steam)
+/usr/local/lib/h96/steam/steam-arm-fex-mesa-26.1.8-x86_64-i386.tar.zst.sha256	its sha256 file (3ba2c461)
+/etc/hostname	hostname h96max as Ubuntu 8.0 (download carries rock-5b)
+/etc/hosts	hosts file naming h96max as Ubuntu 8.0
+/etc/chromium.d/armbian-flags	Chromium V4L2 decode flags as Ubuntu 8.0 (unowned v7.2 file)
+/etc/systemd/system-generators/systemd-gpt-auto-generator	generator mask as v7.2 (Armbian build default; no GPT type auto-mounts)
+/usr/lib/sysctl.d/55-bufferbloat.conf	Ubuntu procps sysctl default (v7.2 file, procps-owned there; zz-h96 drop-ins still win)
+/usr/lib/sysctl.d/55-console-messages.conf	Ubuntu procps sysctl default (v7.2 file, procps-owned there; zz-h96 drop-ins still win)
+/usr/lib/sysctl.d/55-ipv6-privacy.conf	Ubuntu procps sysctl default (v7.2 file, procps-owned there; zz-h96 drop-ins still win)
+/usr/lib/sysctl.d/55-kernel-hardening.conf	Ubuntu procps sysctl default (v7.2 file, procps-owned there; zz-h96 drop-ins still win)
+/usr/lib/sysctl.d/55-magic-sysrq.conf	Ubuntu procps sysctl default (v7.2 file, procps-owned there; zz-h96 drop-ins still win)
+/usr/lib/sysctl.d/55-map-count.conf	Ubuntu procps sysctl default (v7.2 file, procps-owned there; zz-h96 drop-ins still win)
+/usr/lib/sysctl.d/55-network-security.conf	Ubuntu procps sysctl default (v7.2 file, procps-owned there; zz-h96 drop-ins still win)
+/usr/lib/sysctl.d/55-ptrace.conf	Ubuntu procps sysctl default (v7.2 file, procps-owned there; zz-h96 drop-ins still win)
+/usr/lib/sysctl.d/55-zeropage.conf	Ubuntu procps sysctl default (v7.2 file, procps-owned there; zz-h96 drop-ins still win)

@@ -1,0 +1,87 @@
+#!/usr/bin/env python3
+# ff2mpv native-messaging host: hands a browser URL to mpv for hardware-decoded
+# playback via the Rockchip VPU (rkmpp), instead of the browser software-decoding it.
+# rkmpp is the video decode block, separate from the Panthor GPU (graphics);
+# mpv here is the hand-built binary with rkmpp, stock Ubuntu mpv has none.
+#
+# No YouTube player_client override on purpose: pinning a client goes stale as
+# YouTube's serving policy shifts (a stale pin can report a format is not available),
+# and yt-dlp's own default tracks changes via h96-ytdlp-update.timer. Add an
+# override only if the default breaks, and verify first:
+#   yt-dlp --extractor-args youtube:player_client=<name> -F "<url>"
+#   curl -o /dev/null -s -w '%{http_code}' -r 0-1024 "<stream url>"   # want 206
+# mpv's --ytdl-raw-options is a comma-separated list, so a value containing a
+# comma needs mpv's %<len>% escape or it is mis-parsed.
+#
+# yt-dlp is passed explicitly: bundled copy is off PATH, and the stale apt copy
+# fails outright.
+import json, os, struct, sys, subprocess
+
+YTDL = "/var/lib/h96/bin/yt-dlp"
+LOG = os.path.join(os.environ.get("XDG_RUNTIME_DIR") or "/tmp", "ff2mpv-%d.log" % os.getuid())
+
+
+def reply(msg):
+    out = json.dumps(msg).encode()
+    sys.stdout.buffer.write(struct.pack('@I', len(out))); sys.stdout.buffer.write(out); sys.stdout.buffer.flush()
+
+
+def fail(msg):
+    # stderr goes to browser log; notify-send shows reason on desktop
+    sys.stderr.write("ff2mpv: %s\n" % msg)
+    try:
+        subprocess.run(['notify-send', '-a', 'ff2mpv', '-i', 'dialog-error', 'mpv did not start', msg],
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=5)
+    except (OSError, subprocess.SubprocessError):
+        pass
+    reply({'ok': False, 'error': msg})
+    sys.exit(1)
+
+
+def mpv_error():
+    """None when mpv starts, else the reason (missing libraries included)."""
+    try:
+        r = subprocess.run(['mpv', '--no-config', '--version'], capture_output=True, text=True, timeout=15)
+    except FileNotFoundError:
+        return "mpv is not installed"
+    except subprocess.TimeoutExpired:
+        return "mpv --version timed out"
+    if r.returncode == 0:
+        return None
+    first = next((l for l in (r.stderr + r.stdout).splitlines() if l.strip()), "")
+    msg = "mpv does not start (exit %d): %s" % (r.returncode, first)
+    try:
+        path = subprocess.run(['sh', '-c', 'command -v mpv'], capture_output=True, text=True).stdout.strip()
+        ldd = subprocess.run(['ldd', path], capture_output=True, text=True, timeout=15).stdout
+        miss = [l.split()[0] for l in ldd.splitlines() if 'not found' in l]
+        if miss:
+            msg += "; missing libraries: " + " ".join(miss)
+    except (OSError, subprocess.SubprocessError, IndexError):
+        pass
+    return msg + "; video setup log: /var/log/h96-video-setup.log"
+
+
+raw = sys.stdin.buffer.read(4)
+if len(raw) == 4:
+    n = struct.unpack('@I', raw)[0]
+    url = json.loads(sys.stdin.buffer.read(n).decode()).get('url')
+    if url:
+        err = mpv_error()
+        if err:
+            fail(err)
+        # vo/hwdec from /etc/mpv/mpv.conf (rkmpp zero-copy); 8-bit VP9 first: 10-bit decodes in software
+        with open(LOG, 'w') as log:
+            p = subprocess.Popen(['mpv','--fullscreen',
+                '--script-opts=ytdl_hook-ytdl_path=%s' % YTDL,
+                '--ytdl-format=bestvideo[height<=?1080][vcodec=vp9]+bestaudio/bestvideo[height<=?1080][vcodec^=av01][dynamic_range=SDR]+bestaudio/bestvideo[height<=?1080][vcodec!*=av01]+bestaudio/best[height<=?1080]/best', url],
+                stdout=log, stderr=subprocess.STDOUT)
+        # mpv exiting non-zero within 2 s counts as failure
+        try:
+            rc = p.wait(timeout=2)
+        except subprocess.TimeoutExpired:
+            rc = None
+        if rc not in (None, 0):
+            with open(LOG) as f:
+                last = [l.strip() for l in f if l.strip()][-1:] or [""]
+            fail("mpv exited %d: %s (log: %s)" % (rc, last[0], LOG))
+    reply({'ok': True})

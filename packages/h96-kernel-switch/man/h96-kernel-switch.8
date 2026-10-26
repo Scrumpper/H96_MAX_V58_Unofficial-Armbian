@@ -1,0 +1,211 @@
+.TH H96-KERNEL-SWITCH 8 "2026-10-23" "h96-kernel-switch" "System Administration"
+.SH NAME
+h96-kernel-switch \- boot staged kernel as guarded trial, confirm or roll back
+.SH SYNOPSIS
+.B h96-kernel-switch
+.B list
+|
+.B status
+|
+.B default
+|
+.B dtb
+.br
+.B h96-kernel-switch try
+.I KREL
+.RB [ \-\-auto\-confirm ]
+.RB [ \-\-keep\-dtb ]
+.br
+.B h96-kernel-switch
+.B confirm
+|
+.B rollback
+.RB [ \-\-keep\-dtb ]
+|
+.B dtb-plain
+.br
+.B h96-kernel-switch
+.B prune
+|
+.B in-use
+.I KREL
+.br
+.B h96-kernel-switch
+.B snapshot-modules
+.RB [ \-\-quiet ]
+|
+.B repair-modules
+|
+.B modules-mount
+.SH DESCRIPTION
+Kernel packages stage files under /usr/lib/h96-kernel/KREL and never write /boot.
+Vendor U-Boot on H96 MAX V58 has no try-once slot; boot.scr loads /boot/Image,
+/boot/uInitrd and /boot/dtb/FDTFILE.
+.B h96-kernel-switch
+copies one staged kernel into generation directory /boot/h96ks/KREL.gN
+(Image, uInitrd, fdt). Image and uInitrd link through /boot/h96ks/cur, and so
+does board DTB once DTB differs between kernels; one rename of h96ks/cur
+switches all three, so power loss leaves either old or new set. Boot guard
+runs early on next boot: on trial kernel it points h96ks/cur back to previous
+generation at once, so hang, panic or watchdog reset lands on previous kernel.
+Only
+.B confirm
+during trial boot keeps new kernel as default.
+.PP
+Two builds of one release share /usr/lib/modules/KREL, and package upgrade
+replaces that tree. Modules of one build fail BTF validation on another build
+(Invalid argument). Tool keeps module tree of each staged build under
+/var/lib/h96-kernel-switch/modules (hard links), keyed by Image checksum and
+GNU build id. Initramfs script (init-bottom, in every uInitrd that
+.B try
+builds) compares build id of running kernel (/sys/kernel/notes) with staged
+Image and, on mismatch, mounts saved tree of running build read-only over
+/usr/lib/modules/KREL of real root before switch_root, so modules PID1 loads
+already match. Modules unit repeats check before udev and
+systemd-modules-load (second line; generations made by earlier versions of
+this tool lack initramfs script); modprobe@ units order after it. Fallback, rollback and watchdog reset to earlier build
+of same release so load matching modules. Package upgrade of h96-kernel-KREL
+fails while saved tree is mounted; reboot into package build first.
+.SH COMMANDS
+.TP
+.B list
+Staged kernels with flags running, default, in-boot, trial; below each, its
+generations KREL.gN with roles default (h96ks/cur), trial, trial-previous,
+rollback-target and running (GNU build id of generation Image equals running
+build id; banner against /proc/version only when build id is missing).
+Generation numbers are reused: after
+.B prune
+next
+.B try
+takes lowest free number.
+.TP
+.B status
+Default release, link targets, generations with roles and module tree source
+(package, saved, missing, no-package), module tree state of running kernel
+(WARN line on mismatch), recorded trial, last results.
+.B list
+also prints WARN line on mismatch.
+.TP
+.B default
+Prints release that boot files start; exit status 1 when unknown.
+.TP
+.BI try " KREL"
+Checks staged sha256 sums, modules.dep and release string embedded in Image,
+builds initramfs with mkinitramfs and mkimage outside /boot, checks free space
+on /boot (new files plus 16 MiB reserve), writes new generation through hidden
+temporary directory, enables guard units, records trial, then moves h96ks/cur.
+First run converts plain-name Image and uInitrd links into h96ks/cur links;
+every conversion step keeps content each boot name resolves to (previous
+generation holds hard links to current files and DTB copy). Refuses when trial
+is recorded, when KREL is running or default and staged Image and DTB equal
+in-boot generation, when in-boot Image is other build of KREL and no module
+tree of that build is saved or found in h96-kernel deb (apt cache, offline
+repo), when /boot is read-only, when
+extlinux directory exists, or when Image or uInitrd is not link. Also
+refuses while h96-undervolt trial is recorded, and DTB change while
+h96-undervolt change is active (use
+.BR \-\-keep\-dtb ).
+Same release, new content: when KREL is default or running but staged Image or
+DTB differs from in-boot generation,
+.B try
+makes new generation KREL.gN+1; boot guard tells trial boot from fallback by
+Image banner (build number and date) when generations differ there, else by
+boot id and h96ks/cur.
+.B \-\-auto\-confirm
+confirms trial 180 s after boot when multi-user.target is active.
+.B \-\-keep\-dtb
+leaves board DTB as is; generation carries current DTB.
+.TP
+.B confirm
+Run during trial boot: points h96ks/cur at trial generation for good.
+.TP
+.B rollback
+With trial recorded: cancels it. Without trial: returns h96ks/cur to
+generation that was default before last confirm; running it again returns to
+confirmed generation. Refuses when board DTB is plain file that differs from
+DTB of target generation, since rollback switches Image and uInitrd only;
+.B \-\-keep\-dtb
+rolls back with current DTB.
+.TP
+.BI prune " KREL|GEN"
+Removes generations and plain-name files of KREL from /boot unless h96ks/cur,
+boot links or records name them. With generation name GEN (KREL.gN): removes
+that generation only, unless h96ks/cur or records name it.
+.TP
+.BI in-use " KREL|GEN"
+Prints roles of KREL, or of generation GEN, in boot files: default, trial,
+trial-previous, rollback-target; exit status 1 when none. Kernel packages use it to skip
+install hint and to refuse removal.
+.TP
+.B dtb
+Read only. Prints path=, layout= (plain, managed, link), file= (resolved
+file) and trial= (none or recorded phase) for board DTB.
+.BR h96-undervolt (8)
+uses it to refuse writes into generations.
+.TP
+.B snapshot-modules \fR[\fB\-\-quiet\fR]
+Saves module tree of each fully installed staged kernel build (hard links).
+apt runs it before dpkg (/etc/apt/apt.conf.d/80h96-kernel-switch); package
+postinst runs it once. Skipped while saved tree hides package tree; then
+prints notice that package upgrade fails until reboot into package build.
+.TP
+.B repair-modules
+Running build without matching module tree: mounts saved tree of running
+build, or builds one from h96-kernel-KREL deb with same build in
+/var/cache/apt/archives or /opt/h96-pkgs (depmod), and mounts it read-only.
+Reboot afterwards loads drivers in order.
+.TP
+.B modules-mount
+Run by h96-kernel-switch-modules.service at boot; writes nothing on disk.
+.TP
+.B dtb-plain
+Turns managed DTB link back into plain file holding content of
+h96ks/cur/fdt (temporary name, read-back, rename). Refuses while trial is
+recorded. Later
+.B try
+links DTB again when staged DTB differs, unless
+.BR \-\-keep\-dtb .
+.SH FILES
+.TP
+/boot/h96ks/cur, /boot/h96ks/KREL.gN
+Active generation link and generation directories.
+.TP
+/var/lib/h96-kernel-switch/trial
+Recorded trial or unfinished confirm or rollback: phase, previous and new
+generation.
+.TP
+/var/lib/h96-kernel-switch/last
+Generations of last confirm or rollback, used by rollback.
+.TP
+/var/lib/h96-kernel-switch/log, result
+Action log and outcome lines.
+.TP
+/var/lib/h96-kernel-switch/modules/KREL/SHA16/{tree,meta}
+Saved module tree per kernel build; removed when no staged or /boot Image of
+that build is left.
+.TP
+/var/lib/h96-kernel-switch/modules/KREL/staged.meta
+Offsets of build-id notes and build ids of staged Image; initramfs script
+reads ids at these offsets, so changed staged Image leaves decision to boot
+unit and image copy (new inode, mtime) keeps it valid.
+.TP
+/usr/share/initramfs-tools/scripts/init-bottom/h96-kernel-switch, hooks/h96-kernel-switch
+Initramfs script and hook. Hook copies one hex dumper (gnuod, else hexdump;
+never file over 1 MiB such as Rust coreutils multicall binary) into
+/usr/libexec/h96-kernel-switch of initramfs; script uses busybox applets for
+everything else.
+.TP
+/var/lib/h96-undervolt-trial, /var/lib/h96-undervolt-state
+Read by
+.BR try :
+h96-undervolt trial recorded, undervolt or overclock active.
+.SH LIMITS
+Failure before boot guard runs (early panic, initramfs failure without reset
+to userspace) repeats trial boot, since h96ks/cur still names trial generation
+at that point. Recovery then needs rescue media or reflash.
+U-Boot must follow relative links with directory parts (Image to
+h96ks/cur/Image, h96ks/cur to generation); not yet booted on hardware.
+.SH SEE ALSO
+.BR h96-undervolt (8),
+.BR mkinitramfs (8),
+.BR mkimage (1)

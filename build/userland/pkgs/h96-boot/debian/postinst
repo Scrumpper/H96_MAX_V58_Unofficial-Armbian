@@ -1,0 +1,51 @@
+#!/bin/sh
+# 7.2 enablement on fresh install; upgrades keep admin choices
+set -e
+R="${DPKG_ROOT:-}"
+mklink() { [ -e "$R$1" ] || [ -L "$R$1" ] && return 0; mkdir -p "$R${1%/*}"; ln -s "$2" "$R$1"; }
+case "$1" in
+configure)
+  if [ -n "$2" ] && dpkg --compare-versions "$2" lt-nl 8.0.0~r10; then
+    if [ -e "$R/var/lib/h96/seed-keep/h96-sink-audio.bin" ]; then
+      if [ -e "$R/usr/lib/firmware/edid/h96-sink-audio.bin" ]; then rm -f "$R/var/lib/h96/seed-keep/h96-sink-audio.bin"; else mkdir -p "$R/usr/lib/firmware/edid"; mv -f "$R/var/lib/h96/seed-keep/h96-sink-audio.bin" "$R/usr/lib/firmware/edid/h96-sink-audio.bin"; fi
+    fi
+    [ -e "$R/usr/lib/firmware/edid/h96-sink-audio.bin" ] || { mkdir -p "$R/usr/lib/firmware/edid"; cp -p "$R/usr/lib/h96/seed/h96-sink-audio.bin" "$R/usr/lib/firmware/edid/h96-sink-audio.bin"; }
+    rmdir "$R/var/lib/h96/seed-keep" 2>/dev/null || true
+  fi
+  while read -r _ _ p; do
+    rm -f "$R$p.h96-v72"; d="${p%/*}"
+    case "$p" in /usr/local/bin/*|/usr/local/sbin/*)
+      if [ -e "$R$p" ] || [ -L "$R$p" ]; then
+        echo "warning: $p differs from v7.2 copy, kept; it precedes packaged command in PATH" >&2
+      fi ;;
+    esac
+    while case "$d" in /opt/h96-*|/opt/panthor|/opt/panthor/*|/usr/local/lib/h96|/usr/local/lib/h96/*|/usr/local/share/h96|/usr/local/share/h96/*) true ;; *) false ;; esac; do
+      rmdir "$R$d" 2>/dev/null || break; d="${d%/*}"
+    done
+  done <<'EOF'
+f 5c59d63b79e55c0fbc51d5a00d74865bca1645f2943368dca105e988433482f9 /etc/apt/preferences.d/00-h96-protect-boot
+f 6dc12ae3382d13e04a54a27b5587d285159831f0940fa62281c528816459f1d9 /etc/systemd/system/h96-panthor-setup.service
+l /etc/systemd/system/h96-panthor-setup.service /etc/systemd/system/multi-user.target.wants/h96-panthor-setup.service
+f befd23b9279b26010ebf35c835cc3aa7d0f50758930c7306ff4f5abbe5218624 /opt/panthor/firmware/arm/mali/arch10.8/mali_csffw.bin
+f 2f3b7177f35e15cafb0d2a9fba3b3d9f003fcb660e860088ccf33f7a2f3e5ce3 /opt/panthor/h96-panthor-firstboot.sh
+f 97c2cf3a87f3317c06af3e56c09bf181af7f4703052dcde6473e8039ba4715d6 /opt/panthor/panthor-deploy.sh
+f ce5f6857e03775f25e0069fdf629ea9bff1f8e2d1f790c54d09fe3f0a8340460 /opt/panthor/panthor-revert.sh
+f 1f77422299addd26942d728334f3315e1d6225af0c178e2524ec2d5cbde37489 /opt/panthor/panthor-userspace-setup.sh
+f 41550e4bd2c9c9cc88cd40cef21d3c8dee741711eb5c74b36cff26e78cf1d08e /opt/panthor/panthor-verify.sh
+f 5adae7d8922e6962ddc56fd4908d5abf37e0376459b8b21105ceaee860bbfee4 /usr/local/bin/h96-boot-profile
+f 918301af51cf7dc4d824ff501be1de9c6d430c282625579e44824b32444dd2c7 /usr/local/lib/h96/armbian-update-h96
+f a4666b5ac853182093229ae53ad8cf56150db7d570a8d823b6e2e7f38c5fd2f3 /usr/local/sbin/h96-armbian-update-guard
+f ce8b126b1b15f01a954b6811cd039c0c3a854dea883f4e63d6adb46c06b6fd96 /usr/local/sbin/h96-protect-updates
+EOF
+  if [ -z "$2" ]; then
+    mklink /etc/systemd/system/multi-user.target.wants/h96-armbian-update-guard.path /usr/lib/systemd/system/h96-armbian-update-guard.path
+    mklink /etc/systemd/system/multi-user.target.wants/h96-armbian-update-guard.service /usr/lib/systemd/system/h96-armbian-update-guard.service
+    mklink /etc/systemd/system/multi-user.target.wants/h96-protect-updates.service /usr/lib/systemd/system/h96-protect-updates.service
+    mklink /etc/systemd/system/watchdog.service /dev/null
+    [ -e "$R/usr/lib/firmware/edid/h96-sink-audio.bin" ] || { mkdir -p "$R/usr/lib/firmware/edid"; cp -p "$R/usr/lib/h96/seed/h96-sink-audio.bin" "$R/usr/lib/firmware/edid/h96-sink-audio.bin"; }
+    :
+  fi
+  if [ -z "$R" ] && [ -d /run/systemd/system ]; then systemctl daemon-reload || true; fi
+  ;;
+esac
+exit 0

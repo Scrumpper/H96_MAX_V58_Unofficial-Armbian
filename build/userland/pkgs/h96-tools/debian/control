@@ -1,0 +1,15 @@
+Source: h96-tools
+Section: utils
+Priority: optional
+Maintainer: Scrumpper <190908034+Scrumpper@users.noreply.github.com>
+Rules-Requires-Root: no
+Standards-Version: 4.7.0
+
+Package: h96-tools
+Architecture: arm64
+Multi-Arch: foreign
+Depends: h96-base (= 8.0.0~r39), libc6, python3-tk, python3
+Recommends: device-tree-compiler, zstd
+Description: H96 MAX V58 tools: backup and restore, perf, undervolt, LEDs, VFD
+ h96-backup, h96-restore and GUI, bench, perf profile with sudoers entry,
+ undervolt trial, LED and VFD services, VM helper.

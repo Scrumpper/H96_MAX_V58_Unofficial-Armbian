@@ -1,0 +1,10 @@
+[Unit]
+Documentation=file:/usr/share/doc/h96-base/COMMANDS.md
+Description=H96 Max V58 board-name branding (reassert H96 BOARD_NAME)
+
+[Service]
+Type=oneshot
+ExecStart=/usr/lib/h96/h96-branding.sh
+
+[Install]
+WantedBy=multi-user.target

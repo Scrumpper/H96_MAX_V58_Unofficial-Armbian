@@ -1,0 +1,45 @@
+#!/bin/sh
+# divert v7.2-edited files of other packages before unpack
+set -e
+case "$1" in
+install|upgrade)
+  ;;
+esac
+R="${DPKG_ROOT:-}"
+if [ "$1" = install ] && [ -z "${2:-}" ]; then
+  while read -r k v p; do
+    if [ "$k" = f ] && [ -f "$R$p" ] && [ ! -L "$R$p" ] && [ "$(sha256sum < "$R$p" | cut -d" " -f1)" = "$v" ]; then
+      mv -f "$R$p" "$R$p.h96-v72"
+    elif [ "$k" = l ] && [ -L "$R$p" ] && [ "$(readlink "$R$p")" = "$v" ]; then
+      mv -f "$R$p" "$R$p.h96-v72"
+    fi
+  done <<'EOF'
+f 8dc8b35498357a1ab116c5d95fa699baf7d14ffd9254257108941b42e90b16ea /etc/pipewire/pipewire.conf.d/95-h96-silence-source.conf
+f b56fe6caa4012808255aad6e4fdf94c815fd29d502d55c55b430cfd969a69f82 /etc/systemd/system/bluetooth.service.d/20-h96-policy.conf
+f 4f558a253591a2963265c45d56624e7a48ec7352f0c2e022265a01f95e9b69ac /etc/systemd/system/bt-sco-hci.service
+f 949df27e7adb82af2c056768cbfacac9cfc9ff7acfd025d8c8ea20ea1b08525c /etc/systemd/system/h96-hdmi-audio-detect.service
+l /etc/systemd/system/bt-sco-hci.service /etc/systemd/system/multi-user.target.wants/bt-sco-hci.service
+l /etc/systemd/system/h96-hdmi-audio-detect.service /etc/systemd/system/multi-user.target.wants/h96-hdmi-audio-detect.service
+f 678861edfc1624e3c8b2f759d698534bb10ed46e25aa206a4c96c5f560356191 /etc/udev/rules.d/99-h96-hdmi-audio.rules
+f c7200b72a10d46bc849f1b2d85c2057146190878f4db4756919a2e5b100169af /etc/wireplumber/wireplumber.conf.d/20-h96-hdmi-audio.conf
+f b8a548d3a9569e2282b0957d02d571085632e81ca68c4094d0d7cd30e2952df8 /etc/wireplumber/wireplumber.conf.d/30-h96-bluetooth.conf
+f 6de4479d92e8b956cab2bde09ffd53a3f1aacb417670b2e5590360ee550aac73 /usr/local/bin/h96-audio-eq
+f 1bb9a42810c07be5f6e9f8374c66e0cd42f6096ad450cde47717db771892079d /usr/local/bin/h96-audio-passthrough
+f 7b5137e1e1bf369b6dfed60c84cca3f5097448972224f62c6cbee3152aca1d8e /usr/local/bin/h96-bt-speaker
+f a148c32bdc7ccfb180d39c20899ccf92c629b25faf78246277962ec65f238c4c /usr/local/lib/h96/edid_audio.py
+f 9f45082f35d4616c891b5060d30705d6d85dc55bbc113de72b24f8fb60957c28 /usr/local/lib/h96/h96-bt-agent
+f 3b02b990077abbee05ee320e812b103200f043373a83e3e0575d79a156e91517 /usr/local/lib/h96/h96-bt-loopback
+f e5549e9f4b6df2db618b7571f0ab42941364206ae5c20f2403f3e5e2ce0b623a /usr/local/lib/h96/h96-bt-policy.py
+f 020107aab1bd138650eb2be4023c97546d6c1cb51a643c1b16f5c2d8ade81924 /usr/local/lib/h96/h96-hdmi-sink-migrate.sh
+f 50753dd05364b06469552f29a0991d6b97986892bd55ae2d266625c10ca5304f /usr/local/sbin/h96-bt-attach.py
+f 058cb3796dc474105bb79b4e479af3503fd3d5c876898a975a32448f5786d328 /usr/local/sbin/h96-bt-sco.py
+f ed8adca88a8011bc68ac619bc2358c266a51611d4d8da7961bab1ec3e9c64f8f /usr/local/sbin/h96-wireplumber-offline.sh
+EOF
+fi
+if [ "$1" = upgrade ] && dpkg --compare-versions "$2" lt-nl 8.0.0~r10; then
+  R="${DPKG_ROOT:-}"
+  mkdir -p "$R/var/lib/h96/seed-keep"
+  if [ -f "$R/etc/alsa-card-profile/mixer/profile-sets/h96-hdmi.conf" ] && [ ! -L "$R/etc/alsa-card-profile/mixer/profile-sets/h96-hdmi.conf" ]; then mv -f "$R/etc/alsa-card-profile/mixer/profile-sets/h96-hdmi.conf" "$R/var/lib/h96/seed-keep/h96-hdmi.conf"; fi
+  if [ -f "$R/etc/wireplumber/wireplumber.conf.d/51-h96-iec958.conf" ] && [ ! -L "$R/etc/wireplumber/wireplumber.conf.d/51-h96-iec958.conf" ]; then mv -f "$R/etc/wireplumber/wireplumber.conf.d/51-h96-iec958.conf" "$R/var/lib/h96/seed-keep/51-h96-iec958.conf"; fi
+fi
+exit 0

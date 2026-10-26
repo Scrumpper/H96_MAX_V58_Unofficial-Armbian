@@ -1,0 +1,2 @@
+# MPP (hardware video decode/encode) allocates buffers from the DMA heaps, which default to 0600 root-only and silently break hardware video for desktop users (mpv falls back to software).
+SUBSYSTEM=="dma_heap", KERNEL=="system*", GROUP="video", MODE="0660"

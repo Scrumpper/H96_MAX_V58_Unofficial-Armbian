@@ -1,0 +1,298 @@
+#!/usr/bin/python3
+"""h96-hdmi-hotplug: follow HDMI display changes without reboot (H96 Max V58, HDMI0).
+
+Started by /usr/lib/udev/rules.d/99-h96-hdmi-audio.rules (drm change, HOTPLUG=1) through
+h96-hdmi-hotplug.service; udev only records the event number. The service waits until the
+connector state holds still, reads the display EDID over DDC (i2c-ddc) and compares it with
+the display of the last detect (/etc/h96/hdmi-sink.json display_md5) and the EDID the
+kernel uses now (connector edid vs kernel_edid_md5).
+
+  same display, kernel EDID as loaded   nothing (TV standby, DPMS, cable wiggle, resume)
+  disconnected or EDID unreadable       nothing (state kept for next connect)
+  new display, or kernel EDID lost      h96-display detect (kernel EDID, card profiles,
+                                        passthrough, CEC address, boot args), then desktop
+                                        re-probe (Wayland: change uevent without HOTPLUG,
+                                        X11: detect re-probes), h96-display session-apply,
+                                        h96-scdc apply (service active), h96-cec phys-addr
+                                        auto (service active)
+Same display after a failed load: no second attempt until the EDID or kernel state changes.
+Record: /var/lib/h96/hdmi-hotplug.json.
+
+  h96-hdmi-hotplug status    switch, connector, recorded display, last action
+  h96-hdmi-hotplug on|off    off: hotplug does nothing (detect at boot and by hand only)
+  h96-hdmi-hotplug run       one service run (root)
+"""
+import fcntl
+import glob
+import hashlib
+import json
+import os
+import subprocess
+import sys
+import time
+
+ENV = os.environ.get
+LIB = ENV("H96_LIB", "/usr/lib/h96")
+SINK_JSON = ENV("H96_SINK_JSON", "/etc/h96/hdmi-sink.json")
+OFF_FLAG = ENV("H96_HOTPLUG_OFF", "/etc/h96/hdmi-hotplug.off")
+STATE = ENV("H96_HOTPLUG_STATE", "/var/lib/h96/hdmi-hotplug.json")
+SEQ = ENV("H96_HOTPLUG_SEQ", "/run/h96-hdmi-hotplug.seq")
+LOCK = ENV("H96_DETECT_LOCK", "/run/h96-audio-detect.lock")   # one DDC reader (detect, h96-cec, h96-scdc)
+DISPLAY_CMD = ENV("H96_DISPLAY_CMD", "/usr/sbin/h96-display")
+SCDC_CMD = ENV("H96_SCDC_CMD", "/usr/sbin/h96-scdc")
+CEC_CMD = ENV("H96_CEC_CMD", "/usr/bin/h96-cec")
+XDISPLAY = ENV("H96_XDISPLAY", "/usr/lib/h96/h96-xdisplay")
+SYSTEMCTL = ENV("H96_SYSTEMCTL", "systemctl")
+SETTLE_S = float(ENV("H96_SETTLE_S", "2"))       # connector state and event number unchanged this long
+SETTLE_MAX_S = float(ENV("H96_SETTLE_MAX_S", "30"))
+POLL_S = float(ENV("H96_POLL_S", "0.5"))
+READ_TRIES = int(ENV("H96_READ_TRIES", "3"))     # EEPROM may answer after HPD rises
+READ_GAP_S = float(ENV("H96_READ_GAP_S", "2"))
+ROUNDS = 5                                       # events during a run: settle again, at most this often
+
+
+def log(msg):
+    print(msg, flush=True)
+
+
+def conn_dir():
+    c = ENV("H96_DRM_CONN")
+    if c:
+        return c
+    found = sorted(glob.glob("/sys/class/drm/card[0-9]*-HDMI-A-1"))
+    return found[0] if found else "/sys/class/drm/card0-HDMI-A-1"
+
+
+def card_uevent(conn):
+    return ENV("H96_CARD_UEVENT") or os.path.join(os.path.dirname(os.path.realpath(conn)), "uevent")
+
+
+def read(path, mode="r"):
+    try:
+        with open(path, mode) as f:
+            return f.read()
+    except OSError:
+        return b"" if "b" in mode else ""
+
+
+def status(conn):
+    return read(os.path.join(conn, "status")).strip()
+
+
+def kernel_md5(conn):
+    d = read(os.path.join(conn, "edid"), "rb")
+    return hashlib.md5(d).hexdigest() if d else ""
+
+
+def jload(path):
+    try:
+        with open(path) as f:
+            v = json.load(f)
+        return v if isinstance(v, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def jsave(path, obj):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    tmp = path + ".h96new"
+    with open(tmp, "w") as f:
+        json.dump(obj, f, indent=1, sort_keys=True)
+        f.write("\n")
+    os.replace(tmp, path)
+
+
+def seq():
+    return read(SEQ).strip()
+
+
+def settle(conn):
+    """Wait until connector status and udev event number hold for SETTLE_S; -> (status, seq)."""
+    t0 = time.monotonic()
+    last = (status(conn), seq())
+    since = t0
+    while True:
+        time.sleep(POLL_S)
+        now = time.monotonic()
+        cur = (status(conn), seq())
+        if cur != last:
+            last, since = cur, now
+        elif now - since >= SETTLE_S or now - t0 >= SETTLE_MAX_S:
+            return last
+
+
+def ddc_edid():
+    """Raw display EDID over DDC under the detect lock; b"" when unreadable."""
+    sys.path.insert(0, LIB)
+    import edid_audio
+    for i in range(READ_TRIES):
+        with open(LOCK, "a") as lk:
+            fcntl.flock(lk, fcntl.LOCK_EX)
+            data, label = edid_audio.read_source()
+        if data and edid_audio.parse_edid(data).get("valid"):
+            return data
+        log(f"EDID read {i + 1}/{READ_TRIES}: {label}: no valid EDID")
+        if i + 1 < READ_TRIES:
+            time.sleep(READ_GAP_S)
+    return b""
+
+
+def decide(st, disp_md5, kmd5, sink, rec):
+    """-> (action, reason). action: none | detect."""
+    if st != "connected":
+        return "none", f"HDMI-A-1 {st or 'absent'}"
+    if not disp_md5:
+        return "none", "display EDID unreadable over DDC"
+    if disp_md5 != sink.get("display_md5"):
+        return "detect", "new display"
+    if kmd5 and kmd5 == sink.get("kernel_edid_md5"):
+        return "none", "same display, kernel EDID loaded"
+    if rec.get("display_md5") == disp_md5 and rec.get("kernel_md5_after") == kmd5:
+        return "none", "same display, previous load gave this kernel EDID: not retried"
+    return "detect", "same display, kernel EDID differs from detect result"
+
+
+def run_cmd(argv, timeout=120):
+    try:
+        r = subprocess.run(argv, capture_output=True, text=True, timeout=timeout)
+    except (OSError, subprocess.SubprocessError) as e:
+        log(f"{argv[0]}: {e}")
+        return 127
+    for ln in (r.stdout + r.stderr).splitlines():
+        log("  " + ln)
+    return r.returncode
+
+
+def active(unit):
+    try:
+        return subprocess.run([SYSTEMCTL, "is-active", "--quiet", unit], timeout=10).returncode == 0
+    except (OSError, subprocess.SubprocessError):
+        return False
+
+
+def session_type():
+    try:
+        r = subprocess.run([XDISPLAY], capture_output=True, text=True, timeout=10)
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    for ln in r.stdout.splitlines():
+        if ln.startswith("H96_XD_TYPE="):
+            return ln.split("=", 1)[1]
+    return ""
+
+
+def wayland_reprobe(conn):
+    """KWin re-reads connectors on drm change events; no HOTPLUG key, so no h96 rule matches."""
+    try:
+        with open(card_uevent(conn), "w") as f:
+            f.write("change")
+        return True
+    except OSError as e:
+        log(f"desktop re-probe: {e}")
+        return False
+
+
+def apply_new(conn, before):
+    rc = run_cmd([DISPLAY_CMD, "detect", "--quiet"], timeout=150)
+    after = kernel_md5(conn)
+    sink = jload(SINK_JSON)
+    if after and after != before and session_type() == "wayland":
+        if wayland_reprobe(conn):
+            log("desktop re-probe: change uevent on DRM card (Wayland session)")
+    run_cmd([DISPLAY_CMD, "session-apply"], timeout=60)
+    if sink.get("hdmi20") and active("h96-scdc.service"):
+        run_cmd([SCDC_CMD, "apply"], timeout=30)
+    if active("h96-cec.service"):
+        run_cmd([CEC_CMD, "phys-addr", "auto"], timeout=60)
+    return rc, after, sink
+
+
+def one_round(conn, rec):
+    """Settle, decide, act; -> (record, event number the decision covers)."""
+    st, mark = settle(conn)
+    sink = jload(SINK_JSON)
+    data = ddc_edid() if st == "connected" else b""
+    disp_md5 = hashlib.md5(data).hexdigest() if data else ""
+    kmd5 = kernel_md5(conn)
+    act, why = decide(st, disp_md5, kmd5, sink, rec)
+    now = time.strftime("%Y-%m-%dT%H:%M:%S%z")
+    rec.update(last_event=now, last_status=st, last_reason=why)
+    if act == "none":
+        log(f"no change: {why}")
+        return rec, mark
+    log(f"detect: {why} ({sink.get('sink') or 'none'} -> display md5 {disp_md5})")
+    rc, after, sink = apply_new(conn, kmd5)
+    rec.update(display_md5=disp_md5, kernel_md5_before=kmd5, kernel_md5_after=after, detect_rc=rc,
+               sink=sink.get("sink"), display_key=sink.get("display_key"), video=sink.get("video"),
+               preferred=sink.get("preferred"), layouts=sink.get("layouts"), last_detect=now)
+    ok = rc == 0 and after and after == sink.get("kernel_edid_md5")
+    log(f"{'done' if ok else 'detect finished, kernel EDID not as planned'}: {sink.get('sink')} "
+        f"kernel EDID {after or 'none'} (rc {rc})")
+    return rec, mark
+
+
+def cmd_run():
+    if os.path.exists(OFF_FLAG):
+        log(f"off ({OFF_FLAG}): nothing done")
+        return 0
+    if os.geteuid() != 0 and not ENV("H96_HOTPLUG_TEST"):
+        log("h96-hdmi-hotplug: run needs root")
+        return 1
+    conn = conn_dir()
+    rec = jload(STATE)
+    for _ in range(ROUNDS):
+        rec, mark = one_round(conn, rec)
+        jsave(STATE, rec)
+        if seq() == mark:
+            break
+        log("new HDMI event during run: settling again")
+    return 0
+
+
+def cmd_status():
+    conn = conn_dir()
+    rec, sink = jload(STATE), jload(SINK_JSON)
+    km = kernel_md5(conn)
+    print(f"hotplug:     {'off' if os.path.exists(OFF_FLAG) else 'on'}")
+    print(f"connector:   {os.path.basename(conn)} {status(conn) or 'absent'}")
+    print(f"display:     {sink.get('sink') or 'none'} ({sink.get('display_key') or '-'}), "
+          f"display md5 {sink.get('display_md5') or '-'}")
+    print(f"kernel EDID: {km or 'none'} ({'as detected' if km and km == sink.get('kernel_edid_md5') else 'differs from detect'})")
+    print(f"last event:  {rec.get('last_event') or 'none'}: {rec.get('last_reason') or '-'}")
+    print(f"last detect: {rec.get('last_detect') or 'none'} {rec.get('sink') or ''}".rstrip())
+    return 0
+
+
+def cmd_switch(v):
+    if os.geteuid() != 0 and not ENV("H96_HOTPLUG_TEST"):
+        print(f"h96-hdmi-hotplug: {v} needs root (sudo h96-hdmi-hotplug {v})", file=sys.stderr)
+        return 1
+    if v == "on":
+        try:
+            os.unlink(OFF_FLAG)
+        except FileNotFoundError:
+            pass
+    else:
+        os.makedirs(os.path.dirname(OFF_FLAG), exist_ok=True)
+        open(OFF_FLAG, "w").close()
+    print(f"hotplug: {v}" + ("" if v == "on" else " (detect at boot and 'h96-display detect' only)"))
+    return 0
+
+
+def main(argv):
+    a = argv[1] if len(argv) > 1 else "status"
+    if a in ("-h", "--help", "help"):
+        print(__doc__)
+        return 0
+    if a == "run":
+        return cmd_run()
+    if a == "status":
+        return cmd_status()
+    if a in ("on", "off"):
+        return cmd_switch(a)
+    print("usage: h96-hdmi-hotplug status | on | off | run", file=sys.stderr)
+    return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))

@@ -1,0 +1,40 @@
+#!/bin/sh
+# 7.2 enablement on fresh install; upgrades keep admin choices
+set -e
+dpkg-maintscript-helper rm_conffile /etc/modules-load.d/h96-bcmdhd.conf 8.0.0~r26~ h96-net -- "$@"
+R="${DPKG_ROOT:-}"
+mklink() { [ -e "$R$1" ] || [ -L "$R$1" ] && return 0; mkdir -p "$R${1%/*}"; ln -s "$2" "$R$1"; }
+case "$1" in
+configure)
+  while read -r _ _ p; do
+    rm -f "$R$p.h96-v72"; d="${p%/*}"
+    case "$p" in /usr/local/bin/*|/usr/local/sbin/*)
+      if [ -e "$R$p" ] || [ -L "$R$p" ]; then
+        echo "warning: $p differs from v7.2 copy, kept; it precedes packaged command in PATH" >&2
+      fi ;;
+    esac
+    while case "$d" in /opt/h96-*|/opt/panthor|/opt/panthor/*|/usr/local/lib/h96|/usr/local/lib/h96/*|/usr/local/share/h96|/usr/local/share/h96/*) true ;; *) false ;; esac; do
+      rmdir "$R$d" 2>/dev/null || break; d="${d%/*}"
+    done
+  done <<'EOF'
+f 61c4d7ef6ac39336edeae68f65e9b7a762f9ac3f87548f20914c97d81731f68c /etc/modules-load.d/h96-bcmdhd.conf
+f 62394ee76938d7bc6038d1414955acac8dfca08a5c27b327b0815bee29180388 /etc/systemd/system/h96-hotspot-repair.service
+l /etc/systemd/system/h96-hotspot-repair.service /etc/systemd/system/multi-user.target.wants/h96-hotspot-repair.service
+f 8f482ff2f3c45304de21169d3f3b486c090d38e9804bf93097903c08a97f1c1c /usr/local/bin/h96-hotspot
+f 5de68cb5f5995a2b4d71fbf98b16b447e0e1bbadc76da7e15844ab926603c0cd /usr/local/bin/h96-wifi-connect
+f 73383fc4086c89757acc102f86a4ae8426729f07979f18fefbf76f6b89445f57 /usr/local/bin/h96-wifi-diag
+f 67a6a40d5beac76021959bb3970d8b00c3187eb55c23490b94231398464ce91e /usr/local/bin/h96-wol
+EOF
+  if [ -z "$2" ]; then
+    mklink /etc/systemd/system/multi-user.target.wants/h96-dhcpcd-wlan0.service /usr/lib/systemd/system/h96-dhcpcd-wlan0.service
+    mklink /etc/systemd/system/multi-user.target.wants/h96-hotspot-repair.service /usr/lib/systemd/system/h96-hotspot-repair.service
+    mklink /etc/systemd/system/multi-user.target.wants/h96-wpa-supplicant-wlan0.service /usr/lib/systemd/system/h96-wpa-supplicant-wlan0.service
+    mklink /etc/systemd/system/systemd-rfkill.service /dev/null
+    mklink /etc/systemd/system/systemd-rfkill.socket /dev/null
+    [ -e "$R/etc/wpa_supplicant/wpa_supplicant-wlan0.conf" ] || { mkdir -p "$R/etc/wpa_supplicant"; cp -p "$R/usr/lib/h96/seed/wpa_supplicant-wlan0.conf" "$R/etc/wpa_supplicant/wpa_supplicant-wlan0.conf"; chmod 600 "$R/etc/wpa_supplicant/wpa_supplicant-wlan0.conf"; }
+    :
+  fi
+  if [ -z "$R" ] && [ -d /run/systemd/system ]; then systemctl daemon-reload || true; fi
+  ;;
+esac
+exit 0

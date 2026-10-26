@@ -1,0 +1,14 @@
+[Unit]
+Description=H96 Max V58 branding watch (reassert when armbian-fix or a package conffile-stomp rewrites it)
+
+[Path]
+PathChanged=/etc/armbian-release
+PathChanged=/etc/armbian-image-release
+PathChanged=/etc/issue
+PathChanged=/etc/issue.net
+PathChanged=/etc/os-release
+PathChanged=/usr/lib/os-release
+Unit=h96-branding.service
+
+[Install]
+WantedBy=multi-user.target

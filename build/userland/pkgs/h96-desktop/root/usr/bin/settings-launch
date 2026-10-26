@@ -1,0 +1,4 @@
+#!/bin/sh
+pkill -9 -f "^/usr/bin/gnome-control-center" 2>/dev/null
+sleep 0.3
+exec env GSK_RENDERER=cairo /usr/bin/gnome-control-center "$@"

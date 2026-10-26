@@ -1,0 +1,5 @@
+# installed but off: first try enables guard and timer, first saved module tree enables modules unit
+disable h96-kernel-switch-guard.service
+disable h96-kernel-switch-confirm.timer
+disable h96-kernel-switch-confirm.service
+disable h96-kernel-switch-modules.service

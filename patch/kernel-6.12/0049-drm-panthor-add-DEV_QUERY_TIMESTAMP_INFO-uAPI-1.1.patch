@@ -1,0 +1,169 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Scrumpper <190908034+Scrumpper@users.noreply.github.com>
+Date: Tue, 20 Oct 2026 06:59:54 -0700
+Subject: [PATCH 49/59] drm/panthor: add DEV_QUERY_TIMESTAMP_INFO, uAPI 1.1
+
+Mesa panvk reads the GPU timestamp frequency from this query (Panthor
+>= 1.1). On 1.0 the frequency stays 0, so panvk reports timestampPeriod
+0 while still advertising timestamp queries and calibrated timestamps:
+GPU times from timestamp queries cannot be converted to nanoseconds and
+the device domain of vkGetCalibratedTimestampsKHR returns 0. Panfrost
+GL and the panvk utrace path skip GPU timing for the same reason.
+
+Add the query as in mainline and the 6.1 rkr7.2 backport: arch timer
+frequency, current GPU_TIMESTAMP (high word re-read until stable) and
+GPU_TIMESTAMP_OFFSET, read with the device resumed. Bump the minor to 1.
+panthor 1.5 port, 8.0p15.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01P6itje71iKPFBX7YKkfvRo
+---
+ drivers/gpu/drm/panthor/panthor_drv.c | 55 ++++++++++++++++++++++++++-
+ include/uapi/drm/panthor_drm.h        | 22 +++++++++++
+ 2 files changed, 76 insertions(+), 1 deletion(-)
+
+diff --git a/drivers/gpu/drm/panthor/panthor_drv.c b/drivers/gpu/drm/panthor/panthor_drv.c
+index dfdfbf9b3..ae57420f3 100644
+--- a/drivers/gpu/drm/panthor/panthor_drv.c
++++ b/drivers/gpu/drm/panthor/panthor_drv.c
+@@ -170,6 +170,7 @@ panthor_get_uobj_array(const struct drm_panthor_obj_array *in, u32 min_stride,
+ 	_Generic(_obj_name, \
+ 		 PANTHOR_UOBJ_DECL(struct drm_panthor_gpu_info, tiler_present), \
+ 		 PANTHOR_UOBJ_DECL(struct drm_panthor_csif_info, pad), \
++		 PANTHOR_UOBJ_DECL(struct drm_panthor_timestamp_info, current_timestamp), \
+ 		 PANTHOR_UOBJ_DECL(struct drm_panthor_sync_op, timeline_value), \
+ 		 PANTHOR_UOBJ_DECL(struct drm_panthor_queue_submit, syncs), \
+ 		 PANTHOR_UOBJ_DECL(struct drm_panthor_queue_create, ringbuf_size), \
+@@ -756,10 +757,50 @@ static void panthor_submit_ctx_cleanup(struct panthor_submit_ctx *ctx,
+ 	kvfree(ctx->jobs);
+ }
+ 
++static u64 panthor_gpu_read64_counter(struct panthor_device *ptdev,
++				      u32 lo_reg, u32 hi_reg)
++{
++	u32 lo, hi1, hi2;
++
++	/* Re-read until the high word is stable across the low word read. */
++	do {
++		hi1 = gpu_read(ptdev, hi_reg);
++		lo = gpu_read(ptdev, lo_reg);
++		hi2 = gpu_read(ptdev, hi_reg);
++	} while (hi1 != hi2);
++
++	return lo | ((u64)hi2 << 32);
++}
++
++static int panthor_query_timestamp_info(struct panthor_device *ptdev,
++					struct drm_panthor_timestamp_info *arg)
++{
++	int ret;
++
++	ret = pm_runtime_resume_and_get(ptdev->base.dev);
++	if (ret)
++		return ret;
++
++#ifdef CONFIG_ARM_ARCH_TIMER
++	arg->timestamp_frequency = arch_timer_get_cntfrq();
++#else
++	arg->timestamp_frequency = 0;
++#endif
++	arg->current_timestamp = panthor_gpu_read64_counter(ptdev, GPU_TIMESTAMP_LO,
++							    GPU_TIMESTAMP_HI);
++	arg->timestamp_offset = gpu_read(ptdev, GPU_TIMESTAMP_OFFSET_LO) |
++				((u64)gpu_read(ptdev, GPU_TIMESTAMP_OFFSET_HI) << 32);
++
++	pm_runtime_put(ptdev->base.dev);
++	return 0;
++}
++
+ static int panthor_ioctl_dev_query(struct drm_device *ddev, void *data, struct drm_file *file)
+ {
+ 	struct panthor_device *ptdev = container_of(ddev, struct panthor_device, base);
+ 	struct drm_panthor_dev_query *args = data;
++	struct drm_panthor_timestamp_info timestamp_info;
++	int ret;
+ 
+ 	if (!args->pointer) {
+ 		switch (args->type) {
+@@ -771,6 +812,10 @@ static int panthor_ioctl_dev_query(struct drm_device *ddev, void *data, struct d
+ 			args->size = sizeof(ptdev->csif_info);
+ 			return 0;
+ 
++		case DRM_PANTHOR_DEV_QUERY_TIMESTAMP_INFO:
++			args->size = sizeof(timestamp_info);
++			return 0;
++
+ 		default:
+ 			return -EINVAL;
+ 		}
+@@ -783,6 +828,13 @@ static int panthor_ioctl_dev_query(struct drm_device *ddev, void *data, struct d
+ 	case DRM_PANTHOR_DEV_QUERY_CSIF_INFO:
+ 		return PANTHOR_UOBJ_SET(args->pointer, args->size, ptdev->csif_info);
+ 
++	case DRM_PANTHOR_DEV_QUERY_TIMESTAMP_INFO:
++		ret = panthor_query_timestamp_info(ptdev, &timestamp_info);
++		if (ret)
++			return ret;
++
++		return PANTHOR_UOBJ_SET(args->pointer, args->size, timestamp_info);
++
+ 	default:
+ 		return -EINVAL;
+ 	}
+@@ -1437,6 +1489,7 @@ static void panthor_debugfs_init(struct drm_minor *minor)
+ /*
+  * PanCSF driver version:
+  * - 1.0 - initial interface
++ * - 1.1 - adds DEV_QUERY_TIMESTAMP_INFO query
+  */
+ static const struct drm_driver panthor_drm_driver = {
+ 	.driver_features = DRIVER_RENDER | DRIVER_GEM | DRIVER_SYNCOBJ |
+@@ -1451,7 +1504,7 @@ static const struct drm_driver panthor_drm_driver = {
+ 	.desc = "Panthor DRM driver",
+ 	.date = "20230801",
+ 	.major = 1,
+-	.minor = 0,
++	.minor = 1,
+ 
+ 	.gem_create_object = panthor_gem_create_object,
+ 	.gem_prime_import_sg_table = drm_gem_shmem_prime_import_sg_table,
+diff --git a/include/uapi/drm/panthor_drm.h b/include/uapi/drm/panthor_drm.h
+index 21af62e3c..4a3d87659 100644
+--- a/include/uapi/drm/panthor_drm.h
++++ b/include/uapi/drm/panthor_drm.h
+@@ -260,6 +260,9 @@ enum drm_panthor_dev_query_type {
+ 
+ 	/** @DRM_PANTHOR_DEV_QUERY_CSIF_INFO: Query command-stream interface information. */
+ 	DRM_PANTHOR_DEV_QUERY_CSIF_INFO,
++
++	/** @DRM_PANTHOR_DEV_QUERY_TIMESTAMP_INFO: Query timestamp information. */
++	DRM_PANTHOR_DEV_QUERY_TIMESTAMP_INFO,
+ };
+ 
+ /**
+@@ -380,6 +383,25 @@ struct drm_panthor_csif_info {
+ 	__u32 pad;
+ };
+ 
++/**
++ * struct drm_panthor_timestamp_info - Timestamp information
++ *
++ * Structure grouping all queryable information relating to the GPU timestamp.
++ */
++struct drm_panthor_timestamp_info {
++	/**
++	 * @timestamp_frequency: The frequency of the timestamp timer or 0 if
++	 * unknown.
++	 */
++	__u64 timestamp_frequency;
++
++	/** @current_timestamp: The current timestamp. */
++	__u64 current_timestamp;
++
++	/** @timestamp_offset: The offset of the timestamp timer. */
++	__u64 timestamp_offset;
++};
++
+ /**
+  * struct drm_panthor_dev_query - Arguments passed to DRM_PANTHOR_IOCTL_DEV_QUERY
+  */

@@ -1,0 +1,4 @@
+# Recovery pinhole (SARADC ch1, adc-keys DT node, KEY_VOLUMEUP) is for h96-pinhole's
+# hold-to-loader watcher, not the desktop volume key; hide it from libinput so KDE never
+# sees it. Always on: this removes a surprise, not an opt-in feature.
+SUBSYSTEM=="input", KERNEL=="event*", ATTRS{name}=="adc-keys", ENV{LIBINPUT_IGNORE_DEVICE}="1"

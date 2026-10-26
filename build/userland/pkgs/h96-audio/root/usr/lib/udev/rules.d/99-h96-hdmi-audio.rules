@@ -1,0 +1,6 @@
+# /usr/lib/udev/rules.d/99-h96-hdmi-audio.rules
+# Genuine HDMI hotplug only (HOTPLUG=1; plain modeset change events carry none): event number
+# recorded for h96-hdmi-hotplug.service, which settles, compares display EDID over DDC and runs
+# HDMI detect only for a new display. RUN+= on every event; --no-block keeps DDC out of udev;
+# event during a run makes the service settle again. Name kept from v6.1.
+ACTION=="change", SUBSYSTEM=="drm", KERNEL=="card[0-9]*", ENV{HOTPLUG}=="1", RUN+="/bin/sh -c 'echo $env{SEQNUM} > /run/h96-hdmi-hotplug.seq'", RUN+="/usr/bin/systemctl --no-block start h96-hdmi-hotplug.service"

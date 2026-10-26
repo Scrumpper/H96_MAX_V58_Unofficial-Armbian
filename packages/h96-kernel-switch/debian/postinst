@@ -1,0 +1,7 @@
+#!/bin/sh
+# saves module tree of each staged kernel build (apt hook does it before later upgrades)
+set -e
+if [ "$1" = configure ] && [ -z "${DPKG_ROOT:-}" ]; then
+    h96-kernel-switch snapshot-modules --quiet || true
+fi
+exit 0

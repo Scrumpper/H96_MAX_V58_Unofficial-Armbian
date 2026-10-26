@@ -1,0 +1,34 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: H96 build <builder@h96-build>
+Date: Mon, 19 Oct 2026 00:00:00 +0000
+Subject: [PATCH 21/59] mmc: sdhci-of-dwcmshc: no PD warning when no power
+ domain is attached
+
+dev_pm_genpd_rpm_always_on() returns -ENODEV when the device has no
+genpd. The rk3588 eMMC node carries no power-domains property (6.1 dtsi,
+8.0 DTB, 6.12 dtsi alike) and the 6.12 power controller has no NVM
+domain node, so on this board the call always fails with -ENODEV and
+probe logs "failed to set PD rpm always on, SoC may hang later".
+
+The 6.1 driver guarded the same step with "if (dev->pm_domain)" and
+skipped it silently. Treat -ENODEV like -EOPNOTSUPP: nothing to keep on.
+Behaviour otherwise unchanged. 6.12 t3.
+---
+ drivers/mmc/host/sdhci-of-dwcmshc.c | 3 ++-
+ 1 file changed, 2 insertions(+), 1 deletion(-)
+
+diff --git a/drivers/mmc/host/sdhci-of-dwcmshc.c b/drivers/mmc/host/sdhci-of-dwcmshc.c
+index 22972ffc3..aa66fb45e 100644
+--- a/drivers/mmc/host/sdhci-of-dwcmshc.c
++++ b/drivers/mmc/host/sdhci-of-dwcmshc.c
+@@ -1751,8 +1751,9 @@ static int dwcmshc_probe(struct platform_device *pdev)
+ 	if (err)
+ 		goto err_setup_host;
+ 
++	/* -ENODEV: no power domain attached, nothing to keep on (6.1 skipped this silently) */
+ 	err = dev_pm_genpd_rpm_always_on(dev, true);
+-	if (err && err != -EOPNOTSUPP)
++	if (err && err != -EOPNOTSUPP && err != -ENODEV)
+ 		dev_warn(dev, "failed to set PD rpm always on, SoC may hang later: %pe\n",
+ 			 ERR_PTR(err));
+ 

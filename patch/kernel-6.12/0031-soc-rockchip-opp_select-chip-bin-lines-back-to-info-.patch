@@ -1,0 +1,124 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Scrumpper <190908034+Scrumpper@users.noreply.github.com>
+Date: Mon, 19 Oct 2026 22:38:06 -0700
+Subject: [PATCH 31/59] soc: rockchip: opp_select: chip bin lines back to info
+ level
+
+The 6.12 vendor tree prints the per-chip selection lines (bin, idc,
+pvtm, pvtm-volt-sel, pvtm-scale, bin-scale, bin-volt-sel, soc version,
+temp/pvtm) with dev_dbg; 6.1 prints them with dev_info. h96-undervolt
+reads "cpu cpuN: pvtm-volt-sel=N" from the kernel log to pick this
+chip's voltage bin; on t5 the line is absent and the tool falls back to
+the base voltage. Restore the 6.1 levels. Log only. 6.12 t6.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01P6itje71iKPFBX7YKkfvRo
+---
+ drivers/soc/rockchip/rockchip_opp_select.c | 26 +++++++++++-----------
+ 1 file changed, 13 insertions(+), 13 deletions(-)
+
+diff --git a/drivers/soc/rockchip/rockchip_opp_select.c b/drivers/soc/rockchip/rockchip_opp_select.c
+index 29af6a7ff..5b26d3d71 100644
+--- a/drivers/soc/rockchip/rockchip_opp_select.c
++++ b/drivers/soc/rockchip/rockchip_opp_select.c
+@@ -435,8 +435,8 @@ static int rockchip_get_pvtm_specific_value(struct device *dev,
+ 	}
+ 	pvtm_value[pvtm->ch[0]][pvtm->ch[1]] = *target_value;
+ 
+-	dev_dbg(dev, "temp=%d, pvtm=%d (%d + %d)\n",
+-		 cur_temp, *target_value, avg_value, diff_value);
++	dev_info(dev, "temp=%d, pvtm=%d (%d + %d)\n",
++		  cur_temp, *target_value, avg_value, diff_value);
+ 
+ resetore_volt:
+ 	regulator_set_voltage(reg, old_volt, INT_MAX);
+@@ -666,22 +666,22 @@ static void rockchip_of_get_lkg_sel(struct device *dev, struct device_node *np,
+ 		if (ret)
+ 			return;
+ 		*lkg = (leakage & 0xff) << 8;
+-		dev_dbg(dev, "idc=%d\n", leakage);
++		dev_info(dev, "idc=%d\n", leakage);
+ 		break;
+ 	case LEAKAGE_V2:
+ 		ret = rockchip_get_leakage_v2(dev, np, lkg_name, &leakage);
+ 		if (ret)
+ 			return;
+ 		*lkg = (leakage & 0xff) << 8;
+-		dev_dbg(dev, "idc=%d\n", leakage);
++		dev_info(dev, "idc=%d\n", leakage);
+ 		break;
+ 	case LEAKAGE_V3:
+ 		ret = rockchip_get_leakage_v3(dev, np, lkg_name, &leakage);
+ 		if (ret)
+ 			return;
+ 		*lkg = (((leakage / 1000) & 0xff) << 8) | (leakage % 1000);
+-		dev_dbg(dev, "idc=%d.%d\n", leakage / 1000,
+-			 leakage % 1000);
++		dev_info(dev, "idc=%d.%d\n", leakage / 1000,
++			  leakage % 1000);
+ 		break;
+ 	default:
+ 		return;
+@@ -1120,7 +1120,7 @@ static int rockchip_get_pvtm_pvtpll(struct device *dev, struct device_node *np,
+ 	}
+ 	pvtm_value += diff_value;
+ 
+-	dev_dbg(dev, "pvtm=%d\n", pvtm_value);
++	dev_info(dev, "pvtm=%d\n", pvtm_value);
+ 
+ resetore_volt:
+ 	regulator_set_voltage(reg, old_volt, INT_MAX);
+@@ -1222,7 +1222,7 @@ static void rockchip_of_get_pvtm_sel(struct device *dev, struct device_node *np,
+ 		sprintf(name, "rockchip,pvtm-voltage-sel");
+ 	ret = rockchip_get_sel(np, name, pvtm, volt_sel);
+ 	if (!ret && volt_sel)
+-		dev_dbg(dev, "pvtm-volt-sel=%d\n", *volt_sel);
++		dev_info(dev, "pvtm-volt-sel=%d\n", *volt_sel);
+ 
+ next:
+ 	if (!scale_sel)
+@@ -1237,7 +1237,7 @@ static void rockchip_of_get_pvtm_sel(struct device *dev, struct device_node *np,
+ 		sprintf(name, "rockchip,pvtm-scaling-sel");
+ 	ret = rockchip_get_sel(np, name, pvtm, scale_sel);
+ 	if (!ret)
+-		dev_dbg(dev, "pvtm-scale=%d\n", *scale_sel);
++		dev_info(dev, "pvtm-scale=%d\n", *scale_sel);
+ }
+ 
+ static void rockchip_of_get_bin_sel(struct device *dev, struct device_node *np,
+@@ -1251,7 +1251,7 @@ static void rockchip_of_get_bin_sel(struct device *dev, struct device_node *np,
+ 	ret = rockchip_get_bin_sel(np, "rockchip,bin-scaling-sel",
+ 				   bin, scale_sel);
+ 	if (!ret)
+-		dev_dbg(dev, "bin-scale=%d\n", *scale_sel);
++		dev_info(dev, "bin-scale=%d\n", *scale_sel);
+ }
+ 
+ static void rockchip_of_get_bin_volt_sel(struct device *dev, struct device_node *np,
+@@ -1265,7 +1265,7 @@ static void rockchip_of_get_bin_volt_sel(struct device *dev, struct device_node
+ 	ret = rockchip_get_bin_sel(np, "rockchip,bin-voltage-sel",
+ 				   bin, bin_volt_sel);
+ 	if (!ret)
+-		dev_dbg(dev, "bin-volt-sel=%d\n", *bin_volt_sel);
++		dev_info(dev, "bin-volt-sel=%d\n", *bin_volt_sel);
+ }
+ 
+ void rockchip_get_opp_data(const struct of_device_id *matches,
+@@ -1370,7 +1370,7 @@ static int rockchip_get_soc_info(struct device *dev, struct device_node *np,
+ 
+ 	if (*bin < 0)
+ 		*bin = 0;
+-	dev_dbg(dev, "bin=%d\n", *bin);
++	dev_info(dev, "bin=%d\n", *bin);
+ 
+ 	return 0;
+ }
+@@ -1484,7 +1484,7 @@ static int rockchip_set_opp_supported_hw(struct device *dev,
+ 	/* Speed Grade */
+ 	info->supported_hw[1] = BIT(speed);
+ 
+-	dev_dbg(dev, "soc version=%d, speed=%d\n", version, speed);
++	dev_info(dev, "soc version=%d, speed=%d\n", version, speed);
+ 
+ 	return 0;
+ }

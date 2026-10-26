@@ -1,0 +1,13 @@
+[Unit]
+Documentation=file:/usr/share/doc/h96-base/COMMANDS.md
+Description=H96 Max V58 — keep yt-dlp current (YouTube breaks stale versions)
+# apt-packaged yt-dlp is frozen at release and YouTube breaks it within months; refreshes /var/lib/h96/bin/yt-dlp, which mpv (script-opts in /etc/mpv/mpv.conf) and ff2mpv call.
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+# -U self-updates the standalone zipapp; no network or upstream unreachable must not fail the unit.
+ExecStart=/var/lib/h96/bin/yt-dlp -U
+SuccessExitStatus=0 1 2 100
+TimeoutStartSec=300

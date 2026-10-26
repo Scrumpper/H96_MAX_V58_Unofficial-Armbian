@@ -1,0 +1,2 @@
+// H96: after a desktop is removed, undo H96 desktop setup (queues h96-desktop-cleanup.service)
+DPkg::Post-Invoke { "if [ -x /usr/sbin/h96-desktop-cleanup ]; then /usr/sbin/h96-desktop-cleanup --check; fi"; };

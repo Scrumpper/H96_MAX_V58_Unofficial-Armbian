@@ -1,0 +1,4 @@
+# armbian-firmware registers /lib/firmware path; package installs /usr/lib alias (DEP17), diversion must cover both.
+h96-boot: diversion-for-unknown-file lib/firmware/arm/mali/arch10.8/mali_csffw.bin [preinst:6]
+# Release apt policy: pins protect boot chain, offline repo and box64 versions; no other mechanism sets a pin.
+h96-boot: package-installs-apt-preferences [etc/apt/preferences.d/00-h96-protect-boot]

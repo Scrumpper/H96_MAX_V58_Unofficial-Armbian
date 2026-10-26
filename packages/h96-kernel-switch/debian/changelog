@@ -1,0 +1,111 @@
+h96-kernel-switch (8.0.0~r17) resolute; urgency=medium
+
+  * Manual: generations made by earlier versions of this tool lack
+    initramfs script (was internal version label). Code unchanged.
+
+ -- Scrumpper <190908034+Scrumpper@users.noreply.github.com>  Sat, 24 Oct 2026 14:00:00 +0000
+
+h96-kernel-switch (8.0.0~r16) resolute; urgency=medium
+
+  * Initramfs hook copies one hex dumper only (gnuod, else hexdump; any
+    file over 1 MiB skipped): r15 copied Rust coreutils multicall binary
+    once per tool name (51 MB unpacked, uInitrd +23 MB). Scratch
+    mkinitramfs: +56 KB compressed, +79 KB unpacked over no hook.
+    init-bottom script uses busybox applets for sed, grep, cut, tr,
+    basename, uname and mount.
+  * staged.meta records offsets of build-id notes instead of size, mtime
+    and inode; init-bottom reads build ids of staged Image there, so
+    copy of rootfs into image (new inodes) keeps initramfs mount working
+    and changed staged Image leaves decision to boot unit.
+
+ -- Scrumpper <190908034+Scrumpper@users.noreply.github.com>  Sat, 24 Oct 2026 03:00:00 +0000
+
+h96-kernel-switch (8.0.0~r15) resolute; urgency=medium
+
+  * Initramfs init-bottom script and hook: before switch_root, running
+    build differs from staged Image (build ids in staged.meta, trusted
+    while size, mtime and inode of staged Image match), saved tree of
+    running build mounted read-only on real root, so modules PID1 loads
+    at startup (ipv6) and first modprobe@ units already match (box: 3
+    BTF validation failures per fallback boot on r14). Every uInitrd
+    that try builds carries it; modules unit stays second line.
+  * modprobe@.service drop-in: After=h96-kernel-switch-modules.service.
+  * list marks generation running by GNU build id of its Image; banner
+    only when build id is missing (identical banners marked both).
+  * snapshot-modules prints mounted-tree upgrade notice without --quiet
+    too. Manual: generation numbers reused after prune.
+
+ -- Scrumpper <190908034+Scrumpper@users.noreply.github.com>  Fri, 23 Oct 2026 23:00:00 +0000
+
+h96-kernel-switch (8.0.0~r14) resolute; urgency=medium
+
+  * Module tree per kernel build: two builds of one release share
+    /usr/lib/modules/KREL and package upgrade replaces it, so fallback to
+    earlier build loaded modules of newer build (BTF Invalid argument: no
+    WiFi, GPU, compositor). Tool saves tree of each staged build under
+    /var/lib/h96-kernel-switch/modules (hard links, keyed by Image sha256
+    and GNU build id): at try, from apt hook before dpkg
+    (/etc/apt/apt.conf.d/80h96-kernel-switch) and from postinst.
+  * New h96-kernel-switch-modules.service, before systemd-udevd and
+    systemd-modules-load: running build differs from package tree, saved
+    tree of running build mounted read-only over /usr/lib/modules/KREL.
+    Enabled with first saved tree.
+  * try of other build of in-boot release refused unless module tree of
+    in-boot build is saved or found in h96-kernel deb (apt cache, offline
+    repo). Initramfs built from package tree also while saved tree mounted.
+  * New commands snapshot-modules, repair-modules, modules-mount; status
+    prints module tree source per generation and WARN line when running
+    build has no matching tree (list prints WARN too); confirm, prune and
+    try drop saved trees no staged or /boot Image needs.
+
+ -- Scrumpper <190908034+Scrumpper@users.noreply.github.com>  Fri, 23 Oct 2026 18:00:00 +0000
+
+h96-kernel-switch (8.0.0~r13) resolute; urgency=medium
+
+  * try of release that is already default or running (or that current
+    Image embeds) makes new generation when staged Image or DTB differs
+    from in-boot generation; refused as before when both are equal.
+  * Boot guard and confirm tell trial boot from fallback by Image banner
+    (build number and date) when generations of same release differ
+    there, else by boot id and h96ks/cur as before.
+  * list prints generations under each release with roles default,
+    trial, trial-previous, rollback-target and running; status prints
+    generation lines; in-use and prune take generation names KREL.gN.
+
+ -- Scrumpper <190908034+Scrumpper@users.noreply.github.com>  Fri, 23 Oct 2026 06:00:00 +0000
+
+h96-kernel-switch (8.0.0~r12) resolute; urgency=medium
+
+  * New read-only command dtb: board DTB path, layout (plain, managed,
+    link), resolved file and recorded trial phase; h96-undervolt uses it.
+  * New command dtb-plain: managed DTB link back to plain file with same
+    content (temporary name, read-back, rename).
+  * try refuses while h96-undervolt trial is recorded, and DTB change
+    while h96-undervolt change is active (--keep-dtb accepted).
+  * rollback refuses when plain board DTB differs from DTB of target
+    generation; rollback --keep-dtb accepts it.
+
+ -- Scrumpper <190908034+Scrumpper@users.noreply.github.com>  Sun, 18 Oct 2026 21:00:00 +0000
+
+h96-kernel-switch (8.0.0~r11) resolute; urgency=medium
+
+  * Generation layout: Image, uInitrd and board DTB link through
+    /boot/h96ks/cur; one rename switches all three, so power loss
+    never leaves mixed set. First try converts plain-name links with
+    content-identical steps (hard links, DTB copy).
+  * Generations never change once in place; retry builds new one and
+    drops unused earlier attempts of same release.
+  * Confirm and rollback survive power loss: boot guard finishes them.
+  * Refuses Image whose embedded release differs from requested one.
+  * New read-only commands: default, in-use (used by kernel packages).
+  * Preset file keeps guard and timer disabled under systemctl preset-all
+    until first try enables them.
+
+ -- Scrumpper <190908034+Scrumpper@users.noreply.github.com>  Sun, 18 Oct 2026 18:00:00 +0000
+
+h96-kernel-switch (8.0.0~r10) resolute; urgency=medium
+
+  * Initial package: try, confirm, rollback, prune, list, status; boot
+    guard unit and auto-confirm timer, enabled by first try.
+
+ -- Scrumpper <190908034+Scrumpper@users.noreply.github.com>  Sun, 18 Oct 2026 12:00:00 +0000

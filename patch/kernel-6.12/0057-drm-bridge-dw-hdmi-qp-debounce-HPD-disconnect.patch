@@ -1,0 +1,125 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Scrumpper <190908034+Scrumpper@users.noreply.github.com>
+Date: Thu, 22 Oct 2026 08:39:14 -0700
+Subject: [PATCH 57/59] drm/bridge: dw-hdmi-qp: debounce HPD disconnect
+
+Some TVs drop HPD for about 0.5 s, twice, when they leave standby on a
+DPMS wake. Detect reported each low as a disconnect: EDID property and
+modes cleared, hotplug event, Xorg removed and re-added the RandR output
+and clients that query it during the gap crashed.
+
+Detect now reports a disconnect only after HPD has stayed low for
+hpd_debounce_ms (module parameter, default 1500, 0 = off; window starts
+at the first low detect sees). Inside the window detect keeps reporting
+connected and arms a delayed re-check at window end, which runs
+drm_helper_hpd_irq_event() and the platform follow-up on a change, so a
+real unplug still produces a status change and a hotplug event. Connects
+are reported at once. read_hpd() stays raw for DDC and the other
+internal users; a probe inside the window keeps the last EDID through
+the DDC-miss path of get_modes.
+
+Shape after ti-tfp410 (HOTPLUG_DEBOUNCE_MS), applied to the low edge only.
+---
+ drivers/gpu/drm/bridge/synopsys/dw-hdmi-qp.c | 54 ++++++++++++++++++++
+ 1 file changed, 54 insertions(+)
+
+diff --git a/drivers/gpu/drm/bridge/synopsys/dw-hdmi-qp.c b/drivers/gpu/drm/bridge/synopsys/dw-hdmi-qp.c
+index 058497637..fd3e6bdbc 100644
+--- a/drivers/gpu/drm/bridge/synopsys/dw-hdmi-qp.c
++++ b/drivers/gpu/drm/bridge/synopsys/dw-hdmi-qp.c
+@@ -59,6 +59,11 @@ static uint fmt_switch_mute_ms = 1000;
+ module_param(fmt_switch_mute_ms, uint, 0644);
+ MODULE_PARM_DESC(fmt_switch_mute_ms, "AVMUTE hold after an RGB/YCbCr output switch, ms (0 = off)");
+ 
++/* sinks drop HPD briefly on power-state changes; a short low is not an unplug */
++static uint hpd_debounce_ms = 1500;
++module_param(hpd_debounce_ms, uint, 0644);
++MODULE_PARM_DESC(hpd_debounce_ms, "Report HPD low as disconnect only after it lasts this long, ms (0 = off)");
++
+ #define DDC_CI_ADDR		0x37
+ #define DDC_SEGMENT_ADDR	0x30
+ 
+@@ -405,6 +410,9 @@ struct dw_hdmi_qp {
+ 	struct notifier_block hdcp2_nb;
+ 
+ 	struct delayed_work unmute_work;
++	struct delayed_work hpd_debounce_work;
++	unsigned long hpd_low_since;	/* jiffies | 1 of first low seen, 0 = none */
++	bool hpd_reported;		/* last detect result was connected */
+ 	bool sink_fmt_known;		/* sink_yuv = colour class the sink last received */
+ 	bool sink_yuv;
+ 
+@@ -3119,6 +3127,48 @@ static int dw_hdmi_qp_setup(struct dw_hdmi_qp *hdmi,
+ 	return 0;
+ }
+ 
++/* detect runs under mode_config.mutex: fields need no own lock */
++static enum drm_connector_status
++dw_hdmi_qp_hpd_debounce(struct dw_hdmi_qp *hdmi, enum drm_connector_status raw)
++{
++	unsigned int ms = READ_ONCE(hpd_debounce_ms);
++	unsigned long end;
++
++	if (raw == connector_status_connected || !ms || !hdmi->hpd_reported) {
++		hdmi->hpd_low_since = 0;
++		hdmi->hpd_reported = raw == connector_status_connected;
++		return raw;
++	}
++
++	if (!hdmi->hpd_low_since)
++		hdmi->hpd_low_since = jiffies | 1;
++	end = hdmi->hpd_low_since + msecs_to_jiffies(ms);
++	if (time_before(jiffies, end)) {
++		/* re-check at window end in case nothing else probes */
++		mod_delayed_work(system_wq, &hdmi->hpd_debounce_work, end - jiffies + 1);
++		return connector_status_connected;
++	}
++
++	hdmi->hpd_low_since = 0;
++	hdmi->hpd_reported = false;
++	return raw;
++}
++
++static void dw_hdmi_qp_hpd_debounce_work(struct work_struct *work)
++{
++	struct dw_hdmi_qp *hdmi = container_of(to_delayed_work(work), struct dw_hdmi_qp,
++					       hpd_debounce_work);
++
++	if (!hdmi->connector.dev)
++		return;
++
++	/* same follow-up as the platform HPD work on a status change */
++	if (drm_helper_hpd_irq_event(hdmi->connector.dev)) {
++		dw_hdmi_qp_handle_hpd(hdmi, hdmi->hpd_reported);
++		dw_hdmi_qp_cec_set_hpd(hdmi, hdmi->hpd_reported, true);
++	}
++}
++
+ static enum drm_connector_status
+ dw_hdmi_connector_detect(struct drm_connector *connector, bool force)
+ {
+@@ -3158,6 +3208,8 @@ dw_hdmi_connector_detect(struct drm_connector *connector, bool force)
+ 			result = connector_status_disconnected;
+ 	}
+ 
++	result = dw_hdmi_qp_hpd_debounce(hdmi, result);
++
+ out:
+ 	if (result == connector_status_connected) {
+ 		extcon_set_state_sync(hdmi->extcon, EXTCON_DISP_HDMI, true);
+@@ -5549,6 +5601,7 @@ static struct dw_hdmi_qp *dw_hdmi_qp_probe(struct platform_device *pdev,
+ 	}
+ 	INIT_WORK(&hdmi->flt_work, dw_hdmi_qp_flt_work);
+ 	INIT_DELAYED_WORK(&hdmi->unmute_work, dw_hdmi_qp_unmute_work);
++	INIT_DELAYED_WORK(&hdmi->hpd_debounce_work, dw_hdmi_qp_hpd_debounce_work);
+ 
+ 	return hdmi;
+ 
+@@ -5574,6 +5627,7 @@ static void dw_hdmi_qp_remove(struct dw_hdmi_qp *hdmi)
+ 	debugfs_remove(hdmi->debugfs_compat);
+ 	hdmi->debugfs_compat = NULL;
+ 	cancel_delayed_work_sync(&hdmi->unmute_work);
++	cancel_delayed_work_sync(&hdmi->hpd_debounce_work);
+ 	cancel_work_sync(&hdmi->flt_work);
+ 	flush_workqueue(hdmi->workqueue);
+ 	destroy_workqueue(hdmi->workqueue);

@@ -1,0 +1,467 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Scrumpper <190908034+Scrumpper@users.noreply.github.com>
+Date: Tue, 20 Oct 2026 07:02:35 -0700
+Subject: [PATCH 52/59] drm/panthor: memory usage in fdinfo
+
+Panthor fds on 6.12 print no memory lines in fdinfo. Steam ARM's
+renderer check (drm_fd_used) reads drm-total/drm-resident lines to tell
+a GPU client from an llvmpipe process that only probed the render node;
+without them every holder of renderD130 counts as a GPU client. nvtop
+and gputop read the same keys.
+
+Port the mainline memory accounting carried by the 6.1 rkr7.2
+backport: a gem .status hook (imported or backed by pages = resident)
+so drm_show_memory_stats() prints drm-{total,shared,active,resident}
+-memory, plus panthor-{resident,active}-memory for kernel BOs the file
+owns indirectly (group suspend buffers, sync objects, ring buffers,
+queue interfaces, profiling slots, tiler heap chunks and heap
+contexts). Heap pools keep a running size; group sizes are summed
+before the group becomes visible in the pool. drm_fdinfo_print_size()
+is not exported on 6.12, so the driver formats the two lines itself.
+panthor 1.5 port, 8.0p15.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01P6itje71iKPFBX7YKkfvRo
+---
+ drivers/gpu/drm/panthor/panthor_drv.c   | 32 ++++++++++++++
+ drivers/gpu/drm/panthor/panthor_gem.c   | 12 ++++++
+ drivers/gpu/drm/panthor/panthor_heap.c  | 54 +++++++++++++++++-------
+ drivers/gpu/drm/panthor/panthor_heap.h  |  2 +
+ drivers/gpu/drm/panthor/panthor_mmu.c   | 28 +++++++++++++
+ drivers/gpu/drm/panthor/panthor_mmu.h   |  3 ++
+ drivers/gpu/drm/panthor/panthor_sched.c | 55 +++++++++++++++++++++++++
+ drivers/gpu/drm/panthor/panthor_sched.h |  3 ++
+ 8 files changed, 174 insertions(+), 15 deletions(-)
+
+diff --git a/drivers/gpu/drm/panthor/panthor_drv.c b/drivers/gpu/drm/panthor/panthor_drv.c
+index a245e6568..ecf54fe71 100644
+--- a/drivers/gpu/drm/panthor/panthor_drv.c
++++ b/drivers/gpu/drm/panthor/panthor_drv.c
+@@ -1480,12 +1480,44 @@ static void panthor_gpu_show_fdinfo(struct panthor_device *ptdev,
+ 	drm_printf(p, "drm-curfreq-panthor:\t%lu Hz\n", ptdev->current_frequency);
+ }
+ 
++/* Same format as mainline drm_fdinfo_print_size() (not exported on 6.12). */
++static void panthor_fdinfo_print_size(struct drm_printer *p, const char *prefix,
++				      const char *stat, const char *region, u64 sz)
++{
++	const char *units[] = {"", " KiB", " MiB"};
++	unsigned int u;
++
++	for (u = 0; u < ARRAY_SIZE(units) - 1; u++) {
++		if (sz < SZ_1K)
++			break;
++		sz = div_u64(sz, SZ_1K);
++	}
++
++	drm_printf(p, "%s-%s-%s:\t%llu%s\n", prefix, stat, region, sz, units[u]);
++}
++
++static void panthor_show_internal_memory_stats(struct drm_printer *p, struct drm_file *file)
++{
++	const char *drv_name = file->minor->dev->driver->name;
++	struct panthor_file *pfile = file->driver_priv;
++	struct drm_memory_stats stats = {0};
++
++	panthor_fdinfo_gather_group_mem_info(pfile, &stats);
++	panthor_vm_heaps_sizes(pfile, &stats);
++
++	panthor_fdinfo_print_size(p, drv_name, "resident", "memory", stats.resident);
++	panthor_fdinfo_print_size(p, drv_name, "active", "memory", stats.active);
++}
++
+ static void panthor_show_fdinfo(struct drm_printer *p, struct drm_file *file)
+ {
+ 	struct drm_device *dev = file->minor->dev;
+ 	struct panthor_device *ptdev = container_of(dev, struct panthor_device, base);
+ 
+ 	panthor_gpu_show_fdinfo(ptdev, file->driver_priv, p);
++	panthor_show_internal_memory_stats(p, file);
++
++	drm_show_memory_stats(p, file);
+ }
+ 
+ static const struct file_operations panthor_drm_driver_fops = {
+diff --git a/drivers/gpu/drm/panthor/panthor_gem.c b/drivers/gpu/drm/panthor/panthor_gem.c
+index 09b318fb8..91e5311b1 100644
+--- a/drivers/gpu/drm/panthor/panthor_gem.c
++++ b/drivers/gpu/drm/panthor/panthor_gem.c
+@@ -142,6 +142,17 @@ panthor_gem_prime_export(struct drm_gem_object *obj, int flags)
+ 	return drm_gem_prime_export(obj, flags);
+ }
+ 
++static enum drm_gem_object_status panthor_gem_status(struct drm_gem_object *obj)
++{
++	struct panthor_gem_object *bo = to_panthor_bo(obj);
++	enum drm_gem_object_status res = 0;
++
++	if (drm_gem_is_imported(&bo->base.base) || bo->base.pages)
++		res |= DRM_GEM_OBJECT_RESIDENT;
++
++	return res;
++}
++
+ static const struct drm_gem_object_funcs panthor_gem_funcs = {
+ 	.free = panthor_gem_free_object,
+ 	.print_info = drm_gem_shmem_object_print_info,
+@@ -151,6 +162,7 @@ static const struct drm_gem_object_funcs panthor_gem_funcs = {
+ 	.vmap = drm_gem_shmem_object_vmap,
+ 	.vunmap = drm_gem_shmem_object_vunmap,
+ 	.mmap = panthor_gem_mmap,
++	.status = panthor_gem_status,
+ 	.export = panthor_gem_prime_export,
+ 	.vm_ops = &drm_gem_shmem_vm_ops,
+ };
+diff --git a/drivers/gpu/drm/panthor/panthor_heap.c b/drivers/gpu/drm/panthor/panthor_heap.c
+index 3796a9eb2..3bdf61c14 100644
+--- a/drivers/gpu/drm/panthor/panthor_heap.c
++++ b/drivers/gpu/drm/panthor/panthor_heap.c
+@@ -97,6 +97,9 @@ struct panthor_heap_pool {
+ 
+ 	/** @gpu_contexts: Buffer object containing the GPU heap contexts. */
+ 	struct panthor_kernel_bo *gpu_contexts;
++
++	/** @size: Size of all chunks across all heaps in the pool. */
++	atomic_t size;
+ };
+ 
+ static int panthor_heap_ctx_stride(struct panthor_device *ptdev)
+@@ -118,7 +121,7 @@ static void *panthor_get_heap_ctx(struct panthor_heap_pool *pool, int id)
+ 	       panthor_get_heap_ctx_offset(pool, id);
+ }
+ 
+-static void panthor_free_heap_chunk(struct panthor_vm *vm,
++static void panthor_free_heap_chunk(struct panthor_heap_pool *pool,
+ 				    struct panthor_heap *heap,
+ 				    struct panthor_heap_chunk *chunk)
+ {
+@@ -127,12 +130,13 @@ static void panthor_free_heap_chunk(struct panthor_vm *vm,
+ 	heap->chunk_count--;
+ 	mutex_unlock(&heap->lock);
+ 
++	atomic_sub(heap->chunk_size, &pool->size);
++
+ 	panthor_kernel_bo_destroy(chunk->bo);
+ 	kfree(chunk);
+ }
+ 
+-static int panthor_alloc_heap_chunk(struct panthor_device *ptdev,
+-				    struct panthor_vm *vm,
++static int panthor_alloc_heap_chunk(struct panthor_heap_pool *pool,
+ 				    struct panthor_heap *heap,
+ 				    bool initial_chunk)
+ {
+@@ -144,7 +148,7 @@ static int panthor_alloc_heap_chunk(struct panthor_device *ptdev,
+ 	if (!chunk)
+ 		return -ENOMEM;
+ 
+-	chunk->bo = panthor_kernel_bo_create(ptdev, vm, heap->chunk_size,
++	chunk->bo = panthor_kernel_bo_create(pool->ptdev, pool->vm, heap->chunk_size,
+ 					     DRM_PANTHOR_BO_NO_MMAP,
+ 					     DRM_PANTHOR_VM_BIND_OP_MAP_NOEXEC,
+ 					     PANTHOR_VM_KERNEL_AUTO_VA);
+@@ -180,6 +184,8 @@ static int panthor_alloc_heap_chunk(struct panthor_device *ptdev,
+ 	heap->chunk_count++;
+ 	mutex_unlock(&heap->lock);
+ 
++	atomic_add(heap->chunk_size, &pool->size);
++
+ 	return 0;
+ 
+ err_destroy_bo:
+@@ -191,17 +197,16 @@ static int panthor_alloc_heap_chunk(struct panthor_device *ptdev,
+ 	return ret;
+ }
+ 
+-static void panthor_free_heap_chunks(struct panthor_vm *vm,
++static void panthor_free_heap_chunks(struct panthor_heap_pool *pool,
+ 				     struct panthor_heap *heap)
+ {
+ 	struct panthor_heap_chunk *chunk, *tmp;
+ 
+ 	list_for_each_entry_safe(chunk, tmp, &heap->chunks, node)
+-		panthor_free_heap_chunk(vm, heap, chunk);
++		panthor_free_heap_chunk(pool, heap, chunk);
+ }
+ 
+-static int panthor_alloc_heap_chunks(struct panthor_device *ptdev,
+-				     struct panthor_vm *vm,
++static int panthor_alloc_heap_chunks(struct panthor_heap_pool *pool,
+ 				     struct panthor_heap *heap,
+ 				     u32 chunk_count)
+ {
+@@ -209,7 +214,7 @@ static int panthor_alloc_heap_chunks(struct panthor_device *ptdev,
+ 	u32 i;
+ 
+ 	for (i = 0; i < chunk_count; i++) {
+-		ret = panthor_alloc_heap_chunk(ptdev, vm, heap, true);
++		ret = panthor_alloc_heap_chunk(pool, heap, true);
+ 		if (ret)
+ 			return ret;
+ 	}
+@@ -226,7 +231,7 @@ panthor_heap_destroy_locked(struct panthor_heap_pool *pool, u32 handle)
+ 	if (!heap)
+ 		return -EINVAL;
+ 
+-	panthor_free_heap_chunks(pool->vm, heap);
++	panthor_free_heap_chunks(pool, heap);
+ 	mutex_destroy(&heap->lock);
+ 	kfree(heap);
+ 	return 0;
+@@ -308,8 +313,7 @@ int panthor_heap_create(struct panthor_heap_pool *pool,
+ 	heap->max_chunks = max_chunks;
+ 	heap->target_in_flight = target_in_flight;
+ 
+-	ret = panthor_alloc_heap_chunks(pool->ptdev, vm, heap,
+-					initial_chunk_count);
++	ret = panthor_alloc_heap_chunks(pool, heap, initial_chunk_count);
+ 	if (ret)
+ 		goto err_free_heap;
+ 
+@@ -342,7 +346,7 @@ int panthor_heap_create(struct panthor_heap_pool *pool,
+ 	return id;
+ 
+ err_free_heap:
+-	panthor_free_heap_chunks(pool->vm, heap);
++	panthor_free_heap_chunks(pool, heap);
+ 	mutex_destroy(&heap->lock);
+ 	kfree(heap);
+ 
+@@ -389,6 +393,7 @@ int panthor_heap_return_chunk(struct panthor_heap_pool *pool,
+ 			removed = chunk;
+ 			list_del(&chunk->node);
+ 			heap->chunk_count--;
++			atomic_sub(heap->chunk_size, &pool->size);
+ 			break;
+ 		}
+ 	}
+@@ -466,7 +471,7 @@ int panthor_heap_grow(struct panthor_heap_pool *pool,
+ 	 * further jobs in this queue fail immediately instead of having to
+ 	 * wait for the job timeout.
+ 	 */
+-	ret = panthor_alloc_heap_chunk(pool->ptdev, pool->vm, heap, false);
++	ret = panthor_alloc_heap_chunk(pool, heap, false);
+ 	if (ret)
+ 		goto out_unlock;
+ 
+@@ -560,6 +565,8 @@ panthor_heap_pool_create(struct panthor_device *ptdev, struct panthor_vm *vm)
+ 	if (ret)
+ 		goto err_destroy_pool;
+ 
++	atomic_add(pool->gpu_contexts->obj->size, &pool->size);
++
+ 	return pool;
+ 
+ err_destroy_pool:
+@@ -594,8 +601,10 @@ void panthor_heap_pool_destroy(struct panthor_heap_pool *pool)
+ 	xa_for_each(&pool->xa, i, heap)
+ 		drm_WARN_ON(&pool->ptdev->base, panthor_heap_destroy_locked(pool, i));
+ 
+-	if (!IS_ERR_OR_NULL(pool->gpu_contexts))
++	if (!IS_ERR_OR_NULL(pool->gpu_contexts)) {
++		atomic_sub(pool->gpu_contexts->obj->size, &pool->size);
+ 		panthor_kernel_bo_destroy(pool->gpu_contexts);
++	}
+ 
+ 	/* Reflects the fact the pool has been destroyed. */
+ 	pool->vm = NULL;
+@@ -603,3 +612,18 @@ void panthor_heap_pool_destroy(struct panthor_heap_pool *pool)
+ 
+ 	panthor_heap_pool_put(pool);
+ }
++
++/**
++ * panthor_heap_pool_size() - Get a heap pool's total size
++ * @pool: Pool whose total chunks size to return
++ *
++ * Returns the aggregated size of all chunks for all heaps in the pool
++ *
++ */
++size_t panthor_heap_pool_size(struct panthor_heap_pool *pool)
++{
++	if (!pool)
++		return 0;
++
++	return atomic_read(&pool->size);
++}
+diff --git a/drivers/gpu/drm/panthor/panthor_heap.h b/drivers/gpu/drm/panthor/panthor_heap.h
+index 25a5f2bba..e3358d4e8 100644
+--- a/drivers/gpu/drm/panthor/panthor_heap.h
++++ b/drivers/gpu/drm/panthor/panthor_heap.h
+@@ -27,6 +27,8 @@ struct panthor_heap_pool *
+ panthor_heap_pool_get(struct panthor_heap_pool *pool);
+ void panthor_heap_pool_put(struct panthor_heap_pool *pool);
+ 
++size_t panthor_heap_pool_size(struct panthor_heap_pool *pool);
++
+ int panthor_heap_grow(struct panthor_heap_pool *pool,
+ 		      u64 heap_gpu_va,
+ 		      u32 renderpasses_in_flight,
+diff --git a/drivers/gpu/drm/panthor/panthor_mmu.c b/drivers/gpu/drm/panthor/panthor_mmu.c
+index ed769749e..86bfdea38 100644
+--- a/drivers/gpu/drm/panthor/panthor_mmu.c
++++ b/drivers/gpu/drm/panthor/panthor_mmu.c
+@@ -1960,6 +1960,34 @@ struct panthor_heap_pool *panthor_vm_get_heap_pool(struct panthor_vm *vm, bool c
+ 	return pool;
+ }
+ 
++/**
++ * panthor_vm_heaps_sizes() - Calculate size of all heap chunks across all
++ * heaps over all the heap pools in a VM
++ * @pfile: File.
++ * @stats: Memory stats to be updated.
++ *
++ * Calculate all heap chunk sizes in all heap pools bound to a VM. If the VM
++ * is active, record the size as active as well.
++ */
++void panthor_vm_heaps_sizes(struct panthor_file *pfile, struct drm_memory_stats *stats)
++{
++	struct panthor_vm *vm;
++	unsigned long i;
++
++	if (!pfile->vms)
++		return;
++
++	xa_lock(&pfile->vms->xa);
++	xa_for_each(&pfile->vms->xa, i, vm) {
++		size_t size = panthor_heap_pool_size(vm->heaps.pool);
++
++		stats->resident += size;
++		if (vm->as.id >= 0)
++			stats->active += size;
++	}
++	xa_unlock(&pfile->vms->xa);
++}
++
+ static u64 mair_to_memattr(u64 mair)
+ {
+ 	u64 memattr = 0;
+diff --git a/drivers/gpu/drm/panthor/panthor_mmu.h b/drivers/gpu/drm/panthor/panthor_mmu.h
+index 8d21e83d8..fc2746371 100644
+--- a/drivers/gpu/drm/panthor/panthor_mmu.h
++++ b/drivers/gpu/drm/panthor/panthor_mmu.h
+@@ -9,6 +9,7 @@
+ 
+ struct drm_exec;
+ struct drm_sched_job;
++struct drm_memory_stats;
+ struct panthor_gem_object;
+ struct panthor_heap_pool;
+ struct panthor_vm;
+@@ -37,6 +38,8 @@ int panthor_vm_flush_all(struct panthor_vm *vm);
+ struct panthor_heap_pool *
+ panthor_vm_get_heap_pool(struct panthor_vm *vm, bool create);
+ 
++void panthor_vm_heaps_sizes(struct panthor_file *pfile, struct drm_memory_stats *stats);
++
+ struct panthor_vm *panthor_vm_get(struct panthor_vm *vm);
+ void panthor_vm_put(struct panthor_vm *vm);
+ struct panthor_vm *panthor_vm_create(struct panthor_device *ptdev, bool for_mcu,
+diff --git a/drivers/gpu/drm/panthor/panthor_sched.c b/drivers/gpu/drm/panthor/panthor_sched.c
+index 4663af3b1..e8d3048f7 100644
+--- a/drivers/gpu/drm/panthor/panthor_sched.c
++++ b/drivers/gpu/drm/panthor/panthor_sched.c
+@@ -639,6 +639,9 @@ struct panthor_group {
+ 		 * callback and job post-completion processing function
+ 		 */
+ 		spinlock_t lock;
++
++		/** @fdinfo.kbo_sizes: Aggregate size of private kernel BO's held by the group. */
++		size_t kbo_sizes;
+ 	} fdinfo;
+ 
+ 	/** @state: Group state. */
+@@ -3383,6 +3386,29 @@ group_create_queue(struct panthor_group *group,
+ 	return ERR_PTR(ret);
+ }
+ 
++static void add_group_kbo_sizes(struct panthor_device *ptdev,
++				struct panthor_group *group)
++{
++	struct panthor_queue *queue;
++	int i;
++
++	if (drm_WARN_ON(&ptdev->base, IS_ERR_OR_NULL(group)))
++		return;
++	if (drm_WARN_ON(&ptdev->base, ptdev != group->ptdev))
++		return;
++
++	group->fdinfo.kbo_sizes += group->suspend_buf->obj->size;
++	group->fdinfo.kbo_sizes += group->protm_suspend_buf->obj->size;
++	group->fdinfo.kbo_sizes += group->syncobjs->obj->size;
++
++	for (i = 0; i < group->queue_count; i++) {
++		queue = group->queues[i];
++		group->fdinfo.kbo_sizes += queue->ringbuf->obj->size;
++		group->fdinfo.kbo_sizes += queue->iface.mem->obj->size;
++		group->fdinfo.kbo_sizes += queue->profiling.slots->obj->size;
++	}
++}
++
+ #define MAX_GROUPS_PER_POOL		128
+ 
+ int panthor_group_create(struct panthor_file *pfile,
+@@ -3493,6 +3519,8 @@ int panthor_group_create(struct panthor_file *pfile,
+ 
+ 	group->idle_queues = GENMASK(group->queue_count - 1, 0);
+ 
++	add_group_kbo_sizes(ptdev, group);
++
+ 	ret = xa_alloc(&gpool->xa, &gid, group, XA_LIMIT(1, MAX_GROUPS_PER_POOL), GFP_KERNEL);
+ 	if (ret)
+ 		goto err_put_group;
+@@ -3620,6 +3648,33 @@ void panthor_group_pool_destroy(struct panthor_file *pfile)
+ 	pfile->groups = NULL;
+ }
+ 
++/**
++ * panthor_fdinfo_gather_group_mem_info() - Retrieve aggregate size of all private kernel BO's
++ * belonging to all the groups owned by an open Panthor file
++ * @pfile: File.
++ * @stats: Memory statistics to be updated.
++ *
++ */
++void
++panthor_fdinfo_gather_group_mem_info(struct panthor_file *pfile,
++				     struct drm_memory_stats *stats)
++{
++	struct panthor_group_pool *gpool = pfile->groups;
++	struct panthor_group *group;
++	unsigned long i;
++
++	if (IS_ERR_OR_NULL(gpool))
++		return;
++
++	xa_lock(&gpool->xa);
++	xa_for_each(&gpool->xa, i, group) {
++		stats->resident += group->fdinfo.kbo_sizes;
++		if (group->csg_id >= 0)
++			stats->active += group->fdinfo.kbo_sizes;
++	}
++	xa_unlock(&gpool->xa);
++}
++
+ static void job_release(struct kref *ref)
+ {
+ 	struct panthor_job *job = container_of(ref, struct panthor_job, refcount);
+diff --git a/drivers/gpu/drm/panthor/panthor_sched.h b/drivers/gpu/drm/panthor/panthor_sched.h
+index 5ae6b4bde..e650a445c 100644
+--- a/drivers/gpu/drm/panthor/panthor_sched.h
++++ b/drivers/gpu/drm/panthor/panthor_sched.h
+@@ -9,6 +9,7 @@ struct dma_fence;
+ struct drm_file;
+ struct drm_gem_object;
+ struct drm_sched_job;
++struct drm_memory_stats;
+ struct drm_panthor_group_create;
+ struct drm_panthor_queue_create;
+ struct drm_panthor_group_get_state;
+@@ -36,6 +37,8 @@ void panthor_job_update_resvs(struct drm_exec *exec, struct drm_sched_job *job);
+ 
+ int panthor_group_pool_create(struct panthor_file *pfile);
+ void panthor_group_pool_destroy(struct panthor_file *pfile);
++void panthor_fdinfo_gather_group_mem_info(struct panthor_file *pfile,
++					  struct drm_memory_stats *stats);
+ 
+ int panthor_sched_init(struct panthor_device *ptdev);
+ void panthor_sched_unplug(struct panthor_device *ptdev);

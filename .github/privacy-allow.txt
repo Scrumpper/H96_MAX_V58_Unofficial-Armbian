@@ -1,0 +1,5 @@
+# privacy grep allowlist: path:match pairs (synthetic test vectors, packaged defaults)
+tools/h96-selftest.py:172.16.5.50
+tools/h96-selftest.py:172.16.5.9
+tools/h96-selftest.py:10.0.0.7
+build/userland/pkgs/h96-base/root/usr/lib/armbian/armbian-firstlogin:10.42.0.1

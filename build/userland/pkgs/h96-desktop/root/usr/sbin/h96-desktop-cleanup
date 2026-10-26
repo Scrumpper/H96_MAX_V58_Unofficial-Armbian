@@ -1,0 +1,95 @@
+#!/bin/bash
+# h96-desktop-cleanup: undo H96 desktop hook changes after KDE or GNOME is removed, and re-arm the hooks
+# so a later install is configured again. Shared pieces (PipeWire, Bluetooth, GPU libraries) stay.
+#   --check  apt DPkg::Post-Invoke: queue h96-desktop-cleanup.service when a desktop is gone (fast, no apt)
+#   --run    the service: wait for apt to go idle, then clean up
+set -u
+KDE_MARKS="/var/lib/h96-kde-configure-done /etc/lightdm/lightdm.conf.d/99-h96-kde.conf /etc/xdg/kwinrc"
+kde_gone()   { [ ! -x /usr/bin/plasmashell ] && for f in $KDE_MARKS; do [ -e "$f" ] && return 0; done; return 1; }
+gnome_gone() { [ ! -x /usr/bin/gnome-shell ] && [ -e /var/lib/h96-gnome-configure-done ]; }
+# X/Wayland sessions of another desktop (LightDM's own lightdm-xsession entry does not count)
+other_sessions() { ls /usr/share/xsessions/*.desktop /usr/share/wayland-sessions/*.desktop 2>/dev/null | grep -qv '/lightdm-xsession\.desktop$'; }
+
+case "${1:-}" in
+  --check)
+    if kde_gone || gnome_gone; then systemctl start --no-block h96-desktop-cleanup.service 2>/dev/null; fi
+    exit 0 ;;
+  --run) ;;
+  -h|--help|*) echo "usage: h96-desktop-cleanup --run   undo H96 desktop setup after desktop removal (run by apt hook)"; exit 0 ;;
+esac
+[ "$(id -u)" = 0 ] || { echo "must run as root" >&2; exit 1; }
+exec >> /var/log/h96-desktop-cleanup.log 2>&1
+echo "=== h96-desktop-cleanup $(date -Is) ==="
+
+# removal runs several apt steps: wait until dpkg/apt locks stay free for about 20 s
+idle=0
+for _ in $(seq 1 720); do
+  if fuser /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock /var/lib/apt/lists/lock >/dev/null 2>&1; then idle=0; else idle=$((idle + 1)); fi
+  [ "$idle" -ge 4 ] && break
+  sleep 5
+done
+
+installed() { dpkg-query -W -f='${Status}' "$1" 2>/dev/null | grep -q '^install ok installed$'; }
+# purge only the named packages; skip if apt would remove anything else
+purge_exact() {
+  local p want=() n
+  for p in "$@"; do installed "$p" && want+=("$p"); done
+  [ ${#want[@]} -gt 0 ] || return 0
+  n=$(apt-get -s purge --no-auto-remove "${want[@]}" 2>/dev/null | grep -c '^Purg ')
+  if [ "$n" -eq ${#want[@]} ]; then
+    DEBIAN_FRONTEND=noninteractive apt-get purge -y --no-auto-remove "${want[@]}" && echo "  purged: ${want[*]}"
+  else
+    echo "  kept ${want[*]}: purge would remove $n packages"
+  fi
+}
+
+if kde_gone; then
+  echo "[kde] plasmashell gone: removing H96 KDE setup"
+  # LightDM only if no other X session is left to log into
+  if ! other_sessions; then
+    systemctl disable lightdm.service 2>/dev/null
+    purge_exact lightdm lightdm-gtk-greeter lightdm-autologin-greeter
+    [ "$(cat /etc/X11/default-display-manager 2>/dev/null)" = /usr/sbin/lightdm ] && rm -f /etc/X11/default-display-manager
+    case "$(readlink /etc/systemd/system/display-manager.service)" in *lightdm*) rm -f /etc/systemd/system/display-manager.service ;; esac
+    rm -f /etc/X11/xorg.conf.d/20-h96-display.conf /var/lib/h96-lightdm-configure-done \
+          /etc/lightdm/lightdm.conf.d/60-h96-greeter.conf
+  else
+    # LightDM stays for another session: no default session pointing at removed Plasma X11
+    [ -e /usr/share/xsessions/plasmax11.desktop ] || \
+      sed -i '/^user-session=plasmax11$/d' /etc/lightdm/lightdm.conf.d/*.conf 2>/dev/null
+  fi
+  purge_exact kwin-x11 plasma-session-x11
+  rm -f /etc/lightdm/lightdm.conf.d/99-h96-kde.conf \
+        /etc/lightdm/lightdm.conf.d/70-h96-autologin.conf /etc/xdg/kwinrc
+  # kwin_x11 wrapper and its diversion
+  if dpkg-divert --list /usr/bin/kwin_x11 2>/dev/null | grep -q kwin_x11.real; then
+    [ -e /usr/bin/kwin_x11.real ] || rm -f /usr/bin/kwin_x11
+    dpkg-divert --local --rename --remove /usr/bin/kwin_x11 >/dev/null 2>&1 && echo "  kwin_x11 diversion removed"
+  fi
+  sed -i '/^QT_XCB_GL_INTEGRATION=xcb_egl$/d; /^KWIN_COMPOSE=O2ES$/d' /etc/environment
+  # SDDM and power-profiles-daemon were masked for LightDM and the H96 profile service
+  [ "$(readlink /etc/systemd/system/sddm.service)" = /dev/null ] && systemctl unmask sddm.service 2>/dev/null
+  /usr/sbin/h96-dm-handoff --restore kde
+  installed power-profiles-daemon || systemctl unmask power-profiles-daemon.service 2>/dev/null
+  rm -f /var/lib/h96-kde-configure-done
+  # RemainAfterExit units stay active, so a same-boot reinstall would not run them again
+  systemctl stop h96-lightdm-configure.service 2>/dev/null
+  systemctl daemon-reload
+  systemctl start h96-kde-configure.path h96-lightdm-configure.path 2>/dev/null
+  echo "[kde] done; hooks re-armed"
+fi
+
+if gnome_gone; then
+  echo "[gnome] gnome-shell gone: re-arming GNOME hook"
+  rm -f /var/lib/h96-gnome-configure-done
+  /usr/sbin/h96-dm-handoff --restore gnome
+  systemctl stop h96-gnome-configure.service 2>/dev/null
+  systemctl start h96-gnome-configure.path 2>/dev/null
+  echo "[gnome] done"
+fi
+
+# no desktop left: boot to console
+if [ ! -x /usr/bin/plasmashell ] && [ ! -x /usr/bin/gnome-shell ] && ! other_sessions; then
+  [ "$(systemctl get-default)" = graphical.target ] && systemctl set-default multi-user.target && echo "  default target: multi-user"
+fi
+echo "=== cleanup finished $(date -Is) ==="

@@ -1,0 +1,165 @@
+#!/bin/bash
+# Wake-on-LAN toggle: ethtool now, h96-wol.service at boot, NetworkManager only for profiles saved on disk.
+# Installed but off: owner runs `h96-wol on` to opt in.
+#
+# NM keeps automatic "Wired connection 1" in memory; `nmcli con modify` would write it to
+# /etc/netplan/90-NM-<uuid>.yaml, so in-memory profiles are never modified. Saved profiles get
+# wake-on-lan set because NM applies their value at each activation; off uses `none`, since
+# `ignore` and `default` leave stale `wakeonlan: true` in netplan mirror (box test 2026-09-27).
+set -uo pipefail
+
+IF=eth0
+UNIT=h96-wol.service
+SYSNET="${H96_SYSNET:-/sys/class/net}"   # test override
+
+err(){ printf '%s\n' "$*" >&2; }
+need_root(){
+  [ "$(id -u)" -eq 0 ] && return 0
+  err "This action changes ethtool, boot unit and NetworkManager state; re-run as root (sudo $0 $1)."
+  exit 1
+}
+
+usage(){
+cat <<'HLP'
+h96-wol status|on|off|--help
+
+status  first line `wol: on` or `wol: off`: ethtool Wake-on (root), else
+        h96-wol.service boot state; then details: boot unit, eth0 address
+        in use and permanent (hardware) address, wired NetworkManager
+        profile, whether it is saved on disk, its cloned-mac-address
+on      ethtool -s eth0 wol g at once, enable h96-wol.service (sets it
+        at each boot), wake-on-lan=magic on saved wired profile; when
+        address in use differs from permanent address, saved profile gets
+        cloned-mac-address=permanent (address changes at next connection,
+        DHCP may hand out new IP), in-memory profile only a warning
+off     ethtool -s eth0 wol d at once, disable h96-wol.service,
+        wake-on-lan=none on saved wired profile
+
+NetworkManager profile kept in memory only (automatic "Wired connection 1")
+is never modified, so no network file is written for it.
+Magic packet must name address in use (status line "eth0 address").
+Wake from powered-off box untested.
+HLP
+}
+
+# ACTIVE:UUID:FILENAME of each 802-3-ethernet profile, active first
+wired_rows(){
+  nmcli -t -f ACTIVE,UUID,TYPE,FILENAME con show 2>/dev/null \
+    | awk -F: '$3=="802-3-ethernet"{print $1":"$2":"$4}' | sort -r
+}
+
+# saved: keyfile under /etc, profile generated from netplan, or netplan file naming the uuid
+is_saved(){
+  case "$2" in /etc/*|/run/NetworkManager/system-connections/netplan-*) return 0 ;; esac
+  grep -qsF "uuid: \"$1\"" /etc/netplan/*.yaml
+}
+
+netplan_mirror_file(){
+  grep -lsF "uuid: \"$1\"" /etc/netplan/*.yaml | head -n1
+}
+
+# uuid of active wired profile if saved, else first saved wired profile; empty if none
+saved_wired(){
+  local u f
+  while IFS=: read -r _ u f; do
+    [ -n "$u" ] && is_saved "$u" "$f" && { printf '%s' "$u"; return 0; }
+  done < <(wired_rows)
+  return 0
+}
+
+# Wake-on mode letters of $IF ("Wake-on:" line, not "Supports Wake-on:"); empty without root
+wake_on(){
+  ethtool "$IF" 2>/dev/null | sed -n 's/^[[:space:]]*Wake-on:[[:space:]]*\([a-z]*\).*/\1/p' | head -n1
+}
+
+# address in use, permanent address from ethtool -P (empty: none stored in hardware)
+cur_mac(){ cat "$SYSNET/$IF/address" 2>/dev/null; }
+perm_mac(){
+  local p; p=$(ethtool -P "$IF" 2>/dev/null | sed -n 's/^Permanent address:[[:space:]]*//p' | head -n1)
+  [ "$p" = 00:00:00:00:00:00 ] && p=""
+  printf '%s' "$p"
+}
+# second hex digit with bit 1 set: locally administered (random, cloned or set by boot loader)
+laa(){ case "${1:1:1}" in [2367abefABEF]) echo " (locally administered)" ;; esac; }
+
+mac_report(){
+  local c p; c=$(cur_mac); p=$(perm_mac)
+  echo "$IF address: ${c:-unknown}$(laa "$c")"
+  if [ -n "$p" ]; then echo "$IF permanent address: $p"
+  else echo "$IF permanent address: none reported (ethtool -P)"; fi
+  if [ -n "$c" ] && [ -n "$p" ] && [ "$c" != "$p" ]; then
+    echo "  address in use differs from permanent address: magic packet must name $c"
+  fi
+}
+
+status(){
+  local w s; w=$(wake_on); s=$(systemctl is-enabled "$UNIT" 2>/dev/null) || true
+  # stable first line for h96-backup: ethtool when readable, else boot unit
+  if [ -n "$w" ]; then
+    case "$w" in *g*) echo "wol: on" ;; *) echo "wol: off" ;; esac
+    echo "$IF Wake-on: $w"
+  else
+    [ "$s" = enabled ] && echo "wol: on" || echo "wol: off"
+    local why=unavailable; [ "$(id -u)" -eq 0 ] || why="unknown (needs root)"
+    echo "$IF Wake-on: $why; wol line follows boot unit"
+  fi
+  echo "boot unit $UNIT: ${s:-unknown}"
+  mac_report
+  local u f n
+  while IFS=: read -r _ u f; do
+    [ -n "$u" ] || continue
+    n=$(nmcli -g connection.id con show "$u" 2>/dev/null)
+    if is_saved "$u" "$f"; then
+      echo "profile '$n' (saved${f:+ $f}): $(nmcli -g 802-3-ethernet.wake-on-lan con show "$u" 2>/dev/null)"
+      echo "  cloned-mac-address: $(cmac "$u")"
+      local mf; mf=$(netplan_mirror_file "$u")
+      if [ -n "$mf" ]; then
+        grep -q '^ *wakeonlan: true$' "$mf" 2>/dev/null \
+          && echo "  netplan mirror $mf: wakeonlan: true" || echo "  netplan mirror $mf: wakeonlan not set"
+      fi
+    else
+      echo "profile '$n' (in memory, not modified): $(nmcli -g 802-3-ethernet.wake-on-lan con show "$u" 2>/dev/null)"
+      echo "  cloned-mac-address: $(cmac "$u")"
+    fi
+  done < <(wired_rows)
+  [ -n "$(wired_rows)" ] || echo "no wired (802-3-ethernet) profile found"
+}
+
+cmac(){ local v; v=$(nmcli -g 802-3-ethernet.cloned-mac-address con show "$1" 2>/dev/null); echo "${v:-unset (NetworkManager default)}"; }
+
+# on: magic packets match only address in use; saved profile follows permanent address
+mac_on(){  # $1 saved uuid or empty
+  local c p; c=$(cur_mac); p=$(perm_mac)
+  [ -n "$c" ] || return 0
+  if [ -z "$p" ]; then
+    echo "note: no permanent address reported; magic packet must name $c (may change at next boot)"
+  elif [ "$c" != "$p" ]; then
+    if [ -n "$1" ]; then
+      nmcli con modify "$1" 802-3-ethernet.cloned-mac-address permanent
+      echo "saved profile: cloned-mac-address permanent; address changes from $c to $p at next connection (DHCP may give new IP)"
+    else
+      echo "warning: address in use $c differs from permanent $p and wired profile is kept in memory (not modified); magic packet must name $c"
+    fi
+  fi
+}
+
+apply(){  # $1 ethtool mode, $2 systemctl verb, $3 nm value
+  ethtool -s "$IF" wol "$1" 2>/dev/null || err "ethtool -s $IF wol $1 failed"
+  systemctl "$2" "$UNIT" >/dev/null 2>&1 || err "systemctl $2 $UNIT failed"
+  local u; u=$(saved_wired)
+  if [ -n "$u" ]; then
+    nmcli con modify "$u" 802-3-ethernet.wake-on-lan "$3"
+  else
+    echo "no saved wired profile; NetworkManager not changed"
+  fi
+  [ "$1" = g ] && mac_on "$u"
+  return 0
+}
+
+case "${1:---help}" in
+  status) status ;;
+  on) need_root on; apply g enable magic; status ;;
+  off) need_root off; apply d disable none; status ;;
+  --help|-h) usage ;;
+  *) usage >&2; exit 2 ;;
+esac

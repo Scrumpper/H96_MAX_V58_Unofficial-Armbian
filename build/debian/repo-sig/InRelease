@@ -1,0 +1,22 @@
+-----BEGIN PGP SIGNED MESSAGE-----
+Hash: SHA256
+
+Origin: H96 Max V58
+Label: H96 offline packages
+Suite: ./
+Architectures: arm64 all
+Date: Thu, 01 Jan 2026 00:00:00 UTC
+Description: Packages the H96 Max V58 image installs on first boot without network
+MD5Sum:
+ dca5cc72d5436b5068b7ecb65a782ded 206326 Packages
+ e1ad6a75f0dfbd0c50736775ad12584e 65065 Packages.gz
+SHA256:
+ 56f0f6d3bc00e58ff36d9f8e33dcf076119208d63a2ab061657948ff48627455 206326 Packages
+ 39f004b292f3f1e191f4424b54b98ff07debbc00af9862144a9e084070770946 65065 Packages.gz
+-----BEGIN PGP SIGNATURE-----
+
+iHUEARYIAB0WIQSX5dqQoEbs3HzlY3Exhp7RZqbZ7AUCaVW5PAAKCRAxhp7RZqbZ
+7BkjAP9sKhqzWimP4hZP/pKXotAig7rxoPIIUkOOj2UxlTI9rQD+MyuQpZ7WtZWV
+4JWmygU484BPkSALuUMByruuNgwL2gI=
+=YdEW
+-----END PGP SIGNATURE-----

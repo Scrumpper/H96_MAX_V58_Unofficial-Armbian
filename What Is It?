@@ -1,23 +1,21 @@
-# [UNOFFICIAL] H96 Max V58 · Armbian on RK3588 · open GPU stack · v4.0
+# [UNOFFICIAL] H96 Max V58 · Armbian on RK3588 · open GPU stack · v8.0
 
-> **Device:** H96 Max V58 (Rockchip RK3588, 8GB RAM, 64GB eMMC)
-> **Status:** Unofficial, community built, not affiliated with the Armbian project
+> **Device:** H96 Max V58 (Rockchip RK3588, 8 GB RAM, 64 GB eMMC)
+> **Status:** Unofficial, community built, not affiliated with Armbian project
+> **Releases:** v8.0, Ubuntu image and Debian Edition image, on [Releases page](https://github.com/Scrumpper/H96_MAX_V58_Unofficial-Armbian/releases).
 
 ---
 
 ## What is this
 
-A ready-to-flash Armbian image for the H96 Max V58 Android TV box, plus the board
-sources that image is built from. The box stops being a locked-down Android player and
-becomes an ordinary arm64 Linux machine.
+Armbian image for H96 Max V58 Android TV box, plus board sources image is built from.
+Box stops being locked Android player and becomes arm64 Linux machine.
 
-The image boots headless with SSH on first power-on. You choose a desktop afterwards,
-or you never install one and run it as a small always-on server.
+Image boots to text console with SSH. Desktop installs afterwards on demand, or box runs
+as headless server.
 
-The centrepiece is the GPU. This build does not use the closed vendor Mali blob. It runs
-the open **Panthor** kernel driver with **Mesa**, so the desktop composites on the
-Mali-G610 itself instead of falling back to software rendering, Vulkan functions Vulkan
-(PanVK 1.4), and video decodes on the Rockchip VPU.
+GPU runs open **Panthor** kernel driver with **Mesa**, not closed vendor Mali blob: desktop
+composites on Mali-G610, Vulkan runs on PanVK, and video decodes on Rockchip VPU.
 
 ---
 
@@ -27,16 +25,33 @@ Mali-G610 itself instead of falling back to software rendering, Vulkan functions
 |---|---|
 | SoC | Rockchip RK3588 |
 | CPU | 4x Cortex-A76 up to 2208 MHz, 4x Cortex-A55 up to 1800 MHz |
-| GPU | ARM Mali-G610 MC4, open Panthor driver + Mesa 26.1.4 |
+| GPU | ARM Mali-G610 MC4, open Panthor driver + Mesa |
 | RAM | 8 GB |
 | Storage | 64 GB eMMC |
-| Display | HDMI 2.1 (DW-HDMI-QP) |
+| Display | HDMI0 (DW-HDMI-QP), one output |
 | Wired network | Gigabit Ethernet (RTL8211F) |
 | Wireless | Broadcom BCM43752 / AP6275P WiFi 6, on **PCIe** |
 | Bluetooth | Broadcom BCM4362A2 |
 | Front panel | TM1650 VFD, 4 digits plus status icons |
-| Base OS | Armbian 26.05 / Ubuntu 26.04 Resolute |
-| Kernel | 6.1.115 (vendor BSP). The `/boot` artifacts are named `6.1.141-rk3588-ophub`, but the kernel that actually boots reports `6.1.115`. |
+| Base OS | Ubuntu image: Armbian 26.05 / Ubuntu 26.04 Resolute. Debian Edition: Debian 13 trixie. |
+| Kernel | Default `6.12.69-h96v58-8.0` (Rockchip `rk-6.12-rkr1`); fallback `6.1.172-h96v58-8.0` (Rockchip `rk-6.1-rkr7.2`), selected with `h96-kernel-switch`. |
+
+---
+
+## Armbian 8.0
+
+8.0 is platform release over v7.2.
+
+| Area | 8.0 |
+|---|---|
+| Kernels | 6.12.69 default: Panthor GPU interface 1.5, RAM scaling, eMMC software queue, hardening options. 6.1.172 fallback: same feature set as v7.2 kernel. Packages `h96-kernel-<krel>` and `h96-dtb-<krel>`; modules in `/usr/lib/modules/<krel>/`. |
+| Kernel switch | `h96-kernel-switch try <krel>` boots kernel as trial; `confirm` keeps it, reboot without confirm returns to previous kernel. See [docs/KERNEL-SWITCH.md](docs/KERNEL-SWITCH.md). |
+| Userland | Packages `h96-base`, `h96-boot`, `h96-net`, `h96-audio`, `h96-desktop`, `h96-media`, `h96-tools`, `h96-gaming`. Commands in `/usr/bin` and `/usr/sbin`, helpers in `/usr/lib/h96`, settings in `/etc/h96`. Nothing packaged under `/usr/local` or `/opt`. |
+| GPU | Mesa only (Panfrost GL, PanVK Vulkan). `libmali` removed. |
+| Power | New Power Save profile; DDR scales 528 to 2112 MHz on kernel 6.12. |
+| Display | FreeSync with `sudo h96-vrr on` (off by default); HDMI-CEC TV remote on by default; experimental Plasma (Wayland) session beside default Plasma (X11). |
+| Steam | Steam ARM 3.1 from package `steam-arm-setup`, `h96-steam` front end. |
+| Editions | Ubuntu image and Debian Edition ([docs/DEBIAN-EDITION.md](docs/DEBIAN-EDITION.md)). |
 
 ---
 
@@ -44,158 +59,122 @@ Mali-G610 itself instead of falling back to software rendering, Vulkan functions
 
 | Feature | Notes |
 |---|---|
-| Open GPU stack | Panthor DRM + Mesa (Panfrost). KDE and GNOME composite on the GPU, renderer reports `Mali-G610 MC4 (Panfrost)`, not `llvmpipe`. Hardware cursor plane. |
-| Open Vulkan | PanVK 1.4 on the Mali-G610, no vendor blob. |
-| Hardware video | Rockchip MPP through mpv, roughly 1.5% CPU on 1080p. The `ff2mpv` browser button hands the page's video to it. |
-| WiFi 6 | The radio is **PCIe**, not SDIO, so it does not share pins with Ethernet and both run at the same time. Connect with `sudo h96-wifi-connect`, or the WiFi tray icon on the desktop. |
-| Bluetooth | BCM4362A2 with the vendor firmware baked into the image and loaded at boot by `h96-bt.service`. A2DP audio out, with LDAC, aptX HD and aptX alongside SBC. |
-| HDMI audio | The default output. S/PDIF optical stays selectable, and the two now appear as `HDMI Out` and `S/PDIF Optical` instead of two identical names. |
-| Front-panel display | The 4-digit panel on the front of the box works: clock with a blinking colon, plus the Ethernet, WiFi, USB and play icons driven from live system state (`h96-vfd.service`). |
-| Power profiles | Performance, Balanced and Power Saver move the CPU governors and the GPU frequency ceiling (1000 / 800 / 600 MHz) together, from the desktop power applet. |
-| GPU monitoring | `nvtop`, Panthor aware, shipped in the image and usable over SSH. |
-| NPU | 3 cores, ~6 TOPS. Driver `v0.9.8`, 1000 MHz, per-core load via `h96-npu`. The inference runtime is proprietary Rockchip software, so `h96-npu-setup` fetches it on demand rather than the image shipping it. |
-| GPU upscaling | `h96-upscale` runs ravu-lite-ar-r4 as an mpv user shader on the Mali-G610, for about 10-13% more GPU time. Sharper than the built-in scalers, and unlike FSRCNNX or nnedi3 it fits this GPU's budget. Needs a desktop session. |
-| Hardware video encode | H.264, HEVC and MJPEG on the VPU via `h96-encode`. 1080p measured faster than 180 fps. The bundled ffmpeg has no `libx264`, so this is the only encode path. |
-| Gaming layer | box64 plus wine plus two DXVK builds, launched with `h96-game-mode`. Wine and DXVK are bundled in `/opt/h96-gaming`; box64 installs itself once the box first reaches the network. Nothing needs downloading. |
-| IR receiver | Optional device-tree overlay; learn your own remote with `ir-keytable`. |
-| SSH | On from the first boot. Default login `root` / `1234`. Change it. |
-
-Once first-boot setup is finished, the system reaches multi-user in about 7 seconds.
+| Open GPU stack | Panthor DRM + Mesa (Panfrost). KDE composites on GPU; renderer string is `Mali-G610 MC4 (Panfrost)`, not `llvmpipe`. Hardware cursor plane. |
+| Open Vulkan | PanVK on Mali-G610, no vendor blob. |
+| Hardware video | Rockchip MPP through mpv. `ff2mpv` browser extension hands page video to mpv. |
+| Hardware video encode | H.264, HEVC and MJPEG on VPU through `h96-encode`. |
+| Display | Kernel reads display EDID over GPIO DDC bus; `h96-display detect` lists modes; HDMI 2.0 modes up to 3840x2160 at 60 Hz verified. |
+| WiFi 6 | Radio sits on **PCIe**, not SDIO, so WiFi and Ethernet run at same time. Connect with `sudo h96-wifi-connect` or WiFi tray icon. |
+| Bluetooth | BCM4362A2 with vendor firmware in image. A2DP out with LDAC, aptX HD, aptX and SBC; headset microphone over HFP. |
+| HDMI audio | Default output; S/PDIF optical selectable. |
+| Front-panel display | Clock plus Ethernet, WiFi, USB and play icons from live system state (`h96-vfd.service`). |
+| NPU | 3 cores, about 6 TOPS. Per-core load through `h96-npu`. Proprietary inference runtime fetched on demand by `h96-npu-setup`, never bundled. |
+| Gaming | `h96-steam` installs Steam ARM; `h96-game-mode` with box64, Wine and DXVK for titles outside Steam; `h96-emulators` for GPU emulators; `h96-waydroid` for Android in container. |
+| Backup | `h96-backup` and `h96-restore`; backups from v5.0.1 onward restore. |
+| SSH | On from first boot. Default login `root` / `1234`. Change it. |
 
 ---
 
 ## Desktops
 
-**None are installed by default.** Pick one after flashing:
+**None installed by default.** Pick one after flashing:
 
 ```
 armbian-config  ->  System  ->  Desktop
 ```
 
-GNOME (GDM) and KDE Plasma (SDDM) configure themselves the moment the display manager
-package lands: GPU environment, polkit agent, audio, Bluetooth, network applet and
-printer module are all set up with no manual steps. X11 desktops such as XFCE work the
-same way through LightDM.
-
-KDE keeps installing packages in the background after you first reach the desktop, and
-the screen can go blank with only a cursor partway through. Both are expected. Give it
-ten minutes or more before deciding something is missing, and do not reboot or unplug
-the box while it is installing.
-
----
-
-## The display, and what to do if you get no picture
-
-This board does not route the HDMI DDC lines through to the display controller, so the
-kernel can never read your TV's EDID and cannot pick a mode for you. The image forces one
-instead, currently `video=HDMI-A-1:1920x1080@60` in `/boot/armbianEnv.txt`.
-
-If your display cannot show 1080p, you get no signal. Fix it over SSH:
-
-```bash
-sudo h96-display safe      # 1280x720@60, the mode every HDMI display must accept
-sudo reboot
-sudo h96-display keep      # run this once you can SEE the picture
-```
-
-`keep` is not optional. Without it the mode reverts on the next boot, which is exactly
-what saves you if you set a mode your display cannot show. Other modes are `1080p`,
-`1440p`, `4k`, or any size you like, for example `sudo h96-display 1440x900` or
-`sudo h96-display 2560x1440@60`.
-
-If you have no picture and no SSH, mount the boot partition on another machine and edit
-the `video=` line by hand. See `/boot/h96-display-README.txt`.
-
-The same missing EDID is why the image names a substitute one on the kernel command line.
-The substitute named in v3.3 was one of the kernel's **built-in** EDID blobs, which loads
-without needing any file. It declared no audio capability, so the HDMI output dropped into
-a picture-only mode and sound never reached the TV.
-
-v4.0 names a file instead, and measuring a fresh flash showed that file is never actually
-loaded: the display driver starts before the root filesystem is in use, so it cannot read
-it. The outcome is no EDID at all, and that is the case the driver handles most
-permissively, assuming a normal HDMI sink with audio. Sound works. The argument itself is
-doing nothing, which is why it is left alone rather than "corrected" into a built-in name
-that would break audio again.
+KDE Plasma runs on X11 with LightDM by default. Plasma (Wayland) session is experimental:
+`sudo h96-autologin-setup --session plasma`. KDE keeps installing packages in background after first login; wait
+ten minutes or more before judging anything missing, and do not reboot or unplug box
+while it installs.
 
 ---
 
 ## Flashing
 
-**You need:** a Linux host, `rkdeveloptool`, and a USB-A to USB-A cable (male at both ends).
+**Needed:** Linux host, `rkdeveloptool`, USB-A to USB-A data cable, `MiniLoaderAll.bin` and
+image from release zip. Flashing erases eMMC; back up first (`h96-backup`). Scripted:
+`python3 flash.py --verify` from unpacked release folder. By hand:
 
 ```bash
-# 1a. First flash, Maskrom mode:
-#     power off, hold the pinhole on the underside, plug USB into the box's USB2 port, release
-# 1b. Reflashing a box already running this image: SSH in and run
-#     reboot loader
+# 1. Check and decompress (Debian Edition: ..._v8.0-debian.img)
+sha256sum -c *.sha256 FLASHER-SHA256SUMS.txt
+xz -dk H96-MAX-V58_Unofficial-Armbian_v8.0.img.xz
+sha256sum -c H96-MAX-V58_Unofficial-Armbian_v8.0.img.sha256
 
-# 2. Confirm the host sees it
-rkdeveloptool ld
-#    expect: DevNo=1  Vid=0x2207,Pid=0x350b  Maskrom  (or Loader)
+# 2. Loader mode: on running box run  sudo reboot loader
+#    or pinhole: power off, hold pinhole (rear, between antenna posts),
+#    plug cable into black USB2 port, release after about 3 s
+rkdeveloptool ld                     # Loader or Maskrom
 
-# 3. Write it
-xz -d H96-MAX-V58_Unofficial-Armbian_v4.0.img.xz
-rkdeveloptool wl 0 H96-MAX-V58_Unofficial-Armbian_v4.0.img
+# 3. From Loader: erase, reset into Maskrom (db is refused in Loader)
+rkdeveloptool ef
+rkdeveloptool rd
+sleep 5
+rkdeveloptool ld                     # Maskrom
+
+# 4. Write, read back, compare, reset
+rkdeveloptool db MiniLoaderAll.bin
+rkdeveloptool wl 0 H96-MAX-V58_Unofficial-Armbian_v8.0.img
+rkdeveloptool rl 0 <sectors> readback.img   # sectors = image bytes / 512
+sha256sum readback.img               # equal to .img sha256
 rkdeveloptool rd
 ```
 
-Writing takes a few minutes. **Never interrupt `wl` once it starts.**
-
-> **Ethernet on the first boot.** The first boot stages the open GPU stack and pulls a
-> small number of packages, then reboots itself once. Plug the box into your network for
-> that boot. Everything after it runs standalone.
+**Never interrupt `wl` once it starts.** On read-back mismatch, repeat `db` and `wl` before
+reset. First boot shows console on HDMI and runs setup before SSH answers, then reboots
+once. Network can take minutes after reboot, and DHCP address can
+change.
 
 ```bash
 ssh root@<ip>     # password: 1234
 ```
 
-The release download ships a full flashing guide (`FLASHING.md`), a scripted flasher
-(`flash.py`), and a reference for every command and service this build adds
-(`COMMANDS.md`).
+Release zip includes complete flashing guide (`FLASHING.md`), scripted flasher
+(`flash.py`) and command reference (`COMMANDS.md`).
 
 ---
 
 ## Known limitations
 
-- **The display cannot be auto-detected.** A mode is forced in `/boot/armbianEnv.txt`.
-  See the display section above.
-- **Ethernet link can take minutes to come up.** The RTL8211F PHY may spend a long time
-  attempting Gigabit auto-negotiation before downshifting to 100Mbps, and the link is
-  unusable until it does. Measured at 26 s, 128 s and 190 s across boots on one unit. This
-  is below the OS, not boot time. Try another cable or switch port first; to skip Gigabit
-  negotiation at the cost of capping the port:
-  `ethtool -s eth0 speed 100 duplex full autoneg off`.
-- **WiFi does not use NetworkManager.** This chip cannot complete its association through
-  NetworkManager, so `wlan0` is driven by a standalone `wpa_supplicant`. Use
-  `h96-wifi-connect` or the tray icon, not `nmcli`.
-- **Bluetooth headset microphones never work.** The BSP kernel has no `rfcomm` module, so
-  HFP and HSP cannot function. A2DP audio out is unaffected.
-- **In-browser video decode stays on the CPU.** Ubuntu's Chromium is built without the
-  V4L2 decoder this hardware needs. That is what the `ff2mpv` button is for.
-- **CPU voltage cannot be set from userspace.** `/sys/class/regulator/.../microvolts` is
-  read-only in the kernel by design, so `h96-bench --tune` and `--set-volt` do not work.
-  Voltage lives in the device tree. The opt-in `h96-undervolt` tool changes it there
-  instead, per chip, and reverts itself unless you confirm it. It is opt-in and ships
-  inert; `UNDERVOLT_README.md` in the release download explains it.
-- **Big cores top out at 2208 MHz.** That is where the vendor OPP table ends.
-- **Anti-cheat games never work** under x86-on-arm64 emulation, and the Steam snap does
-  not work on this GPU stack.
+- **Ethernet link can take minutes.** RTL8211F PHY may spend long time on Gigabit
+  auto-negotiation before downshifting to 100Mbps. Measured at 26 s, 128 s and 190 s across
+  boots on one unit; on that unit, link partner advertised 10/100 only. To skip Gigabit
+  negotiation at cost of capping port: `ethtool -s eth0 speed 100 duplex full autoneg off`.
+- **WiFi does not use NetworkManager.** `wlan0` runs under standalone `wpa_supplicant`.
+  Use `h96-wifi-connect` or tray icon, not `nmcli`.
+- **One HDMI output** (HDMI0). Multichannel HDMI audio not verified.
+- **In-browser video decode stays on CPU.** Ubuntu's Chromium lacks V4L2 decoder this
+  hardware needs; `ff2mpv` button covers it.
+- **CPU voltage cannot be set from userspace.** Regulator voltage is read-only by design;
+  opt-in `h96-undervolt` edits device tree per chip and reverts unless confirmed.
+- **Big cores top out at 2208 MHz**, where vendor OPP table ends.
+- **Kernel arrives with image releases**, not through `apt upgrade`.
+- **Anti-cheat titles do not run** under x86-on-arm64 emulation; Steam snap does not work
+  on this GPU stack.
+- **Power off** enters firmware standby and restarts about 45 s later (hardware watchdog);
+  unplug power after shutdown.
+- **Plasma (Wayland) session is experimental:** 4K60 video drops frames at 3840x2160
+  output, no RGB range control, no VRR.
 
 ---
 
 ## Version history
 
-Full detail in [CHANGELOG.md](CHANGELOG.md).
+Full detail in [CHANGELOG.md](CHANGELOG.md) and release downloads.
 
 | Version | Key change |
 |---|---|
-| **v4.0** | The NPU and hardware video encode, both enabled in-kernel and unused until now: `h96-npu`, `h96-npu-setup`, `h96-encode` |
-| **v3.4** | HDMI audio restored after v3.3 broke it; the two audio outputs are given distinct names; `nvtop` ships in the image instead of being downloaded |
-| **v3.3** | Efficiency pass: cores idle low and ramp on demand instead of being pinned high; package retry moved off the boot path |
-| **v3.2** | Desktop completeness and reliability: software installs authenticate, Bluetooth audio quality, WiFi works on a fresh flash, the Mesa stack is pinned so an upgrade cannot break it |
-| **v3.1** | Front-panel VFD daemon |
-| **v3** | Open GPU: Panthor + Mesa replacing the closed Mali blob; onboard WiFi 6 on PCIe; hardware video; reduced boot output |
+| **v8.0** | Kernel 6.12.69 default with 6.1.172 fallback and `h96-kernel-switch`; Panthor GPU interface 1.5; RAM scaling; kernel, DTB and userland as dpkg packages; `libmali` removed; Debian Edition |
+| **v7.2** | First-boot repairs, time zone sync, autologin set once, kernel guard against foreign updaters, Steam ARM 2.3.1 |
+| **v7.1** | Kernel `6.1.172-h96v58-7.1`: AV1 hardware decode, HDR10 playback (opt-in), IEC958 channel status, RGA 2D jobs |
+| **v7.0** | Kernel `6.1.172-h96v58-7.0` on Rockchip `rk-6.1-rkr7.2` base |
+| **v6.2** | HDMI-CEC, HDMI 2.0 modes over GPIO DDC, Bluetooth headset microphone rework |
+| **v6.1** | Steam installed on demand, hang recovery watchdog |
+| **v6.0** | VOP2 hardware cursor fix, `h96-backup` and `h96-restore` |
+| **v5.0** | `CONFIG_PSI=y` kernel, Android in container, GPU emulators |
+| **v4.0** | NPU and hardware video encode |
+| **v3** | Open GPU: Panthor + Mesa replacing closed Mali blob; onboard WiFi 6 on PCIe |
 
 Earlier revisions were closed-blob GPU builds and are superseded.
 
@@ -203,16 +182,12 @@ Earlier revisions were closed-blob GPU builds and are superseded.
 
 ## About this repository
 
-This repo publishes the **board bring-up sources**: device tree, overlays, kernel config
-fragment, board file, the front-panel daemon, and the Bluetooth firmware, all under
-GPL-2.0, so you can inspect them and build a matching image yourself with the official
-Armbian build framework rather than trusting a binary.
-
-Building from these sources reproduces the v3.1 feature set, which is open GPU, WiFi 6,
-hardware video and the front panel, plus the HDMI EDID work documented in the changelog.
-The userspace layer added from v3.2 onward is not published here yet, so for the full
-v4.0 feature set use the pre-built release image. See [README.md](README.md) for the
-build steps.
+Repo publishes board sources under GPL-2.0: device tree overlay source and tree-diff gate,
+kernel configuration, kernel and device tree package builder, `h96-kernel-switch`,
+`h96-selftest`, CI, front-panel daemon and board support files. Rebuild and verify steps:
+[docs/REPRODUCE.md](docs/REPRODUCE.md) (Ubuntu image) and
+[docs/REPRODUCE-DEBIAN.md](docs/REPRODUCE-DEBIAN.md) (Debian Edition). Docs index:
+[docs/README.md](docs/README.md).
 
 ---
 
@@ -221,11 +196,11 @@ build steps.
 | Component | Credit |
 |---|---|
 | Base | [Armbian](https://www.armbian.com) |
-| BSP kernel (6.1.x RK3588) | [ophub/kernel](https://github.com/ophub/kernel) |
+| BSP kernel (RK3588) | [Armbian linux-rockchip](https://github.com/armbian/linux-rockchip), Rockchip |
 | Open GPU | [Panthor](https://docs.kernel.org/gpu/panthor.html) + [Mesa](https://mesa3d.org) (Panfrost, PanVK) |
 | Hardware video | [Rockchip MPP](https://github.com/rockchip-linux/mpp), [mpv](https://mpv.io) |
 | Desktop tooling | [armbian-config](https://github.com/armbian/configng) |
-| x86 emulation | [box64](https://github.com/ptitSeb/box64) and [box86](https://github.com/ptitSeb/box86), ptitSeb |
+| x86 emulation | [box64](https://github.com/ptitSeb/box64) and [box86](https://github.com/ptitSeb/box86), ptitSeb; [FEX-Emu](https://fex-emu.com) |
 | Windows layer | [Wine](https://www.winehq.org) + [DXVK](https://github.com/doitsujin/dxvk) |
 | Build tooling | [Claude Code](https://claude.ai/code), Anthropic |
 
@@ -233,5 +208,7 @@ Full list: [CREDITS.md](CREDITS.md).
 
 ---
 
-*Unofficial community build. Tested only on our own unit, no warranty, flash at your own
-risk, and keep a recovery plan before overwriting your device.*
+*Unofficial community build. Tested on author's own unit only, no warranty, flash at own
+risk, and keep recovery plan before overwriting device.*
+
+This project is not affiliated with, endorsed by or sponsored by Valve Corporation. Steam, Proton, Steam Deck and Steam Frame are trademarks of Valve Corporation.

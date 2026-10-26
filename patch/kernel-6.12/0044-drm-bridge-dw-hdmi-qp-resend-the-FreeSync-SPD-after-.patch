@@ -1,0 +1,64 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: H96 series reconstruction <builder@h96-build>
+Date: Tue, 20 Oct 2026 09:25:51 -0700
+Subject: [PATCH 44/59] drm/bridge: dw-hdmi-qp: resend the FreeSync SPD after
+ disable and enable
+
+The FreeSync SPD infoframe was written only on a VRR on/off commit.
+With VRR left on, a bridge disable and enable (DPMS off and on, a mode
+set) or a hotplug with the VOP output kept running left the sink
+without the packet, so it fell back to fixed refresh while VOP2 still
+stretched the front porch.
+
+Write the packet again at the end of bridge enable, once dclk is on,
+and after the PHY comes back in dw_hdmi_qp_handle_hpd(), whenever
+freesync_enable is set. On an EDID parse that finds no FreeSync sink
+(other monitor, or rockchipdrm.hdmi_freesync=0) the glue clears
+freesync_enable so no stale packet goes to the new sink.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01P6itje71iKPFBX7YKkfvRo
+---
+ drivers/gpu/drm/bridge/synopsys/dw-hdmi-qp.c   | 7 +++++++
+ drivers/gpu/drm/rockchip/dw_hdmi_qp-rockchip.c | 3 +++
+ 2 files changed, 10 insertions(+)
+
+diff --git a/drivers/gpu/drm/bridge/synopsys/dw-hdmi-qp.c b/drivers/gpu/drm/bridge/synopsys/dw-hdmi-qp.c
+index 3bc4f24ee..f0bca068a 100644
+--- a/drivers/gpu/drm/bridge/synopsys/dw-hdmi-qp.c
++++ b/drivers/gpu/drm/bridge/synopsys/dw-hdmi-qp.c
+@@ -3484,6 +3484,9 @@ void dw_hdmi_qp_handle_hpd(struct dw_hdmi_qp *hdmi, bool enable)
+ 		msleep(50);
+ 		hdmi_writel(hdmi, 2, PKTSCHED_PKT_CONTROL0);
+ 		hdmi_modb(hdmi, PKTSCHED_GCP_TX_EN, PKTSCHED_GCP_TX_EN, PKTSCHED_PKT_EN);
++		/* VRR left on: replugged sink needs the FreeSync SPD again */
++		if (hdmi->freesync_enable)
++			dw_hdmi_qp_config_freesync_spd(hdmi);
+ 	}
+ 
+ err_dclk:
+@@ -4407,6 +4410,10 @@ static void dw_hdmi_qp_bridge_atomic_enable(struct drm_bridge *bridge,
+ 		mutex_unlock(&hdmi->audio_mutex);
+ 	}
+ 
++	/* VRR left on across disable/enable (DPMS, mode set): FreeSync SPD again */
++	if (hdmi->freesync_enable)
++		dw_hdmi_qp_config_freesync_spd(hdmi);
++
+ 	if (link_cfg && link_cfg->frl_mode)
+ 		queue_work(hdmi->workqueue, &hdmi->flt_work);
+ 
+diff --git a/drivers/gpu/drm/rockchip/dw_hdmi_qp-rockchip.c b/drivers/gpu/drm/rockchip/dw_hdmi_qp-rockchip.c
+index 8bd2b7480..ea25b6ae1 100644
+--- a/drivers/gpu/drm/rockchip/dw_hdmi_qp-rockchip.c
++++ b/drivers/gpu/drm/rockchip/dw_hdmi_qp-rockchip.c
+@@ -3069,6 +3069,9 @@ static void dw_hdmi_rockchip_get_vrr_range(struct rockchip_dw_hdmi_qp *hdmi)
+ 		hdmi->vrr_cap.gaming_vrr_rate_min = hdmi->hdmi21_data.vrr_cap.fs_min;
+ 		hdmi->vrr_cap.gaming_vrr_rate_max = hdmi->hdmi21_data.vrr_cap.fs_max;
+ 	}
++	/* new sink without FreeSync (or switch off): stop a stale SPD */
++	if (!hdmi->freesync_sink)
++		dw_hdmi_qp_set_freesync(hdmi->hdmi_qp, false, 0, 0);
+ }
+ 
+ static int

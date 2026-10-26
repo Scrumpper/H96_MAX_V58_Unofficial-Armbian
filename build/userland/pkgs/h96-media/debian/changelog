@@ -1,0 +1,292 @@
+h96-media (8.0.0~r39) resolute; urgency=medium
+
+  * Version bump with h96-audio and h96-base changes; files unchanged
+    apart from version in manual pages.
+
+ -- Scrumpper <190908034+Scrumpper@users.noreply.github.com>  Tue, 27 Oct 2026 00:00:00 +0000
+
+h96-media (8.0.0~r38) resolute; urgency=medium
+
+  * Version bump with h96-base change; files unchanged apart from version.
+
+ -- Scrumpper <190908034+Scrumpper@users.noreply.github.com>  Mon, 26 Oct 2026 18:00:00 +0000
+
+h96-media (8.0.0~r37) resolute; urgency=medium
+
+  * Version bump with h96-base change; files unchanged apart from version.
+
+ -- Scrumpper <190908034+Scrumpper@users.noreply.github.com>  Mon, 26 Oct 2026 12:00:00 +0000
+
+h96-media (8.0.0~r36) resolute; urgency=medium
+
+  * Version bump with h96-tools and h96-base changes; files unchanged
+    apart from version.
+
+ -- Scrumpper <190908034+Scrumpper@users.noreply.github.com>  Mon, 26 Oct 2026 06:00:00 +0000
+
+h96-media (8.0.0~r35) resolute; urgency=medium
+
+  * Version bump with h96-base documentation change; files unchanged apart
+    from version.
+
+ -- Scrumpper <190908034+Scrumpper@users.noreply.github.com>  Mon, 26 Oct 2026 00:00:00 +0000
+
+h96-media (8.0.0~r34) resolute; urgency=medium
+
+  * MPRIS loader h96-mpris.lua loads plugin only for usable bus of this
+    user: unix:path socket must exist and, under /run/user/<uid>/, match
+    process uid (or unix:abstract); root's bus address leaked through
+    runuser made mpv wait forever (only SIGKILL stopped it).
+  * h96-hdr console playback as desktop user passes that user's session
+    bus address (was caller's).
+
+ -- Scrumpper <190908034+Scrumpper@users.noreply.github.com>  Sun, 25 Oct 2026 18:00:00 +0000
+
+h96-media (8.0.0~r33) resolute; urgency=medium
+
+  * MPRIS plugin no longer auto-loaded from /etc/mpv/scripts: mpv without
+    session bus (text console, h96-hdr console playback, kiosk, root)
+    waited forever at script start. Loader /etc/mpv/scripts/h96-mpris.lua
+    loads /usr/lib/h96/mpv-mpris/mpris.so only when
+    DBUS_SESSION_BUS_ADDRESS is set or $XDG_RUNTIME_DIR/bus exists; link
+    h96-mpris.so dropped.
+
+ -- Scrumpper <190908034+Scrumpper@users.noreply.github.com>  Sun, 25 Oct 2026 12:00:00 +0000
+
+h96-media (8.0.0~r32) resolute; urgency=medium
+
+  * Version bump with h96-base documentation change; files unchanged apart
+    from version.
+
+ -- Scrumpper <190908034+Scrumpper@users.noreply.github.com>  Sun, 25 Oct 2026 06:00:00 +0000
+
+h96-media (8.0.0~r31) resolute; urgency=medium
+
+  * Version bump with h96-base documentation change; files unchanged apart
+    from version.
+
+ -- Scrumpper <190908034+Scrumpper@users.noreply.github.com>  Sun, 25 Oct 2026 00:00:00 +0000
+
+h96-media (8.0.0~r30) resolute; urgency=medium
+
+  * Version bump with h96-audio change; files unchanged apart from
+    version.
+
+ -- Scrumpper <190908034+Scrumpper@users.noreply.github.com>  Sat, 24 Oct 2026 18:00:00 +0000
+
+h96-media (8.0.0~r29) resolute; urgency=medium
+
+  * Manual page headers name public release 8.0 instead of package
+    version.
+
+ -- Scrumpper <190908034+Scrumpper@users.noreply.github.com>  Sat, 24 Oct 2026 12:00:00 +0000
+
+h96-media (8.0.0~r28) resolute; urgency=medium
+
+  * MPRIS plugin for mpv: KDE media keys and CEC Play/Pause/Stop/seek
+    control mpv (KDE media controller grabs media keys and forwards over
+    MPRIS; mpv had no MPRIS name). mpv-mpris 1.2 (MIT) built without
+    libavformat (embedded cover art dropped; folder and cover-art-files
+    art kept), so no ffmpeg library packages:
+    /usr/lib/h96/mpv-mpris/mpris.so, loaded from
+    /etc/mpv/scripts/h96-mpris.so link; needs only glib (base image).
+    Archive mpv-mpris package not used (its libavformat62 closure is 75
+    packages, 118 MB).
+  * cec-keymap.conf (conffile): back and return send KEY_ESC (was
+    KEY_BACK), so TV remote Back acts as Escape in Steam Big Picture and
+    dialogs; media transport comment names KDE to MPRIS path. Edited copy
+    kept on upgrade (dpkg conffile prompt or confold).
+
+ -- Scrumpper <190908034+Scrumpper@users.noreply.github.com>  Sat, 24 Oct 2026 06:00:00 +0000
+
+h96-media (8.0.0~r27) resolute; urgency=medium
+
+  * Version bump with h96-base change; files unchanged apart from version
+    in manual pages.
+
+ -- Scrumpper <190908034+Scrumpper@users.noreply.github.com>  Fri, 23 Oct 2026 20:00:00 +0000
+
+h96-media (8.0.0~r26) resolute; urgency=medium
+
+  * Version bump with h96-net, h96-base and h96-gaming changes; files
+    unchanged apart from version in manual pages.
+
+ -- Scrumpper <190908034+Scrumpper@users.noreply.github.com>  Fri, 23 Oct 2026 15:00:00 +0000
+
+h96-media (8.0.0~r25) resolute; urgency=medium
+
+  * Version bump with h96-base, h96-gaming and h96-desktop changes;
+    version aligned with h96-vulkan-wsi 8.0.0~r25; files unchanged apart
+    from version in manual pages.
+
+ -- Scrumpper <190908034+Scrumpper@users.noreply.github.com>  Fri, 23 Oct 2026 09:00:00 +0000
+
+h96-media (8.0.0~r24) resolute; urgency=medium
+
+  * mpv.conf: auto profile h96-wayland sets vo=dmabuf-wayland in Plasma
+    Wayland session; X11 and console keep vo=gpu.
+
+ -- Scrumpper <190908034+Scrumpper@users.noreply.github.com>  Fri, 23 Oct 2026 03:00:00 +0000
+
+h96-media (8.0.0~r23) resolute; urgency=medium
+
+  * h96-cecd: remote Play and Pause send separate media keys (KEY_PLAYCD,
+    KEY_PAUSECD; were both KEY_PLAYPAUSE); Stop, Fast Forward, Rewind
+    unchanged.
+  * Remote power key puts box in standby (systemctl poweroff) only while
+    /etc/h96/cec-power-standby.on exists (off by default, once per 30 s);
+    otherwise KEY_POWER as before. cec-keymap.conf lists power row.
+
+ -- Scrumpper <190908034+Scrumpper@users.noreply.github.com>  Thu, 22 Oct 2026 21:00:00 +0000
+
+h96-media (8.0.0~r22) resolute; urgency=medium
+
+  * Upgrade restarts running h96-cec daemon.
+
+ -- Scrumpper <190908034+Scrumpper@users.noreply.github.com>  Thu, 22 Oct 2026 18:00:00 +0000
+
+h96-media (8.0.0~r21) resolute; urgency=medium
+
+  * Version bump with h96-desktop and h96-base changes; files unchanged
+    apart from version in manual pages.
+
+ -- Scrumpper <190908034+Scrumpper@users.noreply.github.com>  Thu, 22 Oct 2026 12:00:00 +0000
+
+h96-media (8.0.0~r20) resolute; urgency=medium
+
+  * h96-cec.service on by default (owner decision): enable link under
+    dev-cec0.device, so unit starts when CEC adapter appears and never on
+    boxes without one (no pending device job at boot; was
+    Wants=dev-cec0.device under multi-user.target).
+    ConditionPathExists=/dev/cec0.
+  * postinst enables h96-cec once on fresh install and on upgrade from
+    8.0.0~r19 or earlier (link of earlier enable moved to device link;
+    masked unit left alone); marker /var/lib/h96/cec-default-on keeps
+    later 'systemctl disable'. Live system with /dev/cec0: service started
+    without blocking.
+  * h96-cec help: on by default, TV must show box input, how to turn off,
+    key map file.
+
+ -- Scrumpper <190908034+Scrumpper@users.noreply.github.com>  Thu, 22 Oct 2026 09:00:00 +0000
+
+h96-media (8.0.0~r19) resolute; urgency=medium
+
+  * Upgrade with changed video stack archive re-runs h96-video-setup (done
+    flag cleared, unit restarted after apt run; next boot without
+    systemd): earlier upgrades kept old mpv until manual setup. Unchanged
+    archive: nothing done. Extracted archive sha recorded in
+    /var/lib/h96/video-stack.sha256.
+
+ -- Scrumpper <190908034+Scrumpper@users.noreply.github.com>  Thu, 22 Oct 2026 06:00:00 +0000
+
+h96-media (8.0.0~r18) resolute; urgency=medium
+
+  * Video stack: mpv and libmpv 0.41.0 rebuilt with PipeWire and
+    PulseAudio audio outputs (same patches, options and FFmpeg build;
+    earlier builds had ALSA only, so 'h96-audio-passthrough bitstream'
+    failed with 'Audio output pipewire not found'). mpv without ao= in
+    config now plays through PipeWire.
+  * h96-video-setup installs libpipewire-0.3-0t64 and libpulse0 (new mpv
+    libraries).
+
+ -- Scrumpper <190908034+Scrumpper@users.noreply.github.com>  Thu, 22 Oct 2026 03:00:00 +0000
+
+h96-media (8.0.0~r17) resolute; urgency=medium
+
+  * Version bump with h96-audio, h96-desktop and h96-base changes; files
+    unchanged apart from version in manual pages.
+
+ -- Scrumpper <190908034+Scrumpper@users.noreply.github.com>  Wed, 21 Oct 2026 23:30:00 +0000
+
+h96-media (8.0.0~r16) resolute; urgency=medium
+
+  * h96-cast mirror and DLNA receivers start through h96-xdisplay --exec
+    (live session display); unit templates match.
+  * h96-hdr reads mode with X auth of session display.
+
+ -- Scrumpper <190908034+Scrumpper@users.noreply.github.com>  Wed, 21 Oct 2026 22:00:00 +0000
+
+h96-media (8.0.0~r15) resolute; urgency=medium
+
+  * Manual page NAME of h96-encode ends at first sentence (ran into second
+    one).
+
+ -- Scrumpper <190908034+Scrumpper@users.noreply.github.com>  Sun, 18 Oct 2026 23:45:00 +0000
+
+h96-media (8.0.0~r14) resolute; urgency=medium
+
+  * Version bump with h96-base, h96-net and h96-tools changes.
+  * Manual page DESCRIPTION holds whole COMMANDS.md paragraph (was cut at
+    first line).
+
+ -- Scrumpper <190908034+Scrumpper@users.noreply.github.com>  Sun, 18 Oct 2026 23:30:00 +0000
+
+h96-media (8.0.0~r13) resolute; urgency=medium
+
+  * Version bump with h96-base, h96-net, h96-desktop and h96-tools
+    changes; files unchanged apart from version in manual pages.
+
+ -- Scrumpper <190908034+Scrumpper@users.noreply.github.com>  Sun, 18 Oct 2026 23:00:00 +0000
+
+h96-media (8.0.0~r12) resolute; urgency=medium
+
+  * Version bump with h96-base, h96-audio, h96-desktop, h96-gaming and
+    h96-tools changes; files unchanged apart from version in manual pages.
+
+ -- Scrumpper <190908034+Scrumpper@users.noreply.github.com>  Sun, 18 Oct 2026 22:00:00 +0000
+
+h96-media (8.0.0~r11) resolute; urgency=medium
+
+  * h96-mpv-kiosk menu entry dropped: without file or URL it started
+    nothing; command runs from text console.
+
+ -- Scrumpper <190908034+Scrumpper@users.noreply.github.com>  Sun, 18 Oct 2026 18:00:00 +0000
+
+h96-media (8.0.0~r10) resolute; urgency=medium
+
+  * Version bump with h96-base, h96-boot, h96-audio, h96-desktop and
+    h96-tools changes; files unchanged apart from version in manual pages.
+
+ -- Scrumpper <190908034+Scrumpper@users.noreply.github.com>  Sun, 18 Oct 2026 12:00:00 +0000
+
+h96-media (8.0.0~r9) resolute; urgency=medium
+
+  * Video setup extracts stack archive from /usr/lib/h96/video.
+  * yt-dlp seed target /var/lib/h96/bin/yt-dlp; mpv reads it through
+    script-opts in /etc/mpv/mpv.conf; no file written under /usr/local.
+  * Fresh install warns about locally modified copies left in
+    /usr/local/bin or /usr/local/sbin; they precede packaged commands in
+    PATH.
+
+ -- Scrumpper <190908034+Scrumpper@users.noreply.github.com>  Sat, 17 Oct 2026 22:00:00 +0000
+
+h96-media (8.0.0~r8) resolute; urgency=medium
+
+  * Packaged files moved out of /usr/local and /opt: commands to /usr/bin
+    and /usr/sbin, helpers and payloads to /usr/lib/h96, data to
+    /usr/share/h96, units to /usr/lib/systemd/system, udev rules to
+    /usr/lib/udev/rules.d; every reference rewritten. Fresh install over
+    an image that holds the old copies moves exact old copies aside and
+    deletes them at configure; a failed install restores them.
+  * Manual pages for each command; Documentation key on each unit.
+  * NPU power udev rule seeded, not a conffile: h96-npu power rewrites it.
+  * mpv desktop entry diverts /usr/share/applications/mpv.desktop;
+    prebuilt NPU helper stripped.
+
+ -- Scrumpper <190908034+Scrumpper@users.noreply.github.com>  Sat, 17 Oct 2026 18:00:00 +0000
+
+h96-media (8.0.0~alpha2) resolute; urgency=medium
+
+  * Version bump with h96-base, h96-gaming and h96-audio changes; payload
+    unchanged.
+
+ -- H96 MAX V58 Unofficial Armbian <h96-max-v58@noreply.invalid>  Sat, 17 Oct 2026 12:00:00 +0000
+
+h96-media (8.0.0~alpha1) resolute; urgency=medium
+
+  * Initial packaging of v7.2 h96 userland; files kept at v7.2 paths,
+    /usr/local kept; enablement as on v7.2.
+  * /etc/mpv/mpv.conf seeded, not a conffile; upgrade replaces it only
+    while unmodified.
+
+ -- H96 MAX V58 Unofficial Armbian <h96-max-v58@noreply.invalid>  Fri, 16 Oct 2026 12:00:00 +0000

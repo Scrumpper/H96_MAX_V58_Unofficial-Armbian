@@ -1,0 +1,18 @@
+[Unit]
+Documentation=file:/usr/share/doc/h96-base/COMMANDS.md
+Description=H96 Max V58 GPU Acceleration Setup (first boot)
+After=h96-gaming-setup.service
+ConditionPathExists=!/var/lib/h96-gpu-setup-done
+
+[Service]
+Type=oneshot
+ExecStart=/usr/lib/h96/h96-gpu-setup.sh
+RemainAfterExit=yes
+TimeoutStartSec=900
+Restart=on-failure
+RestartSec=120
+StandardOutput=journal+console
+StandardError=journal+console
+
+[Install]
+WantedBy=multi-user.target

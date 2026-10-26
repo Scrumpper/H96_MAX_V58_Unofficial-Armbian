@@ -1,0 +1,9 @@
+#!/bin/sh
+# h96-armbian-update-guard: puts the refusing armbian-update stub back after armbian-sync (ophub) replaces it
+STUB=/usr/lib/h96/armbian-update-h96
+DEST=/usr/sbin/armbian-update
+[ -f "$STUB" ] || exit 0
+cmp -s "$STUB" "$DEST" && exit 0
+install -m 0755 -o root -g root "$STUB" "$DEST.h96new" && mv -f "$DEST.h96new" "$DEST" || exit 1
+logger -t h96-armbian-update-guard "ophub armbian-update replaced by the H96 stub (it would write an ophub kernel into /boot)" 2>/dev/null
+echo "h96-armbian-update-guard: $DEST is the H96 stub again"

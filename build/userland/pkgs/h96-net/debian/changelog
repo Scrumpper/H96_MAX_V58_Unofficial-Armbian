@@ -1,0 +1,259 @@
+h96-net (8.0.0~r39) resolute; urgency=medium
+
+  * Version bump with h96-audio and h96-base changes; files unchanged
+    apart from version in manual pages.
+
+ -- Scrumpper <190908034+Scrumpper@users.noreply.github.com>  Tue, 27 Oct 2026 00:00:00 +0000
+
+h96-net (8.0.0~r38) resolute; urgency=medium
+
+  * Version bump with h96-base change; files unchanged apart from version.
+
+ -- Scrumpper <190908034+Scrumpper@users.noreply.github.com>  Mon, 26 Oct 2026 18:00:00 +0000
+
+h96-net (8.0.0~r37) resolute; urgency=medium
+
+  * Version bump with h96-base change; files unchanged apart from version.
+
+ -- Scrumpper <190908034+Scrumpper@users.noreply.github.com>  Mon, 26 Oct 2026 12:00:00 +0000
+
+h96-net (8.0.0~r36) resolute; urgency=medium
+
+  * Version bump with h96-tools and h96-base changes; files unchanged
+    apart from version.
+
+ -- Scrumpper <190908034+Scrumpper@users.noreply.github.com>  Mon, 26 Oct 2026 06:00:00 +0000
+
+h96-net (8.0.0~r35) resolute; urgency=medium
+
+  * Version bump with h96-base documentation change; files unchanged apart
+    from version.
+
+ -- Scrumpper <190908034+Scrumpper@users.noreply.github.com>  Mon, 26 Oct 2026 00:00:00 +0000
+
+h96-net (8.0.0~r34) resolute; urgency=medium
+
+  * Version bump with h96-media and h96-tools changes; files unchanged
+    apart from version.
+
+ -- Scrumpper <190908034+Scrumpper@users.noreply.github.com>  Sun, 25 Oct 2026 18:00:00 +0000
+
+h96-net (8.0.0~r33) resolute; urgency=medium
+
+  * Version bump with h96-media and h96-base changes; files unchanged
+    apart from version.
+
+ -- Scrumpper <190908034+Scrumpper@users.noreply.github.com>  Sun, 25 Oct 2026 12:00:00 +0000
+
+h96-net (8.0.0~r32) resolute; urgency=medium
+
+  * Version bump with h96-base documentation change; files unchanged apart
+    from version.
+
+ -- Scrumpper <190908034+Scrumpper@users.noreply.github.com>  Sun, 25 Oct 2026 06:00:00 +0000
+
+h96-net (8.0.0~r31) resolute; urgency=medium
+
+  * Version bump with h96-base documentation change; files unchanged apart
+    from version.
+
+ -- Scrumpper <190908034+Scrumpper@users.noreply.github.com>  Sun, 25 Oct 2026 00:00:00 +0000
+
+h96-net (8.0.0~r30) resolute; urgency=medium
+
+  * Version bump with h96-audio change; files unchanged apart from
+    version.
+
+ -- Scrumpper <190908034+Scrumpper@users.noreply.github.com>  Sat, 24 Oct 2026 18:00:00 +0000
+
+h96-net (8.0.0~r29) resolute; urgency=medium
+
+  * Manual page headers name public release 8.0 instead of package
+    version.
+
+ -- Scrumpper <190908034+Scrumpper@users.noreply.github.com>  Sat, 24 Oct 2026 12:00:00 +0000
+
+h96-net (8.0.0~r28) resolute; urgency=medium
+
+  * Version bump with h96-media, h96-audio and h96-base changes; files
+    unchanged apart from version in manual pages.
+
+ -- Scrumpper <190908034+Scrumpper@users.noreply.github.com>  Sat, 24 Oct 2026 06:00:00 +0000
+
+h96-net (8.0.0~r27) resolute; urgency=medium
+
+  * Version bump with h96-base change; files unchanged apart from version
+    in manual pages.
+
+ -- Scrumpper <190908034+Scrumpper@users.noreply.github.com>  Fri, 23 Oct 2026 20:00:00 +0000
+
+h96-net (8.0.0~r26) resolute; urgency=medium
+
+  * /etc/modules-load.d/h96-bcmdhd.conf dropped: udev loads bcmdhd by PCI
+    alias on both kernels; the entry made systemd-modules-load fail every
+    6.12 boot (Invalid argument). Upgrade removes unmodified copy
+    (dpkg-maintscript-helper rm_conffile).
+
+ -- Scrumpper <190908034+Scrumpper@users.noreply.github.com>  Fri, 23 Oct 2026 15:00:00 +0000
+
+h96-net (8.0.0~r25) resolute; urgency=medium
+
+  * Version bump with h96-base, h96-gaming and h96-desktop changes;
+    version aligned with h96-vulkan-wsi 8.0.0~r25; files unchanged apart
+    from version in manual pages.
+
+ -- Scrumpper <190908034+Scrumpper@users.noreply.github.com>  Fri, 23 Oct 2026 09:00:00 +0000
+
+h96-net (8.0.0~r24) resolute; urgency=medium
+
+  * Version bump with h96-desktop, h96-media, h96-audio, h96-gaming and
+    h96-base changes; files unchanged apart from version in manual pages.
+
+ -- Scrumpper <190908034+Scrumpper@users.noreply.github.com>  Fri, 23 Oct 2026 03:00:00 +0000
+
+h96-net (8.0.0~r23) resolute; urgency=medium
+
+  * Version bump with h96-desktop, h96-media and h96-base changes; files
+    unchanged apart from version in manual pages.
+
+ -- Scrumpper <190908034+Scrumpper@users.noreply.github.com>  Thu, 22 Oct 2026 21:00:00 +0000
+
+h96-net (8.0.0~r22) resolute; urgency=medium
+
+  * h96-wol status prints eth0 address in use, permanent address (ethtool
+    -P) and NetworkManager cloned-mac-address of each wired profile.
+    h96-wol on: saved profile gets cloned-mac-address permanent when
+    address in use differs from permanent address; in-memory profile gets
+    warning.
+
+ -- Scrumpper <190908034+Scrumpper@users.noreply.github.com>  Thu, 22 Oct 2026 18:00:00 +0000
+
+h96-net (8.0.0~r21) resolute; urgency=medium
+
+  * Version bump with h96-desktop and h96-base changes; files unchanged
+    apart from version in manual pages.
+
+ -- Scrumpper <190908034+Scrumpper@users.noreply.github.com>  Thu, 22 Oct 2026 12:00:00 +0000
+
+h96-net (8.0.0~r20) resolute; urgency=medium
+
+  * Version bump with h96-media and h96-base changes; files unchanged
+    apart from version in manual pages.
+
+ -- Scrumpper <190908034+Scrumpper@users.noreply.github.com>  Thu, 22 Oct 2026 09:00:00 +0000
+
+h96-net (8.0.0~r19) resolute; urgency=medium
+
+  * Version bump with h96-desktop, h96-audio, h96-media and h96-base
+    changes; files unchanged apart from version in manual pages.
+
+ -- Scrumpper <190908034+Scrumpper@users.noreply.github.com>  Thu, 22 Oct 2026 06:00:00 +0000
+
+h96-net (8.0.0~r18) resolute; urgency=medium
+
+  * Version bump with h96-media change; files unchanged apart from version
+    in manual pages.
+
+ -- Scrumpper <190908034+Scrumpper@users.noreply.github.com>  Thu, 22 Oct 2026 03:00:00 +0000
+
+h96-net (8.0.0~r17) resolute; urgency=medium
+
+  * Version bump with h96-audio, h96-desktop and h96-base changes; files
+    unchanged apart from version in manual pages.
+
+ -- Scrumpper <190908034+Scrumpper@users.noreply.github.com>  Wed, 21 Oct 2026 23:30:00 +0000
+
+h96-net (8.0.0~r16) resolute; urgency=medium
+
+  * Version bump with h96-base, h96-desktop, h96-audio, h96-media,
+    h96-tools and h96-gaming changes; files unchanged apart from version
+    in manual pages.
+
+ -- Scrumpper <190908034+Scrumpper@users.noreply.github.com>  Wed, 21 Oct 2026 22:00:00 +0000
+
+h96-net (8.0.0~r15) resolute; urgency=medium
+
+  * Version bump with h96-audio, h96-boot, h96-media and h96-tools
+    changes; files unchanged apart from version in manual pages.
+
+ -- Scrumpper <190908034+Scrumpper@users.noreply.github.com>  Sun, 18 Oct 2026 23:45:00 +0000
+
+h96-net (8.0.0~r14) resolute; urgency=medium
+
+  * h96-wol status prints "wol: on" or "wol: off" as first line: ethtool
+    Wake-on value as root, h96-wol.service boot state otherwise.
+  * h96-wol.service is wanted by eth0 device (no BindsTo): boot never
+    waits for absent eth0. multi-user.target link of earlier build stays
+    until h96-wol off removes it.
+  * Manual page DESCRIPTION holds whole COMMANDS.md paragraph (was cut at
+    first line).
+
+ -- Scrumpper <190908034+Scrumpper@users.noreply.github.com>  Sun, 18 Oct 2026 23:30:00 +0000
+
+h96-net (8.0.0~r13) resolute; urgency=medium
+
+  * h96-wol never modifies NetworkManager profile kept in memory: nmcli
+    con modify wrote automatic "Wired connection 1" into
+    /etc/netplan/90-NM-<uuid>.yaml. h96-wol.service (installed disabled,
+    enabled by h96-wol on) applies wake-on-LAN at each boot; saved
+    profiles still get wake-on-lan set. Status runs no netplan generate.
+
+ -- Scrumpper <190908034+Scrumpper@users.noreply.github.com>  Sun, 18 Oct 2026 23:00:00 +0000
+
+h96-net (8.0.0~r12) resolute; urgency=medium
+
+  * Version bump with h96-base, h96-audio, h96-desktop, h96-gaming and
+    h96-tools changes; files unchanged apart from version in manual pages.
+
+ -- Scrumpper <190908034+Scrumpper@users.noreply.github.com>  Sun, 18 Oct 2026 22:00:00 +0000
+
+h96-net (8.0.0~r11) resolute; urgency=medium
+
+  * Version bump with h96-base, h96-boot, h96-audio, h96-media and
+    h96-tools changes; files unchanged apart from version in manual pages.
+
+ -- Scrumpper <190908034+Scrumpper@users.noreply.github.com>  Sun, 18 Oct 2026 18:00:00 +0000
+
+h96-net (8.0.0~r10) resolute; urgency=medium
+
+  * Version bump with h96-base, h96-boot, h96-audio, h96-desktop and
+    h96-tools changes; files unchanged apart from version in manual pages.
+
+ -- Scrumpper <190908034+Scrumpper@users.noreply.github.com>  Sun, 18 Oct 2026 12:00:00 +0000
+
+h96-net (8.0.0~r9) resolute; urgency=medium
+
+  * Fresh install warns about locally modified copies left in
+    /usr/local/bin or /usr/local/sbin; they precede packaged commands in
+    PATH.
+
+ -- Scrumpper <190908034+Scrumpper@users.noreply.github.com>  Sat, 17 Oct 2026 22:00:00 +0000
+
+h96-net (8.0.0~r8) resolute; urgency=medium
+
+  * Packaged files moved out of /usr/local and /opt: commands to /usr/bin
+    and /usr/sbin, helpers and payloads to /usr/lib/h96, data to
+    /usr/share/h96, units to /usr/lib/systemd/system, udev rules to
+    /usr/lib/udev/rules.d; every reference rewritten. Fresh install over
+    an image that holds the old copies moves exact old copies aside and
+    deletes them at configure; a failed install restores them.
+  * Manual pages for each command; Documentation key on each unit.
+  * wpa_supplicant-wlan0.conf seed set to mode 0600 when copied.
+
+ -- Scrumpper <190908034+Scrumpper@users.noreply.github.com>  Sat, 17 Oct 2026 18:00:00 +0000
+
+h96-net (8.0.0~alpha2) resolute; urgency=medium
+
+  * Version bump with h96-base, h96-gaming and h96-audio changes; payload
+    unchanged.
+
+ -- H96 MAX V58 Unofficial Armbian <h96-max-v58@noreply.invalid>  Sat, 17 Oct 2026 12:00:00 +0000
+
+h96-net (8.0.0~alpha1) resolute; urgency=medium
+
+  * Initial packaging of v7.2 h96 userland; files kept at v7.2 paths,
+    /usr/local kept; enablement as on v7.2.
+  * Firmware diversion covers /lib/firmware path and its /usr/lib alias.
+  * wpa_supplicant-wlan0.conf seeded on fresh install, outside dpkg -V.
+
+ -- H96 MAX V58 Unofficial Armbian <h96-max-v58@noreply.invalid>  Fri, 16 Oct 2026 12:00:00 +0000

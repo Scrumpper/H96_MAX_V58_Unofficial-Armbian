@@ -1,0 +1,73 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Scrumpper <190908034+Scrumpper@users.noreply.github.com>
+Date: Mon, 19 Oct 2026 22:37:13 -0700
+Subject: [PATCH 29/59] net: phy: realtek: board LED pattern for RTL8211F from
+ DT
+
+The 6.1 vendor stmmac carries LED_FIX: a PHY fixup that writes page
+0xd04 reg 0x10 (LEDCR) = 0xc160 and reg 0x11 (EEELCR) = 0x8, so the
+H96 jack shows link on LED1 and TX/RX activity on LED2 (6.1 journal:
+"phy_rtl8211f_led_fixup in"). 6.12 has no such fixup; realtek.c
+touches LEDCR only through the LED class, which needs leds subnodes
+this DT does not have, so the jack runs the PHY power-on pattern.
+
+Add optional "realtek,ledcr" and "realtek,eeelcr" u32 properties read in
+rtl8211f_config_init() and written on page 0xd04; no property, no
+write, so other boards are unaffected. H96 board DTS sets the 6.1
+values on rgmii_phy1. 6.12 t6.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01P6itje71iKPFBX7YKkfvRo
+---
+ arch/arm64/boot/dts/rockchip/rk3588-h96-max-v58.dts |  6 ++++++
+ drivers/net/phy/realtek.c                           | 13 +++++++++++++
+ 2 files changed, 19 insertions(+)
+
+diff --git a/arch/arm64/boot/dts/rockchip/rk3588-h96-max-v58.dts b/arch/arm64/boot/dts/rockchip/rk3588-h96-max-v58.dts
+index a90228508..8a43422c8 100644
+--- a/arch/arm64/boot/dts/rockchip/rk3588-h96-max-v58.dts
++++ b/arch/arm64/boot/dts/rockchip/rk3588-h96-max-v58.dts
+@@ -282,6 +282,12 @@ &gmac1 {
+ 	snps,reset-gpio = <&gpio3 RK_PB7 GPIO_ACTIVE_LOW>;
+ };
+ 
++&rgmii_phy1 {
++	/* jack LEDs: link on LED1, activity on LED2 (6.1 LED_FIX) */
++	realtek,ledcr = <0xc160>;
++	realtek,eeelcr = <0x8>;
++};
++
+ &usbdrd_dwc3_0 {
+ 	dr_mode = "host";
+ };
+diff --git a/drivers/net/phy/realtek.c b/drivers/net/phy/realtek.c
+index 60a8288bb..f0e9ab793 100644
+--- a/drivers/net/phy/realtek.c
++++ b/drivers/net/phy/realtek.c
+@@ -373,6 +373,7 @@ static int rtl8211f_config_init(struct phy_device *phydev)
+ 	struct rtl821x_priv *priv = phydev->priv;
+ 	struct device *dev = &phydev->mdio.dev;
+ 	u16 val_txdly, val_rxdly;
++	u32 ledcr, eeelcr;
+ 	int ret;
+ 
+ 	ret = phy_modify_paged_changed(phydev, 0xa43, RTL8211F_PHYCR1,
+@@ -439,6 +440,18 @@ static int rtl8211f_config_init(struct phy_device *phydev)
+ 			val_rxdly ? "enabled" : "disabled");
+ 	}
+ 
++	/* board LED pattern from DT, as 6.1 vendor LED_FIX */
++	if (!of_property_read_u32(dev->of_node, "realtek,ledcr", &ledcr)) {
++		ret = phy_write_paged(phydev, 0xd04, RTL8211F_LEDCR, ledcr);
++		if (ret < 0)
++			return ret;
++		if (!of_property_read_u32(dev->of_node, "realtek,eeelcr", &eeelcr)) {
++			ret = phy_write_paged(phydev, 0xd04, 0x11, eeelcr);
++			if (ret < 0)
++				return ret;
++		}
++	}
++
+ 	if (priv->has_phycr2) {
+ 		ret = phy_modify_paged(phydev, 0xa43, RTL8211F_PHYCR2,
+ 				       RTL8211F_CLKOUT_EN, priv->phycr2);

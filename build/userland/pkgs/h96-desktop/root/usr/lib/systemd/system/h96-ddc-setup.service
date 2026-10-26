@@ -1,0 +1,15 @@
+[Unit]
+Description=H96 Max V58 ddcutil setup (offline; enables DDC/CI monitor brightness)
+Documentation=file:/usr/share/doc/h96-base/COMMANDS.md
+After=multi-user.target
+ConditionPathExists=!/var/lib/h96-ddc-setup-done
+
+[Service]
+Type=oneshot
+# Offline apt from /opt/h96-pkgs is fast; the generous bound only covers the dpkg-lock wait. Inner timeout stays below the systemd one so `timeout` wins cleanly.
+ExecStart=/usr/bin/timeout 120 /usr/lib/h96/h96-ddc-setup.sh
+SuccessExitStatus=124 SIGTERM SIGKILL
+TimeoutStartSec=150
+StandardOutput=journal
+StandardError=journal
+# No [Install]: started by the timer instead, off the boot transaction, so a truncated run retries next boot without counting against boot time.

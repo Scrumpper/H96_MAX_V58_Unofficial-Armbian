@@ -1,0 +1,117 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: H96 build <builder@h96-build>
+Date: Fri, 16 Oct 2026 00:00:00 +0000
+Subject: [PATCH 03/59] drm/rockchip: vop2: fix window power-domain reference
+ counting
+
+- vop2_power_domain_get(): power the domain on whenever it is off,
+  not only on the 0 -> 1 transition; vop2_power_off_all_pd() leaves
+  ref_count set while turning domains off.
+- vop2_power_domain_put(): an unmatched put returns with a WARN_ONCE
+  ("vop2: pd%d put without get") and does not drop the parent
+  reference.
+- vop2_win_enable(): a window that is still enabled but whose domain
+  was powered off gets its domain (and parents) powered on again.
+- vop2_win_disable(): cluster sub windows drop their domain reference
+  together with their enable bit.
+
+H96 series: abba1d775 (rkr5.1), ported subset as be815daa4 onto
+rk-6.1-rkr7.2.
+---
+ drivers/gpu/drm/rockchip/rockchip_drm_vop2.c | 53 +++++++++++++++-----
+ 1 file changed, 40 insertions(+), 13 deletions(-)
+
+diff --git a/drivers/gpu/drm/rockchip/rockchip_drm_vop2.c b/drivers/gpu/drm/rockchip/rockchip_drm_vop2.c
+index 39760d2e5..e5e41d07b 100644
+--- a/drivers/gpu/drm/rockchip/rockchip_drm_vop2.c
++++ b/drivers/gpu/drm/rockchip/rockchip_drm_vop2.c
+@@ -2411,11 +2411,11 @@ static void vop2_power_domain_get(struct vop2_power_domain *pd)
+ 		vop2_power_domain_get(pd->parent);
+ 
+ 	spin_lock(&pd->lock);
+-	if (pd->ref_count == 0) {
+-		if (pd->vop2->data->delayed_pd)
+-			cancel_delayed_work(&pd->power_off_work);
++	if (pd->ref_count == 0 && pd->vop2->data->delayed_pd)
++		cancel_delayed_work(&pd->power_off_work);
++	/* H96: vop2_power_off_all_pd() leaves ref_count set; power on whenever off */
++	if (pd->ref_count == 0 || !pd->on)
+ 		vop2_power_domain_on(pd);
+-	}
+ 	pd->ref_count++;
+ 	spin_unlock(&pd->lock);
+ }
+@@ -2438,14 +2438,18 @@ static void vop2_power_domain_put(struct vop2_power_domain *pd)
+ 	 *
+ 	 * So we have a check here
+ 	 */
+-	if (pd->ref_count) {
+-		pd->ref_count--;
+-		if (pd->ref_count == 0 && vop2_power_domain_can_off_by_vsync(pd)) {
+-			if (pd->vop2->data->delayed_pd)
+-				schedule_delayed_work(&pd->power_off_work, msecs_to_jiffies(2500));
+-			else
+-				vop2_power_domain_off(pd);
+-		}
++	/* H96: an unmatched put must not drop the parent reference either */
++	if (WARN_ONCE(!pd->ref_count, "vop2: pd%d put without get\n", ffs(pd->data->id) - 1)) {
++		spin_unlock(&pd->lock);
++		return;
++	}
++
++	pd->ref_count--;
++	if (pd->ref_count == 0 && vop2_power_domain_can_off_by_vsync(pd)) {
++		if (pd->vop2->data->delayed_pd)
++			schedule_delayed_work(&pd->power_off_work, msecs_to_jiffies(2500));
++		else
++			vop2_power_domain_off(pd);
+ 	}
+ 
+ 	spin_unlock(&pd->lock);
+@@ -2453,6 +2457,17 @@ static void vop2_power_domain_put(struct vop2_power_domain *pd)
+ 		vop2_power_domain_put(pd->parent);
+ }
+ 
++/* H96: power on a domain that vop2_power_off_all_pd() turned off under held references */
++static void vop2_power_domain_ensure_on(struct vop2_power_domain *pd)
++{
++	if (pd->parent)
++		vop2_power_domain_ensure_on(pd->parent);
++
++	spin_lock(&pd->lock);
++	vop2_power_domain_on(pd);
++	spin_unlock(&pd->lock);
++}
++
+ static void vop2_power_domain_put_sync(struct vop2_power_domain *pd)
+ {
+ 	vop2_power_domain_put(pd);
+@@ -2526,6 +2541,11 @@ static void vop2_win_enable(struct vop2_win *win)
+ 			vop2_power_domain_get(win->pd);
+ 			win->pd->vp_mask |= win->vp_mask;
+ 		}
++	} else if (win->pd && !win->pd->on &&
++		   !vop2_ignore_dynamic_control_sub_pd(win->vop2, win->pd)) {
++		/* H96: window still enabled but its domain was powered off */
++		vop2_power_domain_ensure_on(win->pd);
++		win->pd->vp_mask |= win->vp_mask;
+ 	}
+ }
+ 
+@@ -2576,8 +2596,15 @@ static void vop2_win_disable(struct vop2_win *win, bool skip_splice_win)
+ 				sub_win = &vop2->win[i];
+ 
+ 				if ((sub_win->phys_id == win->phys_id) &&
+-				    (sub_win->feature & WIN_FEATURE_CLUSTER_SUB))
++				    (sub_win->feature & WIN_FEATURE_CLUSTER_SUB)) {
++					/* H96: drop the sub window's domain reference with its enable */
++					if (VOP_WIN_GET_REG_BAK(vop2, sub_win, enable) && sub_win->pd &&
++					    !vop2_ignore_dynamic_control_sub_pd(vop2, sub_win->pd)) {
++						vop2_power_domain_put(sub_win->pd);
++						sub_win->pd->vp_mask &= ~sub_win->vp_mask;
++					}
+ 					VOP_WIN_SET(vop2, sub_win, enable, 0);
++				}
+ 			}
+ 
+ 			VOP_CLUSTER_SET(vop2, win, enable, 0);

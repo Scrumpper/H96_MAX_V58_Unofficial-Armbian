@@ -1,0 +1,10 @@
+[Unit]
+Description=H96 Max V58 online extras (start once per boot, off the boot path)
+
+[Timer]
+# Fires once per boot, 15s after the boot stamp so the connectivity wait is never charged to boot time; Unit= defaults to the same-name .service. AccuracySec is set since systemd's default fuzz is 1min.
+OnBootSec=15
+AccuracySec=1s
+
+[Install]
+WantedBy=timers.target

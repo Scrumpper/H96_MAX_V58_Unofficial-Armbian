@@ -1,0 +1,68 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Scrumpper <190908034+Scrumpper@users.noreply.github.com>
+Date: Mon, 19 Oct 2026 22:35:36 -0700
+Subject: [PATCH 24/59] PCI: rockchip: dw: program PTM only when the DT routes
+ a ptm interrupt
+
+rk_pcie_host_config() runs at probe and on every resume, including each
+bcmdhd ROCKCHIP_PCIE_PM_CTRL_RESET. Since the rk3572 import it writes
+the PTM responder local clock (DBI 0x290/0x28c/0x284) and enables and
+unmasks the PTM context IRQs (client APB 0x488/0x484) on every SoC. Only
+rk3572.dtsi names a "ptm" interrupt; on rk3588 no handler is ever
+registered and probe logs "IRQ ptm not found". The 6.1 driver has no
+PTM code at all.
+
+Record whether interrupt-names carries "ptm" at resource time and skip
+the PTM block and the PTM IRQ request otherwise. rk3588 returns to 6.1
+behaviour; rk3572 unchanged. 6.12 t6.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01P6itje71iKPFBX7YKkfvRo
+---
+ drivers/pci/controller/dwc/pcie-dw-rockchip.c | 12 +++++++++++-
+ 1 file changed, 11 insertions(+), 1 deletion(-)
+
+diff --git a/drivers/pci/controller/dwc/pcie-dw-rockchip.c b/drivers/pci/controller/dwc/pcie-dw-rockchip.c
+index 163724e66..1257c3ae0 100644
+--- a/drivers/pci/controller/dwc/pcie-dw-rockchip.c
++++ b/drivers/pci/controller/dwc/pcie-dw-rockchip.c
+@@ -166,6 +166,7 @@ struct rk_pcie {
+ 	bool				is_lpbk;
+ 	bool				is_comp;
+ 	bool				probe_ok;
++	bool				has_ptm;
+ 	struct completion		probe_done;
+ 	bool				keep_power_in_suspend;
+ 	struct regulator		*vpcie3v3;
+@@ -906,6 +907,10 @@ static int rk_pcie_resource_get(struct platform_device *pdev,
+ 	if (device_property_read_bool(&pdev->dev, "rockchip,skip-scan-in-resume"))
+ 		rk_pcie->skip_scan_in_resume = true;
+ 
++	/* PTM only on SoCs that route a ptm interrupt */
++	rk_pcie->has_ptm = of_property_match_string(pdev->dev.of_node,
++						    "interrupt-names", "ptm") >= 0;
++
+ 	/* Force into loopback master mode */
+ 	if (device_property_read_bool(&pdev->dev, "rockchip,lpbk-master")) {
+ 		rk_pcie->is_lpbk = true;
+@@ -1090,7 +1095,9 @@ static int rk_pcie_request_sys_irq(struct rk_pcie *rk_pcie,
+ 		return ret;
+ 	}
+ 
+-	/* Optional ptm irq */
++	if (!rk_pcie->has_ptm)
++		return 0;
++
+ 	irq = platform_get_irq_byname(pdev, "ptm");
+ 	if (irq < 0)
+ 		return 0;
+@@ -1826,6 +1833,9 @@ static int rk_pcie_host_config(struct rk_pcie *rk_pcie)
+ 	dw_pcie_writel_dbi2(pci, PCI_BASE_ADDRESS_0, 0x0);
+ 	dw_pcie_writel_dbi2(pci, PCI_BASE_ADDRESS_1, 0x0);
+ 
++	if (!rk_pcie->has_ptm)
++		return 0;
++
+ 	/*
+ 	 * Program PTM responder local clock with 64-bit nanosecond timestamp.
+ 	 *

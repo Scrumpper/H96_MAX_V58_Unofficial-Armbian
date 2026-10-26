@@ -1,0 +1,5 @@
+# H96 Max V58: box64 0.4.3 from offline repo is tested with game mode Wine; later nightlies kill each wine call (exit 137).
+# Explicit version request (apt install box64-rk3588=<version>) overrides this pin.
+Package: box64-rk3588
+Pin: version 0.4.3+20260703.0c3d239-1
+Pin-Priority: 1001

@@ -1,0 +1,42 @@
+#!/bin/bash
+# journals of earlier machine-ids (armbian-fix regenerates /etc/machine-id on first boot):
+# move into current machine dir as archived files, so journalctl lists that boot and vacuum caps it
+set -uo pipefail
+J="${H96_JOURNAL_DIR:-/var/log/journal}"
+id="$(cat "${H96_MACHINE_ID_FILE:-/etc/machine-id}" 2>/dev/null)"
+[[ "$id" =~ ^[0-9a-f]{32}$ ]] && [ -d "$J" ] || exit 0
+old=()
+for d in "$J"/*/; do
+  d="${d%/}"; n="${d##*/}"
+  [ "$n" != "$id" ] && [[ "$n" =~ ^[0-9a-f]{32}$ ]] && old+=("$d")
+done
+[ "${#old[@]}" -gt 0 ] || exit 0
+hdr() { journalctl --header --file "$1" 2>/dev/null; }
+online() { hdr "$1" | grep -qx 'State: ONLINE'; }
+# journald keeps the machine-id it started with; restart moves it to current id dir
+for d in "${old[@]}"; do
+  for f in "$d"/*.journal; do
+    [ -f "$f" ] && online "$f" && { systemctl restart systemd-journald || true; break 2; }
+  done
+done
+for _ in 1 2 3 4 5 6 7 8 9 10; do [ -d "$J/$id" ] && break; sleep 0.5; done
+[ -d "$J/$id" ] || exit 0
+for d in "${old[@]}"; do
+  for f in "$d"/*.journal; do
+    [ -f "$f" ] || continue
+    h="$(hdr "$f")"
+    grep -qx 'State: ONLINE' <<<"$h" && continue
+    b="${f##*/}"
+    if [[ "$b" != *@* ]]; then
+      s="$(sed -n 's/^Sequential number ID: \([0-9a-f]\{32\}\)$/\1/p' <<<"$h")"
+      q="$(sed -n 's/^Head sequential number: .*(\([0-9a-f]*\))$/\1/p' <<<"$h")"
+      t="$(sed -n 's/^Head realtime timestamp: .*(\([0-9a-f]*\))$/\1/p' <<<"$h")"
+      [ -n "$s" ] || continue
+      b="$(printf '%s@%s-%016x-%016x.journal' "${b%.journal}" "$s" "0x${q:-0}" "0x${t:-0}")"
+    fi
+    [ -e "$J/$id/$b" ] && continue
+    mv "$f" "$J/$id/$b" && echo "h96-journal-orphans: ${d##*/}/${f##*/} -> $id/$b"
+  done
+  rmdir "$d" 2>/dev/null || true
+done
+exit 0

@@ -1,0 +1,70 @@
+#!/bin/sh
+# 7.2 enablement on fresh install; upgrades keep admin choices
+set -e
+R="${DPKG_ROOT:-}"
+mklink() { [ -e "$R$1" ] || [ -L "$R$1" ] && return 0; mkdir -p "$R${1%/*}"; ln -s "$2" "$R$1"; }
+case "$1" in
+configure)
+  while read -r _ _ p; do
+    rm -f "$R$p.h96-v72"; d="${p%/*}"
+    case "$p" in /usr/local/bin/*|/usr/local/sbin/*)
+      if [ -e "$R$p" ] || [ -L "$R$p" ]; then
+        echo "warning: $p differs from v7.2 copy, kept; it precedes packaged command in PATH" >&2
+      fi ;;
+    esac
+    while case "$d" in /opt/h96-*|/opt/panthor|/opt/panthor/*|/usr/local/lib/h96|/usr/local/lib/h96/*|/usr/local/share/h96|/usr/local/share/h96/*) true ;; *) false ;; esac; do
+      rmdir "$R$d" 2>/dev/null || break; d="${d%/*}"
+    done
+  done <<'EOF'
+f 5fa0cd14d41ee2259408450981b0bac92720e0d8203277c3f805b5b9d0d813bd /etc/systemd/system/h96-gaming-setup.service
+l /etc/systemd/system/h96-gaming-setup.service /etc/systemd/system/multi-user.target.wants/h96-gaming-setup.service
+f 681023523074d31f1cfedb41da71c96b898344f91bb35eb40a4b3874623ca2bb /etc/udev/rules.d/70-h96-input-seat.rules
+f be9c1bdaa00348eedf2da3b1b9d3481848182afa856dad679b43c4d18fd441b4 /etc/udev/rules.d/71-h96-xpad-dedup.rules
+f 95d97d73220eaebe0e1fb114748e8820f54a1970ccaa14b34122104e31fd2521 /etc/udev/rules.d/99-h96-xpad.rules
+f 77b5742a85591985d7f8aa1b252c90cd034a7f27668763fa11586d63dd179a12 /opt/h96-gaming/box64-rk3588-fallback.deb
+f 894fd8f1dcd65b9dffa552f5bbb4711051dd72caadfd2d1cfb62416e8b4e058f /opt/h96-gaming/box64.box64rc
+f e70664aa7d082a598e56cf31894e37d35e5311c0c6b00a624446279c39bddce1 /opt/h96-gaming/dxvk-sarek/x32/d3d10core.dll
+f 9dbbc57039e55cdbe5a902c5164f342c48d7341a2a95919e2a95b82ce1122729 /opt/h96-gaming/dxvk-sarek/x32/d3d11.dll
+f 549981ef8fcfc9989d8d2ee8a1ab58d4d9cb2b03bae500a4ef9d0fab106ab79f /opt/h96-gaming/dxvk-sarek/x32/d3d8.dll
+f 655e618ab7b07612f1656a3ab4dc5be9e493ce113e128caa01c85decec995b96 /opt/h96-gaming/dxvk-sarek/x32/d3d9.dll
+f 2582f48e3127a9ccb5d87a2976f25ba27757ca83c9b2b0849f8394e4fd3703f7 /opt/h96-gaming/dxvk-sarek/x32/ddraw.dll
+f 42425dc8829c6d62abec5572f59edb2a8f00e9106dc371551930ffc496784ed7 /opt/h96-gaming/dxvk-sarek/x32/dxgi.dll
+f b96d42dc61003595d462f05aec0ef3fca6e915a1aa68c27369197a5947ef3dde /opt/h96-gaming/dxvk-sarek/x64/d3d10core.dll
+f 7c9bfecefd6598f7f5453d266dd7012dfca934d739e2a4d7d1c3dc6502806f01 /opt/h96-gaming/dxvk-sarek/x64/d3d11.dll
+f 2ab4990c3a9c8da2cc71a233500a9018a6ab540cf24c9cc33579b5e341587646 /opt/h96-gaming/dxvk-sarek/x64/d3d8.dll
+f bb72c7d80075f618a5982237ccd4cbd4825628cb2a242233a266eb8157300dad /opt/h96-gaming/dxvk-sarek/x64/d3d9.dll
+f d926a3154e569b1008e3933e2b7f304095d028980a052653f5489181c58a1f44 /opt/h96-gaming/dxvk-sarek/x64/ddraw.dll
+f d18e73087ee670465432d4d8e9a5622ae8e37d4c71639a95f450632a8fc7a1f7 /opt/h96-gaming/dxvk-sarek/x64/dxgi.dll
+f 651dd59186bb1d0aec7193962603533762bdd90a47904e03bcf64adb832ec6ad /opt/h96-gaming/dxvk-stripped/x32/d3d10core.dll
+f e665d94abc22d47ecee08ca15b457cab3ff9a053d5f2d368d52a29ac1dc1d8c7 /opt/h96-gaming/dxvk-stripped/x32/d3d11.dll
+f caebed574d9a85bc1f2e2112e07a425acd4470b027481a0fbcdcc496267412d5 /opt/h96-gaming/dxvk-stripped/x32/d3d8.dll
+f 906be2a480fa9d849c9fe592c009e834b2a889c2edc6af35d52de5a3ba174799 /opt/h96-gaming/dxvk-stripped/x32/d3d9.dll
+f 9d57282ae97194ee3cc32346c57a220b90e4ea16d893532b45b4fd8684d4219c /opt/h96-gaming/dxvk-stripped/x32/dxgi.dll
+f 9f7fbe94a26099d3f1d871a1304e7ada5e241b28cdddf68775965d51a896d66f /opt/h96-gaming/dxvk-stripped/x64/d3d10core.dll
+f 7de1430873c4bf8e08139bb0e882ac6442e634777012c32de006316e9eb38650 /opt/h96-gaming/dxvk-stripped/x64/d3d11.dll
+f 8b5be2814083a4817a5df63b2faba51d9994323de1d579cf442f64ce0813b8dc /opt/h96-gaming/dxvk-stripped/x64/d3d8.dll
+f 045d396a14f8877905057836d133131b42ef425fcbbf89e37e852fbce3d3fb41 /opt/h96-gaming/dxvk-stripped/x64/d3d9.dll
+f 11263a272bbda8018643c939bf6f9f85c3f6d84f02386c2300666280a96ec1d8 /opt/h96-gaming/dxvk-stripped/x64/dxgi.dll
+f 59c1fda110a1a4225cbda66132b6cf5d0fdef82355af58839c3332ed6445a7dd /opt/h96-gaming/env/gaming.env
+f e8df3b162a0a1f20b9544c6cc256c015f6579308755667f3c5055cdf987521cf /usr/local/bin/h96-dxvk-install
+f 25552c5dee7777fc3c8b9ebaf37c289caa4068a8c77d506f4d215d0d554be56c /usr/local/bin/h96-emulators
+f a4af2e326448db25c6e4008fdbd453a4a273c91f7c278c80bc39a68e91354f4f /usr/local/bin/h96-game-mode
+f c3c34399b65a19072496ce081d3ae189051d4614d3511131bf51f08c9a95c703 /usr/local/bin/h96-steam
+f 1e464f076e797e60fe121a7389c1b77f5636649353ca08890c73cd08babf2546 /usr/local/bin/h96-waydroid
+f 70066516def5a00176b1e497ce580a9502172dc572b8cd891f7bf3085026b255 /usr/local/lib/h96/steam/README.md
+f e7de5be67d08b568dda29b1d180f0f7547b52c02c49370fab1989dd980d1640d /usr/local/lib/h96/steam/h96-steam-fex-install.sh
+f 2aef739aa5d8e1dd2affa7202c7a767778969f0a0d48e6f3bccf4a4b13e78e8d /usr/local/lib/h96/steam/steam-arm-install.sh
+f 3eccd09ed9344b1040d5f231ed947d04ed45bf7c983b01a0df0e7f21c9b90039 /usr/local/sbin/h96-gaming-setup.sh
+f 563b9f83956d220852cb237f0dd5add2794f639578ef66403780a82ad01c5599 /usr/local/sbin/h96-xpad-dedup
+EOF
+  if [ -z "$2" ]; then
+    mklink /etc/systemd/system/multi-user.target.wants/h96-gaming-setup.service /usr/lib/systemd/system/h96-gaming-setup.service
+    mklink /usr/lib/systemd/system/multi-user.target.wants/h96-gaming-setup.service ../h96-gaming-setup.service
+    [ -e "$R/etc/udev/rules.d/60-h96-gamepad-hidraw.rules" ] || { mkdir -p "$R/etc/udev/rules.d"; cp -p "$R/usr/lib/h96/seed/60-h96-gamepad-hidraw.rules" "$R/etc/udev/rules.d/60-h96-gamepad-hidraw.rules"; }
+    [ -e "$R/etc/udev/rules.d/71-h96-xpad-dedup.rules" ] || { mkdir -p "$R/etc/udev/rules.d"; cp -p "$R/usr/lib/h96/seed/71-h96-xpad-dedup.rules" "$R/etc/udev/rules.d/71-h96-xpad-dedup.rules"; }
+    :
+  fi
+  if [ -z "$R" ] && [ -d /run/systemd/system ]; then systemctl daemon-reload || true; fi
+  ;;
+esac
+exit 0

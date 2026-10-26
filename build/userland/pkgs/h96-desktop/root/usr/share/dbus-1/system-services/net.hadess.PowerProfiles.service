@@ -1,0 +1,4 @@
+[D-BUS Service]
+Name=net.hadess.PowerProfiles
+Exec=/bin/false
+SystemdService=h96-power-profiles.service

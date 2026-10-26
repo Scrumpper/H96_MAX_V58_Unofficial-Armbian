@@ -1,0 +1,15 @@
+Source: h96-base
+Section: admin
+Priority: optional
+Maintainer: Scrumpper <190908034+Scrumpper@users.noreply.github.com>
+Rules-Requires-Root: no
+Standards-Version: 4.7.0
+
+Package: h96-base
+Architecture: all
+Multi-Arch: foreign
+Depends: python3, systemd, curl, iw
+Description: H96 MAX V58 base: release identity, h96 command, first-boot units, apt policy
+ Release identity files, h96 command dispatcher and banner, COMMANDS.md, first-
+ boot and setup units, offline repo apt policy, sysctl hardening, systemd
+ timeouts and journal limits.

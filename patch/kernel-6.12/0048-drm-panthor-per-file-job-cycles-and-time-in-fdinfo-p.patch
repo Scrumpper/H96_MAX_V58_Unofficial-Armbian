@@ -1,0 +1,284 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Scrumpper <190908034+Scrumpper@users.noreply.github.com>
+Date: Tue, 20 Oct 2026 06:59:04 -0700
+Subject: [PATCH 48/59] drm/panthor: per-file job cycles and time in fdinfo,
+ profiling knob
+
+6.12 carries the job profiling instructions (cycle and timestamp
+samples written to the per-queue profiling slots, mask taken from
+ptdev->profile_mask) but nothing reads the samples and nothing sets
+the mask, so the slots stay unused and /proc/<pid>/fdinfo of a Panthor
+fd has no driver lines. The 6.1 rkr7.2 Panthor backport (uAPI 1.5)
+exposes both.
+
+Port the mainline pieces onto the 6.12 driver: accumulate the samples
+per group when jobs complete, fold them into the file on fdinfo reads
+and print drm-engine-panthor, drm-cycles-panthor, drm-maxfreq-panthor
+and drm-curfreq-panthor; add the "profiling" sysfs attribute (bit 0
+cycles, bit 1 timestamps, default 0) on the GPU device. Mask 0 keeps
+the job instruction stream as before. panthor 1.5 port, 8.0p15.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01P6itje71iKPFBX7YKkfvRo
+---
+ drivers/gpu/drm/panthor/panthor_device.h |  8 +++
+ drivers/gpu/drm/panthor/panthor_drv.c    | 75 ++++++++++++++++++++++++
+ drivers/gpu/drm/panthor/panthor_sched.c  | 52 ++++++++++++++++
+ drivers/gpu/drm/panthor/panthor_sched.h  |  2 +
+ 4 files changed, 137 insertions(+)
+
+diff --git a/drivers/gpu/drm/panthor/panthor_device.h b/drivers/gpu/drm/panthor/panthor_device.h
+index 6fb75e9e4..75abac40c 100644
+--- a/drivers/gpu/drm/panthor/panthor_device.h
++++ b/drivers/gpu/drm/panthor/panthor_device.h
+@@ -195,6 +195,11 @@ struct panthor_device {
+ 	unsigned long fast_rate;
+ };
+ 
++struct panthor_gpu_usage {
++	u64 time;
++	u64 cycles;
++};
++
+ /**
+  * struct panthor_file - Panthor file
+  */
+@@ -207,6 +212,9 @@ struct panthor_file {
+ 
+ 	/** @groups: Scheduling group pool attached to this file. */
+ 	struct panthor_group_pool *groups;
++
++	/** @stats: cycle and timestamp measures for job execution. */
++	struct panthor_gpu_usage stats;
+ };
+ 
+ int panthor_device_init(struct panthor_device *ptdev);
+diff --git a/drivers/gpu/drm/panthor/panthor_drv.c b/drivers/gpu/drm/panthor/panthor_drv.c
+index 069458942..dfdfbf9b3 100644
+--- a/drivers/gpu/drm/panthor/panthor_drv.c
++++ b/drivers/gpu/drm/panthor/panthor_drv.c
+@@ -3,12 +3,17 @@
+ /* Copyright 2019 Linaro, Ltd., Rob Herring <robh@kernel.org> */
+ /* Copyright 2019 Collabora ltd. */
+ 
++#ifdef CONFIG_ARM_ARCH_TIMER
++#include <asm/arch_timer.h>
++#endif
++
+ #include <linux/list.h>
+ #include <linux/module.h>
+ #include <linux/of_platform.h>
+ #include <linux/pagemap.h>
+ #include <linux/platform_device.h>
+ #include <linux/pm_runtime.h>
++#include <linux/time64.h>
+ 
+ #include <drm/drm_auth.h>
+ #include <drm/drm_debugfs.h>
+@@ -1380,6 +1385,35 @@ static int panthor_mmap(struct file *filp, struct vm_area_struct *vma)
+ 	return ret;
+ }
+ 
++static void panthor_gpu_show_fdinfo(struct panthor_device *ptdev,
++				    struct panthor_file *pfile,
++				    struct drm_printer *p)
++{
++	if (ptdev->profile_mask & PANTHOR_DEVICE_PROFILING_ALL)
++		panthor_fdinfo_gather_group_samples(pfile);
++
++	if (ptdev->profile_mask & PANTHOR_DEVICE_PROFILING_TIMESTAMP) {
++#ifdef CONFIG_ARM_ARCH_TIMER
++		drm_printf(p, "drm-engine-panthor:\t%llu ns\n",
++			   DIV_ROUND_UP_ULL((pfile->stats.time * NSEC_PER_SEC),
++					    arch_timer_get_cntfrq()));
++#endif
++	}
++	if (ptdev->profile_mask & PANTHOR_DEVICE_PROFILING_CYCLES)
++		drm_printf(p, "drm-cycles-panthor:\t%llu\n", pfile->stats.cycles);
++
++	drm_printf(p, "drm-maxfreq-panthor:\t%lu Hz\n", ptdev->fast_rate);
++	drm_printf(p, "drm-curfreq-panthor:\t%lu Hz\n", ptdev->current_frequency);
++}
++
++static void panthor_show_fdinfo(struct drm_printer *p, struct drm_file *file)
++{
++	struct drm_device *dev = file->minor->dev;
++	struct panthor_device *ptdev = container_of(dev, struct panthor_device, base);
++
++	panthor_gpu_show_fdinfo(ptdev, file->driver_priv, p);
++}
++
+ static const struct file_operations panthor_drm_driver_fops = {
+ 	.open = drm_open,
+ 	.release = drm_release,
+@@ -1389,6 +1423,7 @@ static const struct file_operations panthor_drm_driver_fops = {
+ 	.read = drm_read,
+ 	.llseek = noop_llseek,
+ 	.mmap = panthor_mmap,
++	.show_fdinfo = drm_show_fdinfo,
+ 	.fop_flags = FOP_UNSIGNED_OFFSET,
+ };
+ 
+@@ -1408,6 +1443,7 @@ static const struct drm_driver panthor_drm_driver = {
+ 			   DRIVER_SYNCOBJ_TIMELINE | DRIVER_GEM_GPUVA,
+ 	.open = panthor_open,
+ 	.postclose = panthor_postclose,
++	.show_fdinfo = panthor_show_fdinfo,
+ 	.ioctls = panthor_drm_driver_ioctls,
+ 	.num_ioctls = ARRAY_SIZE(panthor_drm_driver_ioctls),
+ 	.fops = &panthor_drm_driver_fops,
+@@ -1445,6 +1481,44 @@ static void panthor_remove(struct platform_device *pdev)
+ 	panthor_device_unplug(ptdev);
+ }
+ 
++static ssize_t profiling_show(struct device *dev,
++			      struct device_attribute *attr,
++			      char *buf)
++{
++	struct panthor_device *ptdev = dev_get_drvdata(dev);
++
++	return sysfs_emit(buf, "%d\n", ptdev->profile_mask);
++}
++
++static ssize_t profiling_store(struct device *dev,
++			       struct device_attribute *attr,
++			       const char *buf, size_t len)
++{
++	struct panthor_device *ptdev = dev_get_drvdata(dev);
++	u32 value;
++	int err;
++
++	err = kstrtou32(buf, 0, &value);
++	if (err)
++		return err;
++
++	if ((value & ~PANTHOR_DEVICE_PROFILING_ALL) != 0)
++		return -EINVAL;
++
++	ptdev->profile_mask = value;
++
++	return len;
++}
++
++static DEVICE_ATTR_RW(profiling);
++
++static struct attribute *panthor_attrs[] = {
++	&dev_attr_profiling.attr,
++	NULL,
++};
++
++ATTRIBUTE_GROUPS(panthor);
++
+ static const struct of_device_id dt_match[] = {
+ 	{ .compatible = "rockchip,rk3588-mali" },
+ 	{ .compatible = "arm,mali-valhall-csf" },
+@@ -1464,6 +1538,7 @@ static struct platform_driver panthor_driver = {
+ 		.name = "panthor",
+ 		.pm = pm_ptr(&panthor_pm_ops),
+ 		.of_match_table = dt_match,
++		.dev_groups = panthor_groups,
+ 	},
+ };
+ 
+diff --git a/drivers/gpu/drm/panthor/panthor_sched.c b/drivers/gpu/drm/panthor/panthor_sched.c
+index 1d95decdd..36d08c3a8 100644
+--- a/drivers/gpu/drm/panthor/panthor_sched.c
++++ b/drivers/gpu/drm/panthor/panthor_sched.c
+@@ -9,6 +9,7 @@
+ #include <drm/panthor_drm.h>
+ 
+ #include <linux/build_bug.h>
++#include <linux/cleanup.h>
+ #include <linux/clk.h>
+ #include <linux/delay.h>
+ #include <linux/dma-mapping.h>
+@@ -620,6 +621,18 @@ struct panthor_group {
+ 	 */
+ 	struct panthor_kernel_bo *syncobjs;
+ 
++	/** @fdinfo: Per-file info exposed through /proc/<process>/fdinfo */
++	struct {
++		/** @fdinfo.data: Total sampled values for jobs in queues from this group. */
++		struct panthor_gpu_usage data;
++
++		/**
++		 * @fdinfo.lock: Spinlock to govern concurrent access from drm file's fdinfo
++		 * callback and job post-completion processing function
++		 */
++		spinlock_t lock;
++	} fdinfo;
++
+ 	/** @state: Group state. */
+ 	enum panthor_group_state state;
+ 
+@@ -2825,6 +2838,42 @@ void panthor_sched_post_reset(struct panthor_device *ptdev, bool reset_failed)
+ 	}
+ }
+ 
++static void update_fdinfo_stats(struct panthor_job *job)
++{
++	struct panthor_group *group = job->group;
++	struct panthor_queue *queue = group->queues[job->queue_idx];
++	struct panthor_gpu_usage *fdinfo = &group->fdinfo.data;
++	struct panthor_job_profiling_data *slots = queue->profiling.slots->kmap;
++	struct panthor_job_profiling_data *data = &slots[job->profiling.slot];
++
++	scoped_guard(spinlock, &group->fdinfo.lock) {
++		if (job->profiling.mask & PANTHOR_DEVICE_PROFILING_CYCLES)
++			fdinfo->cycles += data->cycles.after - data->cycles.before;
++		if (job->profiling.mask & PANTHOR_DEVICE_PROFILING_TIMESTAMP)
++			fdinfo->time += data->time.after - data->time.before;
++	}
++}
++
++void panthor_fdinfo_gather_group_samples(struct panthor_file *pfile)
++{
++	struct panthor_group_pool *gpool = pfile->groups;
++	struct panthor_group *group;
++	unsigned long i;
++
++	if (IS_ERR_OR_NULL(gpool))
++		return;
++
++	xa_lock(&gpool->xa);
++	xa_for_each(&gpool->xa, i, group) {
++		guard(spinlock)(&group->fdinfo.lock);
++		pfile->stats.cycles += group->fdinfo.data.cycles;
++		pfile->stats.time += group->fdinfo.data.time;
++		group->fdinfo.data.cycles = 0;
++		group->fdinfo.data.time = 0;
++	}
++	xa_unlock(&gpool->xa);
++}
++
+ static void group_sync_upd_work(struct work_struct *work)
+ {
+ 	struct panthor_group *group =
+@@ -2857,6 +2906,8 @@ static void group_sync_upd_work(struct work_struct *work)
+ 	dma_fence_end_signalling(cookie);
+ 
+ 	list_for_each_entry_safe(job, job_tmp, &done_jobs, node) {
++		if (job->profiling.mask)
++			update_fdinfo_stats(job);
+ 		list_del_init(&job->node);
+ 		panthor_job_put(&job->base);
+ 	}
+@@ -3353,6 +3404,7 @@ int panthor_group_create(struct panthor_file *pfile,
+ 		return -ENOMEM;
+ 
+ 	spin_lock_init(&group->fatal_lock);
++	spin_lock_init(&group->fdinfo.lock);
+ 	kref_init(&group->refcount);
+ 	group->state = PANTHOR_CS_GROUP_CREATED;
+ 	group->csg_id = -1;
+diff --git a/drivers/gpu/drm/panthor/panthor_sched.h b/drivers/gpu/drm/panthor/panthor_sched.h
+index 3a30d2328..5ae6b4bde 100644
+--- a/drivers/gpu/drm/panthor/panthor_sched.h
++++ b/drivers/gpu/drm/panthor/panthor_sched.h
+@@ -47,4 +47,6 @@ void panthor_sched_resume(struct panthor_device *ptdev);
+ void panthor_sched_report_mmu_fault(struct panthor_device *ptdev);
+ void panthor_sched_report_fw_events(struct panthor_device *ptdev, u32 events);
+ 
++void panthor_fdinfo_gather_group_samples(struct panthor_file *pfile);
++
+ #endif

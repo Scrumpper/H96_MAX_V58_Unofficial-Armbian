@@ -1,0 +1,1013 @@
+--- a/h96-audio/debian/changelog
++++ b/h96-audio/debian/changelog
+@@ -1,3 +1,11 @@
++h96-audio (8.0.0~r39+deb13.1) trixie; urgency=medium
++
++  * Debian 13 trixie build of 8.0.0~r38 (Debian Edition).
++  * h96-wireplumber-offline: wanted version follows distro (Debian:
++    0.5.18-1~h96.1+deb13.1); header names both distro builds.
++
++ -- Scrumpper <190908034+Scrumpper@users.noreply.github.com>  Tue, 27 Oct 2026 06:00:00 +0000
++
+ h96-audio (8.0.0~r39) resolute; urgency=medium
+ 
+   * WirePlumber bluetooth.autoswitch-to-headset-profile = false
+--- a/h96-audio/debian/control
++++ b/h96-audio/debian/control
+@@ -8,7 +8,7 @@
+ Package: h96-audio
+ Architecture: all
+ Multi-Arch: foreign
+-Depends: h96-base (= 8.0.0~r39), rfkill, python3
++Depends: h96-base (= 8.0.0~r39+deb13.1), rfkill, python3
+ Recommends: pipewire, wireplumber, bluez
+ Description: H96 MAX V58 audio: PipeWire, WirePlumber, HDMI audio, Bluetooth
+  ALSA and card profile files, PipeWire and WirePlumber drop-ins, EQ presets,
+--- a/h96-audio/root/usr/lib/h96/h96-wireplumber-offline.sh
++++ b/h96-audio/root/usr/lib/h96/h96-wireplumber-offline.sh
+@@ -1,10 +1,11 @@
+ #!/bin/bash
+-# Install the offline-repo WirePlumber (0.5.18, upstream fix #1004) over the distro 0.5.13 once a desktop pulled it in.
++# Install the offline-repo WirePlumber (0.5.18, upstream fix #1004) over the distro build (Ubuntu 0.5.13, Debian 0.5.8) once a desktop pulled it in.
+ # Idempotent; no-op without wireplumber installed or when the installed version is already >= the offline one.
+ # Called from h96-pkgs-setup.sh (every boot until done) and from desktop-fixup after the desktop install.
+ set -u
+ REPO=/opt/h96-pkgs
+ WANT=0.5.18-1~h96.1
++[ "$(. /etc/os-release 2>/dev/null; echo "${ID:-}")" = debian ] && WANT=0.5.18-1~h96.1+deb13.1
+ PKGS="wireplumber libwireplumber-0.5-0"
+ have=$(dpkg-query -W -f='${Status} ${Version}' wireplumber 2>/dev/null | awk '/install ok installed/{print $4}')
+ [ -n "$have" ] || { echo "wireplumber not installed; nothing to do"; exit 0; }
+--- a/h96-base/debian/changelog
++++ b/h96-base/debian/changelog
+@@ -1,3 +1,26 @@
++h96-base (8.0.0~r39+deb13.1) trixie; urgency=medium
++
++  * Debian 13 trixie build of 8.0.0~r38 (Debian Edition).
++  * Mesa pin also names Debian trixie-backports 26.1.6-1~bpo13+1, every
++    Mesa binary of that build (OpenCL, Teflon, drm-shim and dev packages
++    too), so no Mesa package resolves to trixie 25.0.7.
++  * /etc/h96-release names Debian Edition (H96_EDITION=debian).
++  * h96-online-extras probes deb.debian.org on Debian; gamescope and
++    libspa-0.2-modules-extra skipped there (not in Debian 13).
++  * Console banner and os-release VARIANT name Debian Edition.
++  * armbian-firstlogin copy rebased on Armbian BSP 26.8.3; H96 change kept
++    (bounded wait for system start).
++  * COMMANDS.md text names Debian 13 where Ubuntu text named Ubuntu:
++    Chromium, Python 3.13, mpv, h96-perf over busctl, gamescope and
++    libspa-0.2-modules-extra absent (deb13.2; Steam ARM 3.1 text from
++    r39).
++  * COMMANDS.md: ophub update guard text states Debian Edition carries no
++    ophub scripts (no armbian-sync); h96-vulkan-wsi section states package
++    is not provided on Debian Edition (Mesa pin 26.1.4~kisak1~r cannot be
++    met by trixie-backports Mesa).
++
++ -- Scrumpper <190908034+Scrumpper@users.noreply.github.com>  Tue, 27 Oct 2026 06:00:00 +0000
++
+ h96-base (8.0.0~r39) resolute; urgency=medium
+ 
+   * COMMANDS.md: Steam ARM 3.1 (package in the image).
+--- a/h96-base/debian/postinst
++++ b/h96-base/debian/postinst
+@@ -30,6 +30,7 @@
+       rmdir "$R$d" 2>/dev/null || break; d="${d%/*}"
+     done
+   done <<'EOF'
++f 3905a91b3840a6db477f9cb002fe5bfdb1f5c38f07e532ef3729365bdba792b7 /etc/apt/preferences.d/01-h96-protect-mesa
+ f 2e7768bf29f310155634f45a48cc49912ee50ad9d5991004b03a2c71f0095c0f /etc/h96-issue
+ f ed9bbcb392c73a5febeac0da0e6fcc92d12a032d5db59608a9d8849e73bf86b6 /etc/h96-issue.net
+ f efe8551dff877b35f62c20c83a7880d8e5ec133b411ce6e380641c60be2ac170 /etc/h96-release
+--- a/h96-base/debian/postrm
++++ b/h96-base/debian/postrm
+@@ -38,6 +38,7 @@
+       mv -f "$R$p.h96-v72" "$R$p"
+     fi
+   done <<'EOF'
++f 3905a91b3840a6db477f9cb002fe5bfdb1f5c38f07e532ef3729365bdba792b7 /etc/apt/preferences.d/01-h96-protect-mesa
+ f 2e7768bf29f310155634f45a48cc49912ee50ad9d5991004b03a2c71f0095c0f /etc/h96-issue
+ f ed9bbcb392c73a5febeac0da0e6fcc92d12a032d5db59608a9d8849e73bf86b6 /etc/h96-issue.net
+ f efe8551dff877b35f62c20c83a7880d8e5ec133b411ce6e380641c60be2ac170 /etc/h96-release
+--- a/h96-base/debian/preinst
++++ b/h96-base/debian/preinst
+@@ -19,6 +19,7 @@
+       mv -f "$R$p" "$R$p.h96-v72"
+     fi
+   done <<'EOF'
++f 3905a91b3840a6db477f9cb002fe5bfdb1f5c38f07e532ef3729365bdba792b7 /etc/apt/preferences.d/01-h96-protect-mesa
+ f 2e7768bf29f310155634f45a48cc49912ee50ad9d5991004b03a2c71f0095c0f /etc/h96-issue
+ f ed9bbcb392c73a5febeac0da0e6fcc92d12a032d5db59608a9d8849e73bf86b6 /etc/h96-issue.net
+ f efe8551dff877b35f62c20c83a7880d8e5ec133b411ce6e380641c60be2ac170 /etc/h96-release
+--- a/h96-base/root/etc/apt/preferences.d/01-h96-protect-mesa
++++ b/h96-base/root/etc/apt/preferences.d/01-h96-protect-mesa
+@@ -1,7 +1,8 @@
+ # H96 Max V58: freeze Mesa at the Panthor-compatible build.
+ #
+ # Open Panthor GPU stack on this box only works with the kisak Mesa build
+-# (26.1.4~kisak1~r). Stock/newer Mesa does not drive Mali-G610 Panthor here,
++# (26.1.4~kisak1~r) on Ubuntu, trixie-backports 26.1.6-1~bpo13+1 on Debian.
++# Stock/newer Mesa does not drive Mali-G610 Panthor here,
+ # and a broken GPU stack on a TV box means no picture, indistinguishable
+ # from a dead box to anyone using it.
+ #
+@@ -15,3 +16,8 @@
+ Package: libgl1-mesa-dri mesa-vulkan-drivers libglx-mesa0 libegl-mesa0 libgbm1 mesa-libgallium libglapi-mesa mesa-va-drivers mesa-vdpau-drivers
+ Pin: version 26.1.4~kisak1~r*
+ Pin-Priority: 1001
++
++# Debian 13: same series from trixie-backports (no kisak build for glibc 2.41)
++Package: libgl1-mesa-dri mesa-vulkan-drivers libglx-mesa0 libegl-mesa0 libgbm1 mesa-libgallium libglapi-mesa mesa-va-drivers mesa-vdpau-drivers mesa-opencl-icd mesa-teflon-delegate mesa-drm-shim libgbm-dev libegl1-mesa-dev libgl1-mesa-dev libgles2-mesa-dev mesa-common-dev
++Pin: version 26.1.6-1~bpo13+1
++Pin-Priority: 1001
+--- a/h96-base/root/etc/h96-release
++++ b/h96-base/root/etc/h96-release
+@@ -1,3 +1,4 @@
+ H96_RELEASE=v8.0
+ H96_KERNEL=6.12.69-h96v58-8.0
+ H96_KERNEL_FALLBACK=6.1.172-h96v58-8.0
++H96_EDITION=debian
+--- a/h96-base/root/usr/lib/armbian/armbian-firstlogin
++++ b/h96-base/root/usr/lib/armbian/armbian-firstlogin
+@@ -14,11 +14,29 @@
+ [[ -n "$DISTRIB_CODENAME" && -f /etc/armbian-distribution-status ]] && DISTRIBUTION_STATUS=$(grep "^$DISTRIB_CODENAME" /etc/armbian-distribution-status | cut -d"=" -f2 | cut -d";" -f1)
+ 
+ . /etc/armbian-release
++. /usr/lib/armbian/armbian-common
++
++# Cleanup gate: EXIT trap removes the marker only after FIRSTLOGIN_SUCCESS=1,
++# so power-loss or mid-run failure reruns firstlogin on next boot.
++FIRSTLOGIN_SUCCESS=0
++_firstlogin_cleanup() {
++	if [ "$FIRSTLOGIN_SUCCESS" = "1" ]; then
++		rm -f /root/.not_logged_in_yet
++		sync -f /root 2>/dev/null || sync
++	fi
++}
++trap _firstlogin_cleanup EXIT
++# DM takeover (gdm/lightdm) sends SIGHUP to the console's foreground process
++# while bash is mid-command. An untrapped SIGHUP kills bash mid-flight and its
++# EXIT trap gets cut short: builtins still run, but external commands (rm) do
++# not survive the dying shell. Handle the signal in normal execution context
++# instead — cleanup runs fully, then exit.
++trap '_firstlogin_cleanup; exit' HUP INT TERM
+ 
+ check_abort() {
+ 
+ 	echo -e "\nDisabling user account creation procedure\n"
+-	rm -f /root/.not_logged_in_yet
++	FIRSTLOGIN_SUCCESS=1
+ 	if [[ ${USER_SHELL} == zsh ]]; then
+ 		printf "\nYou selected \e[0;91mZSH\x1B[0m as your default shell. If you want to use it right away, please logout and login! \n\n"
+ 	fi
+@@ -117,9 +135,13 @@
+ 
+ 						DEVICE_NAME=${wlan_index}
+ 						DEVTYPE=wifis
+-						echo -e "$(createYAML)" > /etc/netplan/30-${DEVTYPE}${CONFIG_NAME}.yaml
+-						chmod 600 /etc/netplan/30-${DEVTYPE}${CONFIG_NAME}.yaml
+-						#Enable Wlan, disable Eth
++						local _f="/etc/netplan/30-${DEVTYPE}${CONFIG_NAME}.yaml"
++						if echo -e "$(createYAML)" > "${_f}.tmp"; then
++							atomic_write "${_f}.tmp" "${_f}" 600 || return 1
++						else
++							rm -f "${_f}.tmp"
++							return 1
++						fi
+ 						PRESET_NET_ETHERNET_ENABLED=0
+ 						netplan apply > /dev/null 2>&1
+ 
+@@ -131,9 +153,13 @@
+ 
+ 						DEVICE_NAME=${eth_index}
+ 						DEVTYPE=ethernets
+-						echo -e "$(createYAML)" > /etc/netplan/30-${DEVTYPE}${CONFIG_NAME}.yaml
+-						chmod 600 /etc/netplan/30-${DEVTYPE}${CONFIG_NAME}.yaml
+-						# Enable Eth, disable Wlan
++						local _f="/etc/netplan/30-${DEVTYPE}${CONFIG_NAME}.yaml"
++						if echo -e "$(createYAML)" > "${_f}.tmp"; then
++							atomic_write "${_f}.tmp" "${_f}" 600 || return 1
++						else
++							rm -f "${_f}.tmp"
++							return 1
++						fi
+ 						PRESET_NET_WIFI_ENABLED=0
+ 						netplan apply > /dev/null 2>&1
+ 				fi
+@@ -258,9 +284,24 @@
+ 	SHELL_PATH=$(grep "/$USER_SHELL$" /etc/shells | tail -1)
+ 	chsh -s "$(grep -iF "/$USER_SHELL" /etc/shells | tail -1)"
+ 
+-	# change shell for future users
+-	sed -i "s|^SHELL=.*|SHELL=${SHELL_PATH}|" /etc/default/useradd
+-	sed -i "s|^DSHELL=.*|DSHELL=${SHELL_PATH}|" /etc/adduser.conf
++	# Change shell for future users. useradd reads /etc/default/useradd;
++	# /etc/adduser.conf is optional, so guard that edit.
++	local _f="/etc/default/useradd"
++	if sed "s|^SHELL=.*|SHELL=${SHELL_PATH}|" "${_f}" > "${_f}.tmp"; then
++		atomic_write "${_f}.tmp" "${_f}" || return 1
++	else
++		rm -f "${_f}.tmp"
++		return 1
++	fi
++	if [[ -f /etc/adduser.conf ]]; then
++		_f="/etc/adduser.conf"
++		if sed "s|^DSHELL=.*|DSHELL=${SHELL_PATH}|" "${_f}" > "${_f}.tmp"; then
++			atomic_write "${_f}.tmp" "${_f}" || return 1
++		else
++			rm -f "${_f}.tmp"
++			return 1
++		fi
++	fi
+ 
+ }
+ 
+@@ -340,7 +381,8 @@
+ 						done
+ 
+ 						# generate config
+-						cat <<- EOF > /etc/netplan/30-wifis-dhcp.yaml
++						local _f="/etc/netplan/30-wifis-dhcp.yaml"
++						if cat <<- EOF > "${_f}.tmp"
+ 						# Created by Armbian firstlogin script
+ 						network:
+ 						  wifis:
+@@ -351,7 +393,12 @@
+ 						        "$SSID":
+ 						         password: "${password}"
+ 						EOF
+-						chmod 600 /etc/netplan/30-wifis-dhcp.yaml
++						then
++							atomic_write "${_f}.tmp" "${_f}" 600 || return 1
++						else
++							rm -f "${_f}.tmp"
++							return 1
++						fi
+ 
+ 						# apply to netplan
+ 						systemctl daemon-reload
+@@ -422,6 +469,7 @@
+ 			jq '.timezone, .country, .country_code' |
+ 			while read -r TIMEZONE; do
+ 				read -r COUNTRY
++				read -r COUNTRYCODE
+ 				echo "${TIMEZONE},${COUNTRY},${COUNTRYCODE}" | tr --delete '"\n'
+ 			done
+ 	)
+@@ -485,25 +533,43 @@
+ 		timedatectl set-timezone "${TZDATA}"
+ 		dpkg-reconfigure --frontend=noninteractive tzdata > /dev/null 2>&1
+ 
+-		# change default locales
+-		sed -i "s/=.*/=$(echo ${LOCALES} | cut -d" " -f1)/g" /etc/default/locale
++		# change default locales (atomic write)
++		local _f="/etc/default/locale"
++		if sed "s/=.*/=$(echo ${LOCALES} | cut -d" " -f1)/g" "${_f}" > "${_f}.tmp"; then
++			atomic_write "${_f}.tmp" "${_f}" || return 1
++		else
++			rm -f "${_f}.tmp"
++			return 1
++		fi
+ 
+-		# generate locales
+-		sed -i 's/# '"${LOCALES}"'/'"${LOCALES}"'/' /etc/locale.gen
++		# generate locales (atomic write for locale.gen)
++		local _f="/etc/locale.gen"
++		if sed 's/# '"${LOCALES}"'/'"${LOCALES}"'/' "${_f}" > "${_f}.tmp"; then
++			atomic_write "${_f}.tmp" "${_f}" || return 1
++		else
++			rm -f "${_f}.tmp"
++			return 1
++		fi
+ 		echo -e "Generating locales: \x1B[92m${LOCALES}\x1B[0m"
+ 		locale-gen "${LOCALES}" > /dev/null 2>&1
+ 
+-		# setting detected locales only for user
+-		{
+-			echo "export LC_ALL=$LOCALES"
+-			echo "export LANG=$LOCALES"
+-			echo "export LANGUAGE=$LOCALES"
+-		} >> /home/"$RealUserName"/.bashrc
+-		{
+-			echo "export LC_ALL=$LOCALES"
+-			echo "export LANG=$LOCALES"
+-			echo "export LANGUAGE=$LOCALES"
+-		} >> /home/"$RealUserName"/.xsessionrc
++		# setting detected locales only for user (idempotent)
++		for rcfile in /home/"$RealUserName"/.bashrc /home/"$RealUserName"/.xsessionrc; do
++			if [[ ! -e "$rcfile" ]]; then
++				# Create empty file with proper ownership before appending; leave
++				# ownership alone if the file already exists (user may have customized).
++				touch -- "$rcfile"
++				chown -- "$RealUserName":"$RealUserName" "$rcfile"
++			fi
++			if ! grep -q "^export LC_ALL=$LOCALES" "$rcfile" 2>/dev/null; then
++				{
++					cat -- "$rcfile"
++					echo "export LC_ALL=$LOCALES"
++					echo "export LANG=$LOCALES"
++					echo "export LANGUAGE=$LOCALES"
++				} > "${rcfile}.tmp" && atomic_write "${rcfile}.tmp" "$rcfile" "" "$RealUserName:$RealUserName" || return 1
++			fi
++		done
+ 
+ 	fi
+ }
+@@ -535,6 +601,15 @@
+ add_user() {
+ 	read -r -t 0 _
+ 	REPEATS=3
++
++	# Power-loss re-run: detect existing regular user, skip username prompt
++	local existing_user
++	existing_user=$(awk -F: '$3 >= 1000 && $1 != "nobody" {print $1; exit}' /etc/passwd)
++	if [ -n "${existing_user}" ]; then
++		RealUserName="${existing_user}"
++		username="${existing_user}"
++		echo -e "Detected existing user \e[0;92m$RealUserName\x1B[0m from previous setup, reusing."
++	else
+ 	while [ -f "/root/.not_logged_in_yet" ]; do
+ 		[[ -z "${PRESET_USER_NAME}" ]] && echo -e "\nPlease provide a username (eg. your first name): \c"
+ 		if [ -z "$PRESET_USER_NAME" ];then
+@@ -549,8 +624,18 @@
+ 
+ 		RealUserName="$(echo "$username" | tr '[:upper:]' '[:lower:]' | tr -d -c '[:alnum:]')"
+ 		[ -z "$RealUserName" ] && return
+-		if ! id "$RealUserName" > /dev/null 2>&1; then break; else echo -e "Username \e[0;31m$RealUserName\x1B[0m already exists on the system."; fi
++		if ! id "$RealUserName" > /dev/null 2>&1; then
++			break
++		elif [ ! -d "/home/$RealUserName" ]; then
++			# Partially created user from a prior interrupted run: break and let
++			# the home-repair branch below recover it. Without this, PRESET_USER_NAME
++			# would loop forever on "already exists".
++			break
++		else
++			echo -e "Username \e[0;31m$RealUserName\x1B[0m already exists on the system."
++		fi
+ 	done
++	fi
+ 
+ 	# Set default user login icon
+ 	set_user_icon "$RealUserName"
+@@ -586,13 +671,36 @@
+ 				RealName="$PRESET_DEFAULT_REALNAME"
+ 			fi
+ 
+-			adduser --quiet --disabled-password --home /home/"$RealUserName" --gecos "$RealName" "$RealUserName"
++			# Skip user creation if already exists (power-loss re-run). If the user
++			# exists but home is missing (passwd written, home creation interrupted),
++			# rebuild it from /etc/skel with correct ownership so the user can log in.
++			if ! id "$RealUserName" > /dev/null 2>&1; then
++				# useradd (Essential, from passwd) instead of adduser (optional on
++				# Debian forky+, absent from minimal images). --user-group mirrors
++				# adduser's per-user group; --create-home copies /etc/skel; login shell
++				# comes from SHELL_PATH (set_shell ran first). Password is disabled here
++				# and set right below, same as adduser --disabled-password.
++				useradd --create-home --home-dir /home/"$RealUserName" --shell "$SHELL_PATH" \
++					--comment "$RealName" --user-group "$RealUserName" || return 1
++			elif [ ! -d "/home/$RealUserName" ]; then
++				mkdir -p /home/"$RealUserName" || return 1
++				cp -r /etc/skel/. /home/"$RealUserName"/ 2>/dev/null || return 1
++				chown -R "$RealUserName:$RealUserName" /home/"$RealUserName" || return 1
++				echo -e "Repaired missing home directory for \e[0;92m$RealUserName\x1B[0m."
++			fi
+ 
+ 			# download and add SSH key if defined
+ 			if [[ -n "${PRESET_USER_KEY}" ]]; then
+-				mkdir -p /home/"$RealUserName"/.ssh/
+-				curl --retry 5 --connect-timeout 3 "${PRESET_USER_KEY}" > /home/"$RealUserName"/.ssh/authorized_keys 2> /dev/null
+-				chown -R "$RealUserName":"$RealUserName" /home/"$RealUserName"/.ssh/
++				local _f="/home/$RealUserName/.ssh/authorized_keys"
++				mkdir -p /home/"$RealUserName"/.ssh/ || return 1
++				chown "$RealUserName:$RealUserName" /home/"$RealUserName"/.ssh/ || return 1
++				chmod 700 /home/"$RealUserName"/.ssh/ || return 1
++				if curl --retry 5 --connect-timeout 3 "${PRESET_USER_KEY}" > "${_f}.tmp" 2> /dev/null; then
++					atomic_write "${_f}.tmp" "${_f}" 600 "$RealUserName:$RealUserName" || return 1
++				else
++					rm -f "${_f}.tmp"
++					return 1
++				fi
+ 			fi
+ 
+ 			if [[ -n "$first_input" ]]; then
+@@ -608,7 +716,7 @@
+ 			# (docker-ce package creates this group automatically during postinst, but we create it early
+ 			# to guarantee group membership is ready immediately after user creation.)
+ 			if ! getent group docker >/dev/null; then
+-				if ! addgroup --system --quiet docker 2>/dev/null; then
++				if ! groupadd --system docker 2>/dev/null; then
+ 					echo "Warning: Failed to create docker group" >&2
+ 				fi
+ 			fi
+@@ -623,10 +731,21 @@
+ 			[ -z "$RealName" ] && RealName="$RealUserName"
+ 			echo -e "\nDear \e[0;92m${RealName}\x1B[0m, your account \e[0;92m${RealUserName}\x1B[0m has been created and is sudo enabled."
+ 			echo -e "Please use this account for your daily work from now on.\n"
+-			rm -f /root/.not_logged_in_yet
++			# .not_logged_in_yet is NOT deleted here - the EXIT trap removes
++			# it once FIRSTLOGIN_SUCCESS=1 is set after all config completes.
+ 			# set up profile sync daemon on desktop systems
+ 			if command -v psd > /dev/null 2>&1; then
+-				echo -e "${RealUserName} ALL=(ALL) NOPASSWD: /usr/bin/psd-overlay-helper" >> /etc/sudoers
++				# Grant psd-overlay-helper NOPASSWD via a sudoers drop-in (atomic write).
++				# Using /etc/sudoers.d/ avoids touching /etc/sudoers directly: power-loss
++				# recovery is simply "no drop-in" → re-run recreates it, and there is no
++				# need to restore or validate any dist version of /etc/sudoers.
++				local _f="/etc/sudoers.d/armbian-firstlogin-psd"
++				if echo "${RealUserName} ALL=(ALL) NOPASSWD: /usr/bin/psd-overlay-helper" > "${_f}.tmp"; then
++					atomic_write "${_f}.tmp" "${_f}" 440 || return 1
++				else
++					rm -f "${_f}.tmp"
++					return 1
++				fi
+ 				touch /home/"${RealUserName}"/.activate_psd
+ 				chown "$RealUserName":"$RealUserName" /home/"${RealUserName}"/.activate_psd
+ 			fi
+@@ -635,7 +754,7 @@
+ 			echo -e "Rejected - \e[0;31mpasswords do not match.\x1B[0m Try again [${REPEATS}]."
+ 			REPEATS=$((REPEATS - 1))
+ 		fi
+-		[[ "$REPEATS" -eq 0 ]] && logout
++		[[ "$REPEATS" -eq 0 ]] && exit 0
+ 	done
+ 
+ }
+@@ -665,20 +784,29 @@
+ }
+ 
+ 
+-if [[ -f /root/.not_logged_in_yet && -n $(tty) ]]; then
++if [[ -f /root/.not_logged_in_yet ]] && tty -s; then
+ 
+ 	. /root/.not_logged_in_yet
+ 
+ 	# override configuration from URL
+ 	if [[ -n "${PRESET_CONFIGURATION}" ]]; then
+-		curl --retry 5 --connect-timeout 3 "${PRESET_CONFIGURATION}" > /root/.not_logged_in_yet 2> /dev/null
++		_f="/root/.not_logged_in_yet"
++		if curl --retry 5 --connect-timeout 3 "${PRESET_CONFIGURATION}" > "${_f}.tmp" 2> /dev/null && bash -n "${_f}.tmp"; then
++			atomic_write "${_f}.tmp" "${_f}" 600 || exit 1
++			. "${_f}"
++		else
++			rm -f "${_f}.tmp"
++			exit 1
++		fi
+ 	fi
+ 
+-	do_firstrun_automated_network_configuration
++	do_firstrun_automated_network_configuration || exit 1
+ 
+-	# disable autologin
++	# disable autologin (remove both generic and tty-specific paths)
+ 	rm -f /etc/systemd/system/getty@.service.d/override.conf
++	rm -f /etc/systemd/system/getty@tty1.service.d/override.conf
+ 	rm -f /etc/systemd/system/serial-getty@.service.d/override.conf
++	rm -f /etc/systemd/system/serial-getty@ttyGS0.service.d/override.conf
+ 	systemctl daemon-reload
+ 
+ 	declare desktop_dm="none"
+@@ -794,7 +922,13 @@
+ 			# download SSH key if defined
+ 			if [[ -n "${PRESET_ROOT_KEY}" ]]; then
+ 				mkdir -p /root/.ssh/
+-				curl --retry 5 --connect-timeout 3 "${PRESET_ROOT_KEY}" > /root/.ssh/authorized_keys 2> /dev/null
++				_f="/root/.ssh/authorized_keys"
++				if curl --retry 5 --connect-timeout 3 "${PRESET_ROOT_KEY}" > "${_f}.tmp" 2> /dev/null; then
++					atomic_write "${_f}.tmp" "${_f}" 600 || exit 1
++				else
++					rm -f "${_f}.tmp"
++					exit 1
++				fi
+ 			fi
+ 		fi
+ 
+@@ -842,7 +976,7 @@
+ 		fi
+ 		[[ "$REPEATS" -eq 0 ]] && exit
+ 	done
+-	trap - INT TERM EXIT
++	trap - INT
+ 
+ 	# display support status
+ 	if [ "$IMAGE_TYPE" != "nightly" ]; then
+@@ -865,31 +999,47 @@
+ 
+ 	# ask user to select shell
+ 	trap '' 2
+-	set_shell
+-	trap - INT TERM EXIT
++	set_shell || exit 1
++	trap - INT
+ 
+ 	trap check_abort INT
+ 
+-	while [ -f "/root/.not_logged_in_yet" ]; do
++	if [ -f "/root/.not_logged_in_yet" ]; then
+ 		[[ -z "${PRESET_USER_NAME}" ]] && echo -e "\nCreating a new user account. Press <Ctrl-C> to abort"
+ 		[[ "${desktop_dm}" != "none" ]] && echo -e "\n\e[0;31mDesktop environment will not be enabled if you abort the new user creation\x1B[0m"
+ 		add_user
+-	done
+-	trap - INT TERM EXIT
++		if [[ $? -ne 0 || -z "${RealUserName:-}" ]]; then
++			echo -e "\nUser creation failed. Retrying on next login."
++			exit 1
++		fi
++	fi
++	trap - INT
+ 
+ 	# ask user to select automated locales or not
+ 	trap '' 2
+-	set_timezone_and_locales
+-	trap - INT TERM EXIT
++	set_timezone_and_locales || exit 1
++	trap - INT
+ 
+ 	if [[ ${USER_SHELL} == zsh ]]; then
+ 		printf "\nYou selected \e[0;91mZSH\x1B[0m as your default shell. If you want to use it right away, please logout and login! \n\n"
+ 	fi
+ 
+-	# re-enable passing locale environment via ssh
+-	sed -e '/^#AcceptEnv LANG/ s/^#//' -i /etc/ssh/sshd_config
+-	# restart sshd daemon
+-	systemctl restart ssh.service
++	# re-enable passing locale environment via ssh (atomic write)
++	_f="/etc/ssh/sshd_config"
++	if sed -E '/^[[:blank:]]*#[[:blank:]]*AcceptEnv[[:blank:]]+LANG/ s/^[[:blank:]]*#[[:blank:]]*//' "${_f}" > "${_f}.tmp"; then
++		atomic_write "${_f}.tmp" "${_f}" || exit 1
++	else
++		rm -f "${_f}.tmp"
++		exit 1
++	fi
++	# Restart ssh.service; on failure preserve /root/.not_logged_in_yet so
++	# firstlogin reruns for recovery. Unlike reload, restart succeeds on an
++	# inactive unit, so this does not loop on a fresh image.
++	systemctl restart ssh.service || exit 1
++	# All critical configuration is complete. The EXIT trap may now safely
++	# remove the marker; subsequent failures (DM startup, etc.) should not
++	# force a full firstlogin rerun.
++	FIRSTLOGIN_SUCCESS=1
+ 
+ 	# rpardini: hacks per-dm, very much legacy stuff that works by a miracle
+ 	if [[ "${desktop_dm}" == "lightdm" ]] && [ -n "$RealName" ]; then
+@@ -960,7 +1110,7 @@
+ 		else
+ 			echo -e "\n\e[1m\e[39mNow starting desktop environment...\x1B[0m\n"
+ 			sleep 1
+-			service lightdm start 2> /dev/null
++			systemctl --no-block start lightdm 2>/dev/null
+ 			if [ -f /root/.desktop_autologin ]; then
+ 				rm /root/.desktop_autologin
+ 			else
+@@ -989,7 +1139,7 @@
+ 		else
+ 			echo -e "\n\e[1m\e[39mNow starting desktop environment...\x1B[0m\n"
+ 			sleep 1
+-			service gdm3 start 2> /dev/null
++			systemctl --no-block start gdm3 2>/dev/null
+ 			if [ -f /root/.desktop_autologin ]; then
+ 				rm /root/.desktop_autologin
+ 			else
+@@ -1021,7 +1171,8 @@
+ 			User=$RealUserName
+ 		EOF
+ 		echo -e "\n\e[1m\e[39mNow starting desktop environment via ${desktop_dm}...\x1B[0m\n"
+-		systemctl enable --now sddm 2> /dev/null
++		systemctl enable sddm 2>/dev/null
++		systemctl --no-block start sddm 2>/dev/null
+ 
+ 		if [ -f /root/.desktop_autologin ]; then
+ 				rm /root/.desktop_autologin
+@@ -1050,3 +1201,5 @@
+ if [[ -f /root/provisioning.sh ]]; then
+ 	. /root/provisioning.sh
+ fi
++
++# Marker cleanup is handled by _firstlogin_cleanup EXIT trap.
+--- a/h96-base/root/usr/lib/h96/h96-branding.sh
++++ b/h96-base/root/usr/lib/h96/h96-branding.sh
+@@ -48,8 +48,10 @@
+ 
+ # os-release: base-files owns PRETTY_NAME/ID/VERSION (tools read them); H96 identity goes in VARIANT
+ rel=$(sed -n 's/^H96_RELEASE=//p' /etc/h96-release 2>/dev/null)
++# edition suffix (Debian Edition) from /etc/h96-release
++sfx=; [ "$(sed -n 's/^H96_EDITION=//p' /etc/h96-release 2>/dev/null)" = debian ] && sfx=" Debian Edition"
+ if [ -n "$rel" ] && [ -e /etc/os-release ]; then
+-    want_v="VARIANT=\"H96 Max V58 Unofficial Port $rel\""
++    want_v="VARIANT=\"H96 Max V58 Unofficial Port $rel$sfx\""
+     want_id='VARIANT_ID=h96-max-v58'
+     if ! grep -qxF "$want_v" /etc/os-release || ! grep -qxF "$want_id" /etc/os-release; then
+         sed -i --follow-symlinks -e '/^VARIANT=/d' -e '/^VARIANT_ID=/d' /etc/os-release
+--- a/h96-base/root/usr/lib/h96/h96-online-extras.sh
++++ b/h96-base/root/usr/lib/h96/h96-online-extras.sh
+@@ -16,6 +16,10 @@
+ 
+ DONE=/var/lib/h96-online-extras-done
+ PKGS="box64-rk3588 gamescope libspa-0.2-modules-extra"
++# Debian 13 carries neither gamescope nor libspa-0.2-modules-extra
++[ "$(. /etc/os-release 2>/dev/null; echo "${ID:-}")" = debian ] && PKGS="box64-rk3588"
++PROBE=ports.ubuntu.com
++[ "$(. /etc/os-release 2>/dev/null; echo "${ID:-}")" = debian ] && PROBE=deb.debian.org
+ LOG=/var/log/h96-online-extras.log
+ 
+ exec > >(tee -a "$LOG") 2>&1
+@@ -37,7 +41,7 @@
+ echo "  waiting for connectivity..."
+ ok=0
+ for i in $(seq 1 60); do
+-  if getent hosts ports.ubuntu.com >/dev/null 2>&1; then ok=1; break; fi
++  if getent hosts "$PROBE" >/dev/null 2>&1; then ok=1; break; fi
+   sleep 5
+ done
+ if [ "$ok" -ne 1 ]; then
+--- a/h96-base/root/usr/lib/h96/seed/h96-issue
++++ b/h96-base/root/usr/lib/h96/seed/h96-issue
+@@ -1,2 +1,2 @@
+-Armbian-unofficial 26.05.0-trunk (H96 Max V58 Unofficial Port v8.0) \l
++Armbian-unofficial 26.05.0-trunk (H96 Max V58 Unofficial Port v8.0 Debian Edition) \l
+ 
+--- a/h96-base/root/usr/lib/h96/seed/h96-issue.net
++++ b/h96-base/root/usr/lib/h96/seed/h96-issue.net
+@@ -1 +1 @@
+-Armbian-unofficial 26.05.0-trunk (H96 Max V58 Unofficial Port v8.0)
++Armbian-unofficial 26.05.0-trunk (H96 Max V58 Unofficial Port v8.0 Debian Edition)
+--- a/h96-base/root/usr/share/doc/h96-base/COMMANDS.md
++++ b/h96-base/root/usr/share/doc/h96-base/COMMANDS.md
+@@ -487,7 +487,7 @@
+ ### `ff2mpv` and `play-with-mpv`
+ Browser integration. Install **ff2mpv** extension in Firefox or Chromium and its
+ button hands current video to mpv for hardware decoding, instead of browser
+-decoding it in software. Browser video decode itself stays on CPU (Ubuntu's Chromium
++decoding it in software. Browser video decode itself stays on CPU (Debian's Chromium
+ is built without V4L2 decoder this hardware needs), which is why this button exists.
+ ff2mpv also adds right-click → Play in MPV. When mpv does not start, ff2mpv shows desktop
+ notification with reason (missing libraries listed) and returns error to browser; mpv
+@@ -598,7 +598,7 @@
+ | `saver`, `power-saver`, `powersave` | `power-saver`      | `schedutil`   | `schedutil`  | 300-600 MHz             |
+ | `status` (default)                  | prints, changes nothing |          |              |                         |
+ 
+-`h96-perf` calls `powerprofilesctl set`. Profile service accepts change from root or
++`h96-perf` sets profile over D-Bus (`busctl`). Profile service accepts change from root or
+ from active local desktop session (desktop terminal, panel applet); SSH and console
+ logins need `sudo`. Change is not persistent: boot returns to `balanced`.
+ `h96-perf --help` prints usage; unknown argument exits 2.
+@@ -633,7 +633,7 @@
+ accepted from root or from active local desktop session; other callers (SSH, console,
+ system accounts) get `AccessDenied`. Program can hold `performance` or `power-saver`
+ for its run time, released when it exits; as Steam launch option:
+-`powerprofilesctl launch -p performance -r game -- %command%`. Explicit profile change
++`powerprofilesctl launch` (needs `powerprofilesctl`, not on Debian 13). Explicit profile change
+ drops all holds. Hold is released only by program that made it, or by root.
+ 
+ | Profile       | Big cores     | Little cores | CPU floor | CPU cap (big / little) | CPU deep idle (`cpu-sleep`) | GPU          | DDR (6.12 kernel)    |
+@@ -687,7 +687,7 @@
+ swapchain images to KWin without copy. Driver sits beside stock Mesa in
+ `/usr/lib/h96/vulkan-wsi` with own ICD file; stock driver stays in place. Package depends on
+ `mesa-vulkan-drivers` 26.1.4~kisak1~r exactly (`/usr/lib/h96/vulkan-wsi/mesa-pin`) and blocks
+-other versions.
++other versions. Debian Edition: package not provided (trixie-backports Mesa cannot meet pin).
+ 
+ ```bash
+ h96-vulkan-wsi status            # switch, Mesa pin and installed version, session, driver in running session
+@@ -758,7 +758,7 @@
+ default. Switch to `performance` before running inference.
+ 
+ **`power sync`.** System power profile (`h96-perf`, panel applet) covers CPU and GPU
+-only. `power sync` reads active profile (`powerprofilesctl get`, governors as fallback)
++only. `power sync` reads active profile (`powerprofilesctl get` when present, else governors)
+ and matches NPU to it: `performance` for performance, `powersave` for power-saver,
+ `balanced` otherwise.
+ 
+@@ -798,7 +798,7 @@
+ Verified: runtime `2.3.2` installs and loads against driver `v0.9.8`.
+ 
+ **Python limitation.** Rockchip publishes `rknn-toolkit-lite2` wheels only up to CPython
+-3.12. This image is Armbian on Ubuntu 26.04 with Python 3.14, so those wheels will not install
++3.12. This image is Armbian on Debian 13 with Python 3.13, so those wheels will not install
+ against system interpreter. Use C API (link `-lrknnrt`), or bring CPython ≤ 3.12
+ of your own in venv or container. Converting model to `.rknn` runs on PC, as it always
+ has.
+@@ -1367,9 +1367,9 @@
+ ## Gaming
+ 
+ > `box64` is included as offline fallback `.deb` in `/usr/lib/h96/gaming`
+-> (`box64-rk3588-fallback.deb`), and `box64-rk3588` plus `gamescope` install from
+-> apt via `h96-online-extras` first time box reaches network, `box64-rk3588` pinned to tested 0.4.3 (with
+-> `libspa-0.2-modules-extra`, which Bluetooth AAC needs). `box86` is included as
++> (`box64-rk3588-fallback.deb`), and `box64-rk3588` installs from
++> apt via `h96-online-extras` first time box reaches network, pinned to tested 0.4.3 (gamescope and
++> `libspa-0.2-modules-extra` are not in Debian 13). `box86` is included as
+ > offline package in `/opt/h96-pkgs`. Both DXVK builds are in image under `/usr/lib/h96/gaming`;
+ > Wine (about 100 MB) downloads on first `h96-game-mode` run (see below).
+ 
+@@ -1554,7 +1554,7 @@
+ 
+ Options: `-p, --prefix DIR` (default `~/.local/share/h96-gaming/prefixes/default`),
+ `-d, --dxvk sarek|stripped|auto` (`auto` = stripped DXVK 2.7.1 for D3D10/11),
+-`-c, --compositor cage|gamescope` (default cage), `-r, --res WxH` (gamescope),
++`-c, --compositor cage|gamescope` (default cage; gamescope not in Debian 13), `-r, --res WxH` (gamescope),
+ `--hud` (DXVK frame-time overlay), `--no-dxvk` (leave prefix DLLs as they are),
+ `--wine-file FILE` (local `wine-11.12-staging-tkg-amd64-wow64.tar.xz`; archive with paths outside
+ one top folder is refused), `--stack-file FILE` (older all-in-one `h96-gaming-stack.tar.gz`).
+@@ -1587,7 +1587,7 @@
+ ### Re-running gaming setup
+ `h96-gaming-setup.service` runs once on first boot: installs gaming stack (offline:
+ `vulkan-tools`, `cage`, `mesa-utils`, box64 fallback `.deb`; online, best effort:
+-`box64-rk3588`, `gamescope`), validates PanVK and box64, writes
++`box64-rk3588`; gamescope not in Debian 13), validates PanVK and box64, writes
+ `/var/lib/h96-gaming-setup-done`, then retires. To force fresh run after manual
+ change, or to re-validate:
+ 
+@@ -2040,7 +2040,7 @@
+ | `h96-display-console.service`            | oneshot at boot before display manager: when bootloader left HDMI in YCbCr, one blank cycle lets kernel pick RGB (`h96-display console-apply`); no-op on RGB |
+ | `h96-autologin.service`                  | oneshot at boot before lightdm: runs `h96-autologin-setup --boot`, which sets lightdm autologin for first desktop user on Plasma X11 session once both exist, one time (`/var/lib/h96/autologin-set`); no-op before that and after |
+ | `h96-timezone-sync.service` / `.path` (v7.2) | `/etc/timezone` follows `/etc/localtime`: runs at boot and when `/etc/timezone` changes; also run when `systemd-timedated` exits (drop-in below) |
+-| `h96-armbian-update-guard.service` / `.path` (v7.2) | puts refusing `/usr/sbin/armbian-update` back when `armbian-sync` (ophub script sync) replaces it with ophub kernel updater; journal tag `h96-armbian-update-guard` |
++| `h96-armbian-update-guard.service` / `.path` (v7.2) | puts refusing `/usr/sbin/armbian-update` back when ophub kernel updater replaces it (Debian Edition: no ophub scripts, no `armbian-sync`); journal tag `h96-armbian-update-guard` |
+ | `h96-dm-handoff-check.service` (v7.1)    | boot check after KDE setup: masks SDDM when reboot came before hand-off mask step; no change when SDDM already masked |
+ | `h96-protect-updates.service` (v7.0)     | oneshot at every boot, before Armbian first run, video setup, PackageKit and unattended upgrades: `h96-protect-updates` keeps H96 firmware and video stack in place across package updates (see below) |
+ 
+@@ -2049,7 +2049,7 @@
+ | Unit                        | What it does                                                                                                                          |
+ |-----------------------------|---------------------------------------------------------------------------------------------------------------------------------------|
+ | `h96-online-extras.timer`   | starts `h96-online-extras.service` once per boot, 40 seconds after kernel boot stamp                                                  |
+-| `h96-online-extras.service` | retries packages that require internet (`box64-rk3588`, `gamescope`, `libspa-0.2-modules-extra` for Bluetooth AAC) until they install |
++| `h96-online-extras.service` | retries packages that require internet (`box64-rk3588`; gamescope and `libspa-0.2-modules-extra` are not in Debian 13) until they install |
+ | `h96-ytdlp-update.timer`    | `yt-dlp` update 15 min after boot and weekly                                                                                                                |
+ | `h96-ddc-setup.timer`       | 20 s after boot: installs `ddcutil` from offline repo for `h96-brightness` and KDE brightness slider; done flag `/var/lib/h96-ddc-setup-done`, retries next boot until then |
+ | `h96-pkgs-setup.timer`      | 30 s after boot: installs `v4l-utils` (`h96-cec`) and `dnsmasq-base` (`h96-hotspot`) from offline repo, then starts enabled `h96-cec.service`; done flag `/var/lib/h96-pkgs-setup-done`, log `/var/log/h96-pkgs-setup.log` |
+@@ -2080,9 +2080,9 @@
+   (`brcm/BCM4362A2.hcd`), AP6275P WiFi firmware, CLM blob and nvram
+   (`brcm/fw_bcm43752a2_pcie_ag.bin`, `brcm/clm_bcm43752a2_pcie_ag.blob`,
+   `brcm/nvram_ap6275p.txt`).
+-- Video stack from Ubuntu `mpv`, `libmpv2`, `libmpv-dev`, `ffmpeg` and `librockchip-mpp1`:
++- Video stack from Debian `mpv`, `libmpv2`, `libmpv-dev`, `ffmpeg` and `librockchip-mpp1`:
+   `/usr/bin/mpv`, `/usr/bin/ffmpeg`, `/usr/bin/ffprobe`, `libmpv.so*`,
+-  `librockchip_mpp.so.0`, and `/etc/mpv/mpv.conf` (purging Ubuntu `mpv` keeps it).
++  `librockchip_mpp.so.0`, and `/etc/mpv/mpv.conf` (purging Debian `mpv` keeps it).
+ 
+ ```bash
+ sudo h96-protect-updates            # add diversions (default, idempotent)
+@@ -2091,7 +2091,7 @@
+ h96-protect-updates --help          # usage; no root needed
+ ```
+ 
+-Installing Ubuntu `mpv` adds no second menu entry: `/usr/share/applications/mpv.desktop`
++Installing Debian `mpv` adds no second menu entry: `/usr/share/applications/mpv.desktop`
+ hides package entry (`NoDisplay=true`); "Play in mpv (hardware video)" runs same `/usr/bin/mpv`.
+ 
+ `h96-protect-updates.service` runs it at every boot. After `--remove`, next install or upgrade
+@@ -2101,10 +2101,10 @@
+ ### `h96-armbian-update-guard`  (`/usr/sbin`, v7.2)
+ 
+ `/usr/sbin/armbian-update` (ophub kernel updater) is replaced by stub that prints why and
+-exits 1: ophub updater would write ophub kernel into `/boot` over H96 kernel. `armbian-sync`
+-copies ophub scripts, ophub updater included, into `/usr/sbin`; `h96-armbian-update-guard.path`
+-sees it and puts stub back (copy `/usr/lib/h96/armbian-update-h96`). Other ophub
+-scripts `armbian-sync` updates stay. Kernel arrives with image releases.
++exits 1: ophub updater would write ophub kernel into `/boot` over H96 kernel. Debian Edition
++carries no ophub scripts (no `armbian-sync`); `h96-armbian-update-guard.path` still watches
++`/usr/sbin/armbian-update` and puts stub back (copy `/usr/lib/h96/armbian-update-h96`) when
++ophub updater arrives by hand. Kernel arrives with image releases.
+ 
+ ### Configuration drop-ins
+ 
+--- a/h96-boot/debian/changelog
++++ b/h96-boot/debian/changelog
+@@ -1,3 +1,9 @@
++h96-boot (8.0.0~r39+deb13.1) trixie; urgency=medium
++
++  * Debian 13 trixie build of 8.0.0~r38 (Debian Edition).
++
++ -- Scrumpper <190908034+Scrumpper@users.noreply.github.com>  Tue, 27 Oct 2026 06:00:00 +0000
++
+ h96-boot (8.0.0~r39) resolute; urgency=medium
+ 
+   * Version bump with h96-audio and h96-base changes; files unchanged
+--- a/h96-boot/debian/control
++++ b/h96-boot/debian/control
+@@ -8,7 +8,7 @@
+ Package: h96-boot
+ Architecture: all
+ Multi-Arch: foreign
+-Depends: h96-base (= 8.0.0~r39)
++Depends: h96-base (= 8.0.0~r39+deb13.1)
+ Description: H96 MAX V58 boot chain guards: apt pins, update guards, EDID, hang recovery
+  Apt pin protecting boot packages, armbian-update stub and guard path unit,
+  update diversion service, initramfs EDID hook and blobs, kernel staging
+--- a/h96-desktop/debian/changelog
++++ b/h96-desktop/debian/changelog
+@@ -1,3 +1,13 @@
++h96-desktop (8.0.0~r39+deb13.1) trixie; urgency=medium
++
++  * Debian 13 trixie build of 8.0.0~r38 (Debian Edition).
++  * h96-kde-configure: X11 packages installed one by one, so one missing
++    name no longer voids the set; plasma-session-x11 skipped where absent
++    (Plasma 6.3 carries X11 session in plasma-workspace); Noto fonts in
++    place of fonts-ubuntu on Debian.
++
++ -- Scrumpper <190908034+Scrumpper@users.noreply.github.com>  Tue, 27 Oct 2026 06:00:00 +0000
++
+ h96-desktop (8.0.0~r39) resolute; urgency=medium
+ 
+   * Version bump with h96-audio and h96-base changes; files unchanged
+--- a/h96-desktop/debian/control
++++ b/h96-desktop/debian/control
+@@ -8,7 +8,7 @@
+ Package: h96-desktop
+ Architecture: arm64
+ Multi-Arch: foreign
+-Depends: h96-base (= 8.0.0~r39), libc6 (>= 2.38), python3
++Depends: h96-base (= 8.0.0~r39+deb13.1), libc6 (>= 2.38), python3
+ Recommends: ddcutil
+ Description: H96 MAX V58 desktop integration: X11 display, LightDM, KDE and GNOME setup
+  X11 display configuration, display manager hand-off, autologin unit, KDE,
+--- a/h96-desktop/root/usr/lib/h96/h96-kde-configure.sh
++++ b/h96-desktop/root/usr/lib/h96/h96-kde-configure.sh
+@@ -54,6 +54,8 @@
+   mkdir -p "${PPD_DSH%/*}" && : > "$PPD_DSH"
+ fi
+ KDE_TIER_MARKER=/etc/armbian/desktop/kde-plasma.tier
++# fonts-ubuntu is non-free on Debian: Noto there
++H96_UIFONT=fonts-ubuntu; [ "$(. /etc/os-release 2>/dev/null; echo "${ID:-}")" = debian ] && H96_UIFONT=fonts-noto-core
+ if [ -f "$KDE_TIER_MARKER" ]; then
+   echo "  armbian-config installed KDE at tier '$(cat "$KDE_TIER_MARKER")' — leaving its packages as chosen, not upgrading to kde-full"
+ else
+@@ -61,15 +63,17 @@
+   env DEBIAN_FRONTEND=noninteractive apt-get install -y -o DPkg::Lock::Timeout=600 -o APT::Install-Recommends=1 \
+     kde-plasma-desktop sddm sddm-theme-breeze konsole dolphin ark bluedevil \
+     gwenview kscreen network-manager-gnome okular plasma-nm plasma-pa \
+-    xserver-xorg dbus-x11 dmz-cursor-theme fonts-ubuntu gtk2-engines \
++    xserver-xorg dbus-x11 dmz-cursor-theme $H96_UIFONT gtk2-engines \
+     gtk2-engines-murrine gtk2-engines-pixbuf gvfs-backends lm-sensors pulseaudio \
+     pulseaudio-module-bluetooth spice-vdagent xdg-user-dirs kate polkitd pkexec \
+     libfido2-1 2>&1 || true
+ fi
+ # Install LightDM/Xorg/X11 session and kwin-x11 regardless of tier: the Wayland-first KDE install pulls only kwin-wayland, and X11 needs kwin-x11 for a window manager.
+-env DEBIAN_FRONTEND=noninteractive apt-get install -y -o DPkg::Lock::Timeout=600 -o APT::Install-Recommends=1 \
+-  kwin-x11 lightdm lightdm-gtk-greeter \
+-  xinit x11-xserver-utils plasma-session-x11 2>&1 || true
++# one package per call: a name the distro lacks (plasma-session-x11 on Plasma 6.3) must not void the rest
++for p in kwin-x11 lightdm lightdm-gtk-greeter xinit x11-xserver-utils plasma-session-x11; do
++  LC_ALL=C apt-cache policy "$p" 2>/dev/null | grep -q '^  Candidate: [0-9]' || { echo "  $p: not in apt, skipped"; continue; }
++  env DEBIAN_FRONTEND=noninteractive apt-get install -y -o DPkg::Lock::Timeout=600 -o APT::Install-Recommends=1 "$p" 2>&1 || true
++done
+ # Armbian's no-recommends policy skips kde-full's Bluetooth/power-management deps; install bluez/bluedevil/powerdevil explicitly.
+ env DEBIAN_FRONTEND=noninteractive apt-get install -y -o DPkg::Lock::Timeout=600 --install-recommends \
+   bluez bluedevil powerdevil libmtp-runtime 2>&1 || true
+--- a/h96-gaming/debian/changelog
++++ b/h96-gaming/debian/changelog
+@@ -1,3 +1,14 @@
++h96-gaming (8.0.0~r39+deb13.1) trixie; urgency=medium
++
++  * Debian 13 trixie build of 8.0.0~r38 (Debian Edition).
++  * h96-gaming-setup: Mesa target from /etc/os-release (Debian:
++    26.1.6-1~bpo13+1); online extras without gamescope on Debian.
++  * h96-steam-fex-install: FEX package source as Ubuntu noble build with
++    pinned key when add-apt-repository is absent (Debian); keyring
++    directory made with install -d.
++
++ -- Scrumpper <190908034+Scrumpper@users.noreply.github.com>  Tue, 27 Oct 2026 06:00:00 +0000
++
+ h96-gaming (8.0.0~r39) resolute; urgency=medium
+ 
+   * Version bump with h96-audio and h96-base changes; files unchanged
+--- a/h96-gaming/debian/control
++++ b/h96-gaming/debian/control
+@@ -8,7 +8,7 @@
+ Package: h96-gaming
+ Architecture: all
+ Multi-Arch: foreign
+-Depends: h96-base (= 8.0.0~r39), python3
++Depends: h96-base (= 8.0.0~r39+deb13.1), python3
+ Recommends: whiptail, steam-arm-setup (>= 3.0)
+ Description: H96 MAX V58 gaming integration: pad rules, DXVK, box64, Steam ARM wrapper
+  Gamepad hidraw and xpad rules, gaming setup unit, DXVK builds, box64 fallback,
+--- a/h96-gaming/root/usr/lib/h96/h96-gaming-setup.sh
++++ b/h96-gaming/root/usr/lib/h96/h96-gaming-setup.sh
+@@ -11,6 +11,7 @@
+ DONE=/var/lib/h96-gaming-setup-done
+ REPO=/opt/h96-pkgs                                # offline apt repo (mesa 26.1.4 debs)
+ MESA_VER="26.1.4~kisak1~r"                        # kisak GL+Vulkan lockstep target
++[ "$(. /etc/os-release 2>/dev/null; echo "${ID:-}")" = debian ] && MESA_VER="26.1.6-1~bpo13+1"   # Debian 13: trixie-backports build
+ 
+ # --- Panthor guard: PanVK/panfrost need the panthor kernel driver ---
+ PANTHOR_DONE=/var/lib/h96-panthor-setup-done
+@@ -37,6 +38,7 @@
+ APT_PKGS_OFFLINE="vulkan-tools cage mesa-utils"
+ # ONLINE: best-effort; box64-rk3588 has a bundled fallback (step 3b), never gates.
+ APT_PKGS_ONLINE="box64-rk3588 gamescope"
++[ "$(. /etc/os-release 2>/dev/null; echo "${ID:-}")" = debian ] && APT_PKGS_ONLINE="box64-rk3588"   # no gamescope in Debian 13
+ 
+ # Scope apt to the offline repo only: sourceparts=/dev/null keeps online sources unread.
+ apt_offline() {
+--- a/h96-gaming/root/usr/lib/h96/steam/h96-steam-fex-install.sh
++++ b/h96-gaming/root/usr/lib/h96/steam/h96-steam-fex-install.sh
+@@ -132,8 +132,24 @@
+ say "1/9  host packages: FEX + native bubblewrap"
+ export DEBIAN_FRONTEND=noninteractive
+ wait_apt
++if ! command -v add-apt-repository >/dev/null && [ "$(. /etc/os-release 2>/dev/null; echo "${ID:-}")" = debian ]; then
++  # Debian: FEX PPA Ubuntu noble build as deb822 source, signing key fingerprint checked (as steam-arm-setup)
++  FEXSRC=/etc/apt/sources.list.d/steam-arm-fex.sources; FEXKEY=/etc/apt/keyrings/steam-arm-fex.gpg
++  FEXFPR=EDB98BFE8A2310DC9C4A376E76DBFEBEA206F5AC
++  if ! grep -rqs "fex-emu/fex" /etc/apt/sources.list.d/; then
++    t=$(mktemp -d)
++    curl -fsSL --proto =https "https://keyserver.ubuntu.com/pks/lookup?op=get&search=0x$FEXFPR" -o "$t/key.asc" || die "FEX key download failed"
++    k=$(GNUPGHOME=$t gpg --batch --show-keys --with-colons "$t/key.asc" 2>/dev/null | awk -F: '$1=="pub"{p=1;next} $1=="fpr"&&p{print $10;p=0}')
++    [ "$k" = "$FEXFPR" ] || die "FEX key fingerprint ${k:-none}, expected $FEXFPR"
++    GNUPGHOME=$t gpg --batch --yes --dearmor -o "$t/key.gpg" "$t/key.asc" || die "FEX key convert failed"
++    install -d -m 0755 /etc/apt/keyrings && install -m 0644 "$t/key.gpg" "$FEXKEY"
++    printf 'Types: deb\nURIs: https://ppa.launchpadcontent.net/fex-emu/fex/ubuntu\nSuites: noble\nComponents: main\nArchitectures: arm64\nSigned-By: %s\n' "$FEXKEY" > "$FEXSRC"
++    rm -rf "$t"
++  fi
++else
+ command -v add-apt-repository >/dev/null || apt-get install -y software-properties-common
+ grep -rq "fex-emu/fex" /etc/apt/sources.list.d/ 2>/dev/null || add-apt-repository -y "$FEXPPA"
++fi
+ wait_apt; apt-get update -y
+ BUILDPKGS=""; opt vk-spoof && BUILDPKGS="gcc libc6-dev libvulkan-dev"   # step 5d builds a small Vulkan layer on the box
+ opt glx-lax && BUILDPKGS="$BUILDPKGS patchelf"                             # step 5c gives the GLX copy its own SONAME
+--- a/h96-media/debian/changelog
++++ b/h96-media/debian/changelog
+@@ -1,3 +1,15 @@
++h96-media (8.0.0~r39+deb13.1) trixie; urgency=medium
++
++  * Debian 13 trixie build of 8.0.0~r38 (Debian Edition).
++  * Video stack (mpv 0.41.0 with PipeWire and PulseAudio audio outputs,
++    ffmpeg-rockchip 40c412d, same patches) rebuilt against Debian 13
++    libraries; h96-video-setup runtime package list per distro,
++    libpipewire-0.3-0t64 and libpulse0 included.
++  * mpv MPRIS plugin (mpv-mpris 1.2, same patch) rebuilt against Debian 13
++    glib.
++
++ -- Scrumpper <190908034+Scrumpper@users.noreply.github.com>  Tue, 27 Oct 2026 06:00:00 +0000
++
+ h96-media (8.0.0~r39) resolute; urgency=medium
+ 
+   * Version bump with h96-audio and h96-base changes; files unchanged
+--- a/h96-media/debian/control
++++ b/h96-media/debian/control
+@@ -8,7 +8,7 @@
+ Package: h96-media
+ Architecture: arm64
+ Multi-Arch: foreign
+-Depends: h96-base (= 8.0.0~r39), libc6, libglib2.0-0t64 (>= 2.76), python3
++Depends: h96-base (= 8.0.0~r39+deb13.1), libc6 (>= 2.38), libglib2.0-0t64 (>= 2.76), python3
+ Recommends: mpv
+ Description: H96 MAX V58 media: mpv configuration, video stack, NPU, CEC, casting
+  mpv configuration and scripts, sha-pinned video stack archive and setup unit,
+--- a/h96-media/root/usr/lib/h96/h96-video-setup.sh
++++ b/h96-media/root/usr/lib/h96/h96-video-setup.sh
+@@ -28,6 +28,8 @@
+ librockchip-mpp1 libxfixes3 libdisplay-info3 libdav1d7 \
+ libpipewire-0.3-0t64 libpulse0 \
+ irqbalance"
++# Debian 13 names (libplacebo349, libdisplay-info2): stack rebuilt against trixie
++[ "$(. /etc/os-release 2>/dev/null; echo "${ID:-}")" = debian ] && PKGS="nodejs yt-dlp cage libplacebo349 libass9 liblcms2-2 libxcb-dri2-0 libv4l-rkmpp libluajit-5.1-2 libvulkan1 libegl1 libgles2 libglvnd0 libgbm1 libwayland-client0 libwayland-cursor0 libwayland-egl1 libdrm2 libfreetype6 libfontconfig1 libharfbuzz0b libfribidi0 libunibreak6 libgnutls30t64 libxv1 libxss1 libxpresent1 libxrandr2 librockchip-mpp1 libxfixes3 libdisplay-info2 libdav1d7 libasound2t64 libxkbcommon0 libbz2-1.0 zlib1g libpipewire-0.3-0t64 libpulse0 irqbalance"
+ # ^ irqbalance: standard Armbian base daemon the lean/no-recommends base skipped; bundled here, auto-enables via its postinst
+ 
+ # 0) gate on the offline repo, not the network
+--- a/h96-net/debian/changelog
++++ b/h96-net/debian/changelog
+@@ -1,3 +1,9 @@
++h96-net (8.0.0~r39+deb13.1) trixie; urgency=medium
++
++  * Debian 13 trixie build of 8.0.0~r38 (Debian Edition).
++
++ -- Scrumpper <190908034+Scrumpper@users.noreply.github.com>  Tue, 27 Oct 2026 06:00:00 +0000
++
+ h96-net (8.0.0~r39) resolute; urgency=medium
+ 
+   * Version bump with h96-audio and h96-base changes; files unchanged
+--- a/h96-net/debian/control
++++ b/h96-net/debian/control
+@@ -8,7 +8,7 @@
+ Package: h96-net
+ Architecture: all
+ Multi-Arch: foreign
+-Depends: h96-base (= 8.0.0~r39), wpasupplicant, dhcpcd-base, iw, rfkill, ethtool
++Depends: h96-base (= 8.0.0~r39+deb13.1), wpasupplicant, dhcpcd-base, iw, rfkill, ethtool
+ Description: H96 MAX V58 network: BCM43752 Wi-Fi units, hotspot, wake-on-LAN
+  bcmdhd module options, wlan0 wpa_supplicant and dhcpcd units, Wi-Fi connect
+  and diagnose tools, hotspot and wake-on-LAN tools (installed disabled).
+--- a/h96-tools/debian/changelog
++++ b/h96-tools/debian/changelog
+@@ -1,3 +1,9 @@
++h96-tools (8.0.0~r39+deb13.1) trixie; urgency=medium
++
++  * Debian 13 trixie build of 8.0.0~r38 (Debian Edition).
++
++ -- Scrumpper <190908034+Scrumpper@users.noreply.github.com>  Tue, 27 Oct 2026 06:00:00 +0000
++
+ h96-tools (8.0.0~r39) resolute; urgency=medium
+ 
+   * Version bump with h96-audio and h96-base changes; files unchanged
+--- a/h96-tools/debian/control
++++ b/h96-tools/debian/control
+@@ -8,7 +8,7 @@
+ Package: h96-tools
+ Architecture: arm64
+ Multi-Arch: foreign
+-Depends: h96-base (= 8.0.0~r39), libc6, python3-tk, python3
++Depends: h96-base (= 8.0.0~r39+deb13.1), libc6, python3-tk, python3
+ Recommends: device-tree-compiler, zstd
+ Description: H96 MAX V58 tools: backup and restore, perf, undervolt, LEDs, VFD
+  h96-backup, h96-restore and GUI, bench, perf profile with sudoers entry,

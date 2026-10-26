@@ -1,0 +1,92 @@
+#!/bin/bash
+# h96-dm-handoff kde|gnome: ExecCondition of sddm.service (kde) and gdm.service (gnome).
+# Desktop install's final "systemctl start" of display manager (armbian-config) first runs H96 desktop setup
+# and holds that request, and installer's terminal, until setup has finished.
+# kde: SDDM is always skipped (KDE runs on LightDM/X11 here). gnome: GDM starts once setup is done.
+# Exit 0 = start display manager, 1 = skip it (start still reported OK).
+# --prepare kde|gnome: unit copy in /etc without Conflicts=getty@tty1, so installer on local console survives
+#   until setup has finished; --restore kde|gnome drops that copy again.
+MARK="# H96 hand-off copy"
+log() { logger -t h96-dm-handoff -- "$*" 2>/dev/null || true; }
+dm_unit() { case "$1" in kde) echo sddm.service ;; gnome) echo gdm.service ;; esac; }
+case "${1:-}" in
+  --prepare)
+    u=$(dm_unit "${2:-}"); src=/usr/lib/systemd/system/$u; dst=/etc/systemd/system/$u
+    [ -n "$u" ] && [ -f "$src" ] && [ ! -e "$dst" ] && [ ! -L "$dst" ] || exit 0
+    { echo "$MARK of $src without getty@tty1 conflict; removed after hand-off"
+      sed -E '/^Conflicts=/s/getty@tty1\.service//g' "$src"; } > "$dst"
+    systemctl daemon-reload; exit 0 ;;
+  --restore)
+    u=$(dm_unit "${2:-}"); dst=/etc/systemd/system/$u
+    [ -n "$u" ] && [ -f "$dst" ] && [ ! -L "$dst" ] && head -1 "$dst" | grep -q "^$MARK" || exit 0
+    rm -f "$dst"; systemctl daemon-reload; exit 0 ;;
+  --boot-check)
+    # reboot inside the 30 s mask window: finish what h96-sddm-mask would have done
+    [ -e /var/lib/h96-kde-configure-done ] && [ -e /usr/lib/systemd/system/sddm.service ] || exit 0
+    [ "$(systemctl is-enabled sddm.service 2>/dev/null)" = masked ] && exit 0
+    "$0" --restore kde
+    systemctl mask sddm.service >/dev/null 2>&1 && log "boot check: sddm masked (hand-off mask step had not run)"
+    exit 0 ;;
+esac
+DE="${1:-kde}"
+case "$DE" in
+  kde)   BIN=/usr/bin/plasmashell; SVC=h96-kde-configure.service;   DONE=/var/lib/h96-kde-configure-done
+         PKG=plasma-workspace
+         GO=1; NAME="LightDM, X11 session, GPU compositing, audio"
+         [ -e /etc/h96/allow-sddm ] && exit 0 ;;
+  gnome) BIN=/usr/bin/gnome-shell; SVC=h96-gnome-configure.service; DONE=/var/lib/h96-gnome-configure-done
+         PKG=gnome-shell
+         GO=0; NAME="GNOME session, Bluetooth, audio" ;;
+  *) exit 0 ;;
+esac
+[ -x "$BIN" ] || exit "$GO"
+[ -e "$DONE" ] && exit "$GO"
+# package scripts start display manager while dpkg holds its lock: never block dpkg
+fuser /var/lib/dpkg/lock /var/lib/dpkg/lock-frontend >/dev/null 2>&1 && exit "$GO"
+# only install's final "systemctl start"; restarts (autologin toggle, removal) pass straight through.
+# second trigger: desktop package installed this boot with setup still pending (upstream start form changed)
+boot_t=$(( $(date +%s) - $(cut -d. -f1 /proc/uptime) ))
+pkg_t=$(dpkg-query -W -f='${db-fsys:Last-Modified}' "$PKG" 2>/dev/null || echo 0)
+[ -n "$pkg_t" ] || pkg_t=0
+if pgrep -f '^systemctl start (display-manager|sddm|gdm|gdm3)' >/dev/null 2>&1; then trig="installer start"
+elif [ "$pkg_t" -ge "$boot_t" ]; then trig="$PKG installed this boot"
+else exit "$GO"; fi
+
+# installer's terminal (SSH or local console), if one is waiting
+TTY=""
+for pid in $(pgrep -f '/armbian-config( |$)'); do
+  t=$(ps -o tty= -p "$pid" 2>/dev/null | tr -d ' ')
+  case "$t" in pts/*|tty*) TTY="/dev/$t"; break ;; esac
+done
+say() { [ -n "$TTY" ] && printf '%b' "$1" > "$TTY" 2>/dev/null; return 0; }
+
+touch /run/h96-desktop-handoff
+log "$DE hand-off start ($trig): waiting for $SVC"
+trap 'rm -f /run/h96-desktop-handoff' EXIT
+trap 'exit "$GO"' TERM INT
+say "\n\n  Finishing desktop setup: $NAME.\n  Takes several minutes; keep box powered.\n\n"
+systemctl start "$SVC" &
+job=$!
+t0=$SECONDS; spin='|/-\'; i=0
+while kill -0 "$job" 2>/dev/null; do
+  e=$((SECONDS - t0))
+  say "\r  ${spin:$((i++ % 4)):1}  working  $((e / 60))m $((e % 60))s  "
+  sleep 1
+done
+wait "$job"
+if [ -e "$DONE" ]; then
+  say "\r  Desktop setup finished. Desktop starts now.        \n\n"
+  log "$DE hand-off finish: setup done after $((SECONDS - t0)) s; $([ "$DE" = gnome ] && echo "GDM starts" || echo "SDDM skipped, LightDM next")"
+else
+  say "\r  Desktop setup incomplete: see /var/log/${SVC%.service}.log; retried at next boot.\n\n"
+  log "$DE hand-off finish: setup incomplete after $((SECONDS - t0)) s (see /var/log/${SVC%.service}.log)"
+fi
+# mask SDDM once this start job is over (masking during it drops this drop-in and its timeout)
+[ "$DE" = kde ] && [ -e "$DONE" ] && systemd-run --quiet --on-active=30 --unit=h96-sddm-mask /bin/sh -c \
+  "/usr/sbin/h96-dm-handoff --restore kde; systemctl mask sddm.service" 2>/dev/null
+# GNOME starts GDM now: normal unit again for later boots; free tty1 for GDM as stock start would
+if [ "$DE" = gnome ]; then
+  systemd-run --quiet --on-active=30 --unit=h96-gdm-restore /usr/sbin/h96-dm-handoff --restore gnome 2>/dev/null
+  case "$TTY" in /dev/tty1) systemctl --no-block stop getty@tty1.service 2>/dev/null ;; esac
+fi
+exit "$GO"

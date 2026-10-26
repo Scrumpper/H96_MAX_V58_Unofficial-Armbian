@@ -1,0 +1,29 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: H96 build <builder@h96-build>
+Date: Fri, 16 Oct 2026 00:00:00 +0000
+Subject: [PATCH 12/20] drm/bridge: dw-hdmi-qp: fix audio infoframe pack error
+ check
+
+hdmi_audio_infoframe_pack() returns the packed length or a negative
+error; dw_hdmi_qp_set_audio_infoframe() tested if (!ret) and so
+treated success as failure. Test ret < 0, as upstream already does in
+dw_hdmi_qp_init_audio_infoframe().
+
+H96 series: 0f8ff828b / 62e17b046.
+---
+ drivers/gpu/drm/bridge/synopsys/dw-hdmi-qp.c | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/drivers/gpu/drm/bridge/synopsys/dw-hdmi-qp.c b/drivers/gpu/drm/bridge/synopsys/dw-hdmi-qp.c
+index 076d3ea73..213814329 100644
+--- a/drivers/gpu/drm/bridge/synopsys/dw-hdmi-qp.c
++++ b/drivers/gpu/drm/bridge/synopsys/dw-hdmi-qp.c
+@@ -958,7 +958,7 @@ void dw_hdmi_qp_set_audio_infoframe(struct dw_hdmi_qp *hdmi,
+ 
+ 	ret = hdmi_audio_infoframe_pack(&hparms->cea, infoframe_buf,
+ 					sizeof(infoframe_buf));
+-	if (!ret) {
++	if (ret < 0) {
+ 		dev_err(hdmi->dev, "%s: Failed to pack audio infoframe: %d\n",
+ 			__func__, ret);
+ 		return;

@@ -1,0 +1,156 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Scrumpper <190908034+Scrumpper@users.noreply.github.com>
+Date: Tue, 20 Oct 2026 07:06:45 -0700
+Subject: [PATCH 35/59] mmc: sdhci-of-dwcmshc: rk35xx: host software queue when
+ CQE is off
+
+The 6.1 vendor driver registers the MMC host software queue (mmc_hsq)
+when the eMMC node has no supports-cqe: the block layer keeps a short
+in-flight window in the host (hsq_depth 2, 5 while 4 KiB writes are
+queued) and the next request is issued from the completion of the
+previous one (6.1 boot log: "mmc0: Host Software Queue
+enabled"). The 6.12 vendor driver dropped that path, so a board without
+CQE runs one request at a time with a block-layer round trip in between
+(BENEFITS L2).
+
+Restore it for the Rockchip ops: after the CQE setup, if MMC_CAP2_CQE is
+not set (property absent or cqhci init failed), init mmc_hsq,
+finalize requests in .request_done and hook HSQ into system
+suspend/resume. Unlike the 6.1 hunk, issue from the completion path
+through sdhci_request_atomic() (as sdhci-sprd): sdhci_irq() calls
+.request_done in hard IRQ context and sdhci_request() can sleep in
+sdhci_send_command_retry(); -EBUSY sends HSQ to its retry work. A
+removable card keeps sdhci_request() with always_defer_done. HSQ state
+is kept in a flag, so non-HSQ hosts never reach mmc_hsq_finalize_request()
+with a foreign cqe_private. MMC_SDHCI_OF_DWCMSHC selects MMC_HSQ again,
+as on 6.1.
+
+With the board DTS deleting supports-cqe (t2 to t7) this is the active
+path. 6.12 mmcq.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01P6itje71iKPFBX7YKkfvRo
+---
+ drivers/mmc/host/Kconfig            |  1 +
+ drivers/mmc/host/sdhci-of-dwcmshc.c | 54 +++++++++++++++++++++++++++++
+ 2 files changed, 55 insertions(+)
+
+diff --git a/drivers/mmc/host/Kconfig b/drivers/mmc/host/Kconfig
+index fb0a018d0..8cfbfbf8c 100644
+--- a/drivers/mmc/host/Kconfig
++++ b/drivers/mmc/host/Kconfig
+@@ -233,6 +233,7 @@ config MMC_SDHCI_OF_DWCMSHC
+ 	depends on MMC_SDHCI_PLTFM
+ 	depends on OF
+ 	depends on COMMON_CLK
++	select MMC_HSQ
+ 	select MMC_CQHCI
+ 	help
+ 	  This selects Synopsys DesignWare Cores Mobile Storage Controller
+diff --git a/drivers/mmc/host/sdhci-of-dwcmshc.c b/drivers/mmc/host/sdhci-of-dwcmshc.c
+index 651f82d30..ff0739385 100644
+--- a/drivers/mmc/host/sdhci-of-dwcmshc.c
++++ b/drivers/mmc/host/sdhci-of-dwcmshc.c
+@@ -25,6 +25,7 @@
+ 
+ #include "sdhci-pltfm.h"
+ #include "cqhci.h"
++#include "mmc_hsq.h"
+ #include "sdhci-cqhci.h"
+ 
+ #define SDHCI_DWCMSHC_ARG2_STUFF	GENMASK(31, 16)
+@@ -298,6 +299,7 @@ struct dwcmshc_priv {
+ 	void *priv; /* pointer to SoC private stuff */
+ 	u16 delay_line;
+ 	u16 flags;
++	bool hsq; /* host software queue in use (no CQE) */
+ };
+ 
+ struct dwcmshc_pltfm_data {
+@@ -410,6 +412,25 @@ static void dwcmshc_request(struct mmc_host *mmc, struct mmc_request *mrq)
+ 	sdhci_request(mmc, mrq);
+ }
+ 
++/* HSQ issues the next request from the completion path, possibly in hard IRQ: no sleeping */
++static int dwcmshc_request_atomic(struct mmc_host *mmc, struct mmc_request *mrq)
++{
++	dwcmshc_check_auto_cmd23(mmc, mrq);
++
++	return sdhci_request_atomic(mmc, mrq);
++}
++
++static void dwcmshc_request_done(struct sdhci_host *host, struct mmc_request *mrq)
++{
++	struct sdhci_pltfm_host *pltfm_host = sdhci_priv(host);
++	struct dwcmshc_priv *priv = sdhci_pltfm_priv(pltfm_host);
++
++	if (priv->hsq && mmc_hsq_finalize_request(host->mmc, mrq))
++		return;
++
++	mmc_request_done(host->mmc, mrq);
++}
++
+ static void dwcmshc_phy_1_8v_init(struct sdhci_host *host)
+ {
+ 	struct sdhci_pltfm_host *pltfm_host = sdhci_priv(host);
+@@ -1379,6 +1400,7 @@ static const struct sdhci_ops sdhci_dwcmshc_rk35xx_ops = {
+ 	.reset			= rk35xx_sdhci_reset,
+ 	.adma_write_desc	= dwcmshc_adma_write_desc,
+ 	.irq			= dwcmshc_cqe_irq_handler,
++	.request_done		= dwcmshc_request_done,
+ };
+ 
+ static const struct sdhci_ops sdhci_dwcmshc_th1520_ops = {
+@@ -1761,6 +1783,29 @@ static int dwcmshc_probe(struct platform_device *pdev)
+ 		dwcmshc_cqhci_init(host, pdev);
+ 	}
+ 
++	/* Rockchip: host software queue when CQE is absent or failed, as the 6.1 vendor driver */
++	if (!(host->mmc->caps2 & MMC_CAP2_CQE) &&
++	    pltfm_data->pdata.ops == &sdhci_dwcmshc_rk35xx_ops) {
++		struct mmc_hsq *hsq;
++
++		hsq = devm_kzalloc(dev, sizeof(*hsq), GFP_KERNEL);
++		if (!hsq) {
++			err = -ENOMEM;
++			goto err_setup_host;
++		}
++
++		err = mmc_hsq_init(hsq, host->mmc);
++		if (err)
++			goto err_setup_host;
++
++		/* as sdhci-sprd: atomic issue needs a non-removable card, else complete in thread */
++		if (mmc_card_is_removable(host->mmc))
++			host->always_defer_done = true;
++		else
++			host->mmc_host_ops.request_atomic = dwcmshc_request_atomic;
++		priv->hsq = true;
++	}
++
+ 	if (pltfm_data->postinit)
+ 		pltfm_data->postinit(host, priv);
+ 
+@@ -1842,6 +1887,9 @@ static int dwcmshc_suspend(struct device *dev)
+ 			return ret;
+ 	}
+ 
++	if (priv->hsq)
++		mmc_hsq_suspend(host->mmc);
++
+ 	ret = sdhci_suspend_host(host);
+ 	if (ret)
+ 		return ret;
+@@ -1886,6 +1934,12 @@ static int dwcmshc_resume(struct device *dev)
+ 			goto disable_other_clks;
+ 	}
+ 
++	if (priv->hsq) {
++		ret = mmc_hsq_resume(host->mmc);
++		if (ret)
++			goto disable_other_clks;
++	}
++
+ 	return 0;
+ 
+ disable_other_clks:

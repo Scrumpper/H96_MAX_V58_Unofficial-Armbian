@@ -1,0 +1,10 @@
+# Chrome reads native messaging hosts only from /etc/opt/chrome; path fixed by Chrome.
+h96-media: dir-or-file-in-etc-opt [etc/opt/chrome/]
+h96-media: dir-or-file-in-etc-opt [etc/opt/chrome/native-messaging-hosts/]
+h96-media: dir-or-file-in-etc-opt [etc/opt/chrome/native-messaging-hosts/ff2mpv.json]
+# Script probes dpkg lock files with fuser to wait for a running package manager; database not read.
+h96-media: uses-dpkg-database-directly [usr/lib/h96/h96-video-setup.sh]
+# --no-block starts (deb-systemd-invoke has none): video setup unit waits for this apt run's dpkg lock; h96-cec start must not wait on TV.
+h96-media: maintainer-script-calls-systemctl [postinst:*]
+# CEC daemon enabled under its device unit: starts when /dev/cec0 appears, never on boxes without CEC adapter.
+h96-media: systemd-service-file-refers-to-unusual-wantedby-target dev-cec0.device [usr/lib/systemd/system/h96-cec.service]

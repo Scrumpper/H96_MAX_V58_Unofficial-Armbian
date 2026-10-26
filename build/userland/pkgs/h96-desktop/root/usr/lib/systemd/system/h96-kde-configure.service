@@ -1,0 +1,11 @@
+[Unit]
+Documentation=file:/usr/share/doc/h96-base/COMMANDS.md
+Description=H96 KDE -> LightDM/X11 auto-configure
+ConditionPathExists=!/var/lib/h96-kde-configure-done
+ConditionPathExists=/usr/bin/plasmashell
+[Service]
+Type=oneshot
+ExecStart=/usr/lib/h96/h96-kde-configure.sh
+ExecStartPost=-/usr/bin/systemctl stop h96-kde-configure.path
+[Install]
+WantedBy=multi-user.target

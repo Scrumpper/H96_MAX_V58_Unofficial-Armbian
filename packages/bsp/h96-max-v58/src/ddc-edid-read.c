@@ -27,8 +27,9 @@
 // Exit codes: 0 ok, 1 usage/system error (incl. label mismatch, EBUSY),
 //             2 no-ack/no-device/bus-hung, 3 bad EDID header, 4 bad checksum.
 //
-// Build (dev box, npuload precedent — target image has no compiler):
-//   aarch64-linux-gnu-gcc -O2 -Wall -Wextra -static -o ddc-edid-read ddc-edid-read.c
+// Build (dev box, npuload precedent: target image has no compiler):
+//   aarch64-linux-gnu-gcc -O2 -Wall -Wextra -o ddc-edid-read ddc-edid-read.c
+// Dynamic link to libc only; 8.0 package build adds Debian hardening flags.
 
 #include <stdio.h>
 #include <stdlib.h>

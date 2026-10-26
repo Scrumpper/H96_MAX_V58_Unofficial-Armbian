@@ -1,0 +1,9 @@
+[Unit]
+Description=H96 kernel switch auto-confirm of healthy trial boot
+Documentation=man:h96-kernel-switch(8)
+ConditionPathExists=/var/lib/h96-kernel-switch/trial
+After=multi-user.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/sbin/h96-kernel-switch auto-confirm

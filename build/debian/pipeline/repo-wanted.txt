@@ -1,0 +1,14 @@
+# packages first-boot units install from /opt/h96-pkgs (offline), Debian names; mesa set taken at backports version
+# h96-gaming-setup offline group
+vulkan-tools cage mesa-utils
+# h96-pkgs-setup
+v4l-utils dnsmasq-base zstd
+# h96-ddc-setup, h96-firstboot-cleanup
+ddcutil libwayland-server0
+# h96-video-setup Debian list (librockchip-mpp1, libv4l-rkmpp from v7.2 repo, Rockchip builds)
+nodejs yt-dlp libplacebo349 libass9 liblcms2-2 libxcb-dri2-0 libluajit-5.1-2 libvulkan1 libegl1 libgles2 libglvnd0
+libwayland-client0 libwayland-cursor0 libwayland-egl1 libdrm2 libfreetype6 libfontconfig1 libharfbuzz0b libfribidi0
+libunibreak6 libgnutls30t64 libxv1 libxss1 libxpresent1 libxrandr2 libxfixes3 libdisplay-info2 libdav1d7 libasound2t64
+libxkbcommon0 libbz2-1.0 zlib1g irqbalance libpipewire-0.3-0t64 libpulse0
+# Bluetooth stack for console-mode h96-bt-agent / h96-bt-speaker (Ubuntu offline repo carries it; python3-dbus, python3-gi installed by prep)
+bluez

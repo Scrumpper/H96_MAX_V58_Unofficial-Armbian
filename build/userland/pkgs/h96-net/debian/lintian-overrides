@@ -1,0 +1,8 @@
+# armbian-firmware registers /lib/firmware path; package installs /usr/lib alias (DEP17), diversion must cover both.
+h96-net: diversion-for-unknown-file lib/firmware/brcm/BCM4362A2.hcd [preinst:*]
+# Packages built with dpkg-deb, no debhelper maintscript file; helper is dpkg's own rm_conffile tool.
+h96-net: maintainer-script-should-not-use-dpkg-maintscript-helper "dpkg-maintscript-helper" [*]
+# Started by eth0 device as it appears; multi-user.target plus BindsTo eth0 held boot up to 90 s with eth0 absent.
+h96-net: systemd-service-file-refers-to-unusual-wantedby-target sys-subsystem-net-devices-eth0.device [usr/lib/systemd/system/h96-wol.service]
+# Diverted rule of armbian-bsp-cli at same /etc path; a /usr/lib copy would be shadowed by it.
+h96-net: udev-rule-in-etc [etc/udev/rules.d/10-wifi-disable-powermanagement.rules]

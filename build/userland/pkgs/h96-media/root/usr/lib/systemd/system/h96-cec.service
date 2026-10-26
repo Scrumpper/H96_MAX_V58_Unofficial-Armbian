@@ -1,0 +1,30 @@
+[Unit]
+Description=H96 HDMI-CEC to input daemon (TV remote -> uinput)
+Documentation=man:cec-ctl(1) file:/usr/share/doc/h96-base/COMMANDS.md
+# enabled under dev-cec0.device (WantedBy below): starts when CEC adapter appears, never without one
+ConditionPathExists=/dev/cec0
+After=dev-cec0.device multi-user.target
+
+[Service]
+Type=simple
+# Best-effort: sync the kernel's CEC physical address from the sink's real EDID before
+# the daemon starts; leading '-' means a failure here does not stop the unit.
+ExecStartPre=-/usr/bin/h96-cec phys-addr auto
+ExecStart=/usr/lib/h96/h96-cecd
+Restart=on-failure
+RestartSec=5
+# Daemon exits 0 when CEC/uinput/backend is absent, so on-failure will not crash-loop an unsupported box.
+Nice=-2
+# Needs /dev/uinput and /dev/cec0, runs as root for that access; hardening below still permits device access.
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+# display wake socket for h96-cec-wake (session watcher)
+RuntimeDirectory=h96-cec
+RuntimeDirectoryMode=0755
+DeviceAllow=/dev/uinput rw
+DeviceAllow=/dev/cec0 rw
+DeviceAllow=char-cec rw
+
+[Install]
+WantedBy=dev-cec0.device

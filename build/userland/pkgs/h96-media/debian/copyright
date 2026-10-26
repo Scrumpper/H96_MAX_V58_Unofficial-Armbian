@@ -1,0 +1,86 @@
+Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
+Upstream-Name: h96-media
+
+Files: *
+Copyright: 2025-2026 H96 MAX V58 Unofficial Armbian project
+License: GPL-2.0-only
+
+Files: usr/lib/h96/seed/yt-dlp
+Copyright: yt-dlp authors
+License: Unlicense
+Comment: yt-dlp zipapp seed, unmodified; bundled as in v7.2 image
+
+Files: usr/bin/ff2mpv
+Copyright: ff2mpv authors
+License: MIT
+Comment: ff2mpv host script; bundled as in v7.2 image
+
+Files: usr/lib/h96/mpv-mpris/mpris.so
+Copyright: 2017 Ho-Yon Mak
+License: MIT
+Comment: built: mpv-mpris 1.2 without libavformat (mpv-pipewire/build/build-mpris.sh)
+
+Files: usr/share/h96/shaders/ravu-lite-ar-r4.hook
+Copyright: bjin
+License: LGPL-3.0-or-later
+Comment: ravu-lite shader; bundled as in v7.2 image
+
+Files: usr/lib/h96/video/h96-video-stack.tar.gz
+Copyright: mpv and FFmpeg authors
+ Rockchip Electronics Co., Ltd.
+License: GPL-2.0-or-later and Apache-2.0
+Comment: video stack archive: mpv and FFmpeg build (GPL-2.0-or-later), Rockchip MPP and RGA libraries (Apache-2.0); bundled as in v7.2 image
+
+License: Apache-2.0
+ On Debian systems full text is in /usr/share/common-licenses/Apache-2.0.
+
+License: GPL-2.0-only
+ On Debian systems full text is in /usr/share/common-licenses/GPL-2.
+
+License: GPL-2.0-or-later
+ On Debian systems full text is in /usr/share/common-licenses/GPL-2.
+
+License: LGPL-3.0-or-later
+ On Debian systems full text is in /usr/share/common-licenses/LGPL-3.
+
+License: MIT
+ Permission is hereby granted, free of charge, to any person obtaining a copy
+ of this software and associated documentation files (the "Software"), to deal
+ in the Software without restriction, including without limitation the rights
+ to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+ copies of the Software, and to permit persons to whom the Software is
+ furnished to do so, subject to the following conditions:
+ .
+ The above copyright notice and this permission notice shall be included in all
+ copies or substantial portions of the Software.
+ .
+ THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+ SOFTWARE.
+
+License: Unlicense
+ This is free and unencumbered software released into the public domain.
+ .
+ Anyone is free to copy, modify, publish, use, compile, sell, or distribute
+ this software, either in source code form or as a compiled binary, for any
+ purpose, commercial or non-commercial, and by any means.
+ .
+ In jurisdictions that recognize copyright laws, the author or authors of
+ this software dedicate any and all copyright interest in the software to
+ the public domain. We make this dedication for the benefit of the public at
+ large and to the detriment of our heirs and successors. We intend this
+ dedication to be an overt act of relinquishment in perpetuity of all present
+ and future rights to this software under copyright law.
+ .
+ THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+ AUTHORS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN
+ ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
+ WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+ .
+ For more information, please refer to <https://unlicense.org/>

@@ -1,0 +1,55 @@
+#!/bin/sh
+# divert v7.2-edited files of other packages before unpack
+set -e
+dpkg-maintscript-helper rm_conffile /etc/systemd/system/getty@tty1.service.d/h96-firstboot.conf 8.0.0~r37~ h96-base -- "$@"
+dpkg-maintscript-helper rm_conffile /etc/systemd/system/ssh.service.d/h96-firstboot.conf 8.0.0~r37~ h96-base -- "$@"
+[ "$1" = configure ] && rmdir "${DPKG_ROOT:-}/etc/systemd/system/getty@tty1.service.d" "${DPKG_ROOT:-}/etc/systemd/system/ssh.service.d" 2>/dev/null || true
+case "$1" in
+install|upgrade)
+  dpkg-divert --package h96-base --add --rename --divert /etc/update-motd.d/10-armbian-header.distrib /etc/update-motd.d/10-armbian-header
+  dpkg-divert --package h96-base --add --rename --divert /usr/lib/armbian/armbian-firstlogin.distrib /usr/lib/armbian/armbian-firstlogin
+  ;;
+esac
+R="${DPKG_ROOT:-}"
+if [ "$1" = install ] && [ -z "${2:-}" ]; then
+  while read -r k v p; do
+    if [ "$k" = f ] && [ -f "$R$p" ] && [ ! -L "$R$p" ] && [ "$(sha256sum < "$R$p" | cut -d" " -f1)" = "$v" ]; then
+      mv -f "$R$p" "$R$p.h96-v72"
+    elif [ "$k" = l ] && [ -L "$R$p" ] && [ "$(readlink "$R$p")" = "$v" ]; then
+      mv -f "$R$p" "$R$p.h96-v72"
+    fi
+  done <<'EOF'
+f 2e7768bf29f310155634f45a48cc49912ee50ad9d5991004b03a2c71f0095c0f /etc/h96-issue
+f ed9bbcb392c73a5febeac0da0e6fcc92d12a032d5db59608a9d8849e73bf86b6 /etc/h96-issue.net
+f efe8551dff877b35f62c20c83a7880d8e5ec133b411ce6e380641c60be2ac170 /etc/h96-release
+f fecd5a3ca87d96fdbdf9581bc5787ef685b65d9749c0f27bdca177c4aa4e5328 /etc/skel/Desktop/COMMANDS.md
+f f7ca64abc78de8ac0d2a4361622876b31c1f26e0e83cbda5513d9a0349a7809b /etc/systemd/system-preset/20-h96.preset
+f 8edf0eea7e21e14d6c15d0b5915058ea2f93b136d6a1521cd063f9c555b072a9 /etc/systemd/system/h96-firstboot-cleanup.service
+f 875ca8714fe938ec7e096f6c48bc165a1e919c919187607b154a6f0db67f6210 /etc/systemd/system/h96-firstboot-reboot.service
+f 378fb270accf2768e951cec92ab881da39621d59fdbf2b81a306e0c3794189a3 /etc/systemd/system/h96-firstboot-reboot.service.d/zz-h96-journal-orphans.conf
+f 76b20b6376b3fffad6f6896323267c3353d062d7d1b76b49565a3ee676fb7497 /etc/systemd/system/h96-tune.service
+f 6b4472b4a56da1e0cd2a88d550d891ad14577d4054842a332f3751116d19c349 /etc/systemd/system/h96-zram-heal.service
+l /etc/systemd/system/h96-zram-heal.service /etc/systemd/system/multi-user.target.wants/h96-zram-heal.service
+f a4ecc1c122def5031007e1ac83f8bdf595b7ff89fc7316751e8d0a4f53ab0233 /etc/systemd/system/systemd-timedated.service.d/zz-h96-timezone-sync.conf
+f 4523e1ad03253ab8afdd9d4d96768e953ea4e5835eb77dcbe00176f44115e4f4 /etc/udev/rules.d/70-h96-pinhole.rules
+f aa00d36b847e9b7f51c5b1935694043f76c00c99ff6d5faa11b4bbdbc8b2b869 /usr/local/bin/h96
+f 6e7c305663f27d56d929db3c6c6f4e07e18a791e30c9597ccb81c4681134a134 /usr/local/bin/h96-firstboot-cleanup.sh
+f d64b7c1fb01932b5377330213d9b833e27ba4f39bd72ad5e143ff7325d333f60 /usr/local/lib/h96/banner.py
+f 595dfce0a5dcc8759ff06e528090106cd33c4a1cf67af9d404fc15aba18839a8 /usr/local/lib/h96/banner.sh
+f 72ef812a5c824b44d5715c69e4106cb53e948643c51a0f9ad2dec142fa44d6db /usr/local/lib/h96/h96-journal-orphans
+f 13fc87b3d98feae27bfdca771f24149447e88af976e594ccbc8b000c4506bc9d /usr/local/sbin/h96-branding.sh
+f 56bd7a4eca8c16d00f21b2654c5c8d7e05a99efa9ea3d373cb0c81f1fc290839 /usr/local/sbin/h96-firstboot.sh
+f cc0be0df8c1683c7ded223ed01b2542d9a969e4b4bd7b1feec5d849bfa35e2bf /usr/local/sbin/h96-gpu-setup.sh
+f 82ff1293c071871cb88c409a646fbd43201b209634dc5ead5b7ff89a8d1a7b64 /usr/local/sbin/h96-online-extras.sh
+f 0ade2959f55ddf6f27ef24c5c1f36f2aaea6dcd901de10544a179402c128c493 /usr/local/sbin/h96-pkgs-setup.sh
+f d29b8841f4003c7d1983ed186f24c848e2542bde9530aa13a3edf61609ca0c6a /usr/local/sbin/h96-timezone-sync
+f fecd5a3ca87d96fdbdf9581bc5787ef685b65d9749c0f27bdca177c4aa4e5328 /usr/local/share/h96/COMMANDS.md
+EOF
+fi
+if [ "$1" = upgrade ] && dpkg --compare-versions "$2" lt-nl 8.0.0~r10; then
+  R="${DPKG_ROOT:-}"
+  mkdir -p "$R/var/lib/h96/seed-keep"
+  if [ -f "$R/etc/h96-issue" ] && [ ! -L "$R/etc/h96-issue" ]; then mv -f "$R/etc/h96-issue" "$R/var/lib/h96/seed-keep/h96-issue"; fi
+  if [ -f "$R/etc/h96-issue.net" ] && [ ! -L "$R/etc/h96-issue.net" ]; then mv -f "$R/etc/h96-issue.net" "$R/var/lib/h96/seed-keep/h96-issue.net"; fi
+fi
+exit 0

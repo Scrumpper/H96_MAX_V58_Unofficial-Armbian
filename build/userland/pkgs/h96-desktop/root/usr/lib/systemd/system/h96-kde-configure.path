@@ -1,0 +1,8 @@
+[Unit]
+Description=Force LightDM/X11 when KDE Plasma is installed
+ConditionPathExists=!/var/lib/h96-kde-configure-done
+[Path]
+PathExists=/usr/bin/plasmashell
+Unit=h96-kde-configure.service
+[Install]
+WantedBy=multi-user.target

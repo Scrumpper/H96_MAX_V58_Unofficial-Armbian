@@ -1,0 +1,262 @@
+h96-gaming (8.0.0~r39) resolute; urgency=medium
+
+  * Version bump with h96-audio and h96-base changes; files unchanged
+    apart from version in manual pages.
+
+ -- Scrumpper <190908034+Scrumpper@users.noreply.github.com>  Tue, 27 Oct 2026 00:00:00 +0000
+
+h96-gaming (8.0.0~r38) resolute; urgency=medium
+
+  * Version bump with h96-base change; files unchanged apart from version.
+
+ -- Scrumpper <190908034+Scrumpper@users.noreply.github.com>  Mon, 26 Oct 2026 18:00:00 +0000
+
+h96-gaming (8.0.0~r37) resolute; urgency=medium
+
+  * Version bump with h96-base change; files unchanged apart from version.
+
+ -- Scrumpper <190908034+Scrumpper@users.noreply.github.com>  Mon, 26 Oct 2026 12:00:00 +0000
+
+h96-gaming (8.0.0~r36) resolute; urgency=medium
+
+  * Version bump with h96-tools and h96-base changes; files unchanged
+    apart from version.
+
+ -- Scrumpper <190908034+Scrumpper@users.noreply.github.com>  Mon, 26 Oct 2026 06:00:00 +0000
+
+h96-gaming (8.0.0~r35) resolute; urgency=medium
+
+  * Version bump with h96-base documentation change; files unchanged apart
+    from version.
+
+ -- Scrumpper <190908034+Scrumpper@users.noreply.github.com>  Mon, 26 Oct 2026 00:00:00 +0000
+
+h96-gaming (8.0.0~r34) resolute; urgency=medium
+
+  * Version bump with h96-media and h96-tools changes; files unchanged
+    apart from version.
+
+ -- Scrumpper <190908034+Scrumpper@users.noreply.github.com>  Sun, 25 Oct 2026 18:00:00 +0000
+
+h96-gaming (8.0.0~r33) resolute; urgency=medium
+
+  * Version bump with h96-media and h96-base changes; files unchanged
+    apart from version.
+
+ -- Scrumpper <190908034+Scrumpper@users.noreply.github.com>  Sun, 25 Oct 2026 12:00:00 +0000
+
+h96-gaming (8.0.0~r32) resolute; urgency=medium
+
+  * Version bump with h96-base documentation change; files unchanged apart
+    from version.
+
+ -- Scrumpper <190908034+Scrumpper@users.noreply.github.com>  Sun, 25 Oct 2026 06:00:00 +0000
+
+h96-gaming (8.0.0~r31) resolute; urgency=medium
+
+  * Version bump with h96-base documentation change; files unchanged apart
+    from version.
+
+ -- Scrumpper <190908034+Scrumpper@users.noreply.github.com>  Sun, 25 Oct 2026 00:00:00 +0000
+
+h96-gaming (8.0.0~r30) resolute; urgency=medium
+
+  * Version bump with h96-audio change; files unchanged apart from
+    version.
+
+ -- Scrumpper <190908034+Scrumpper@users.noreply.github.com>  Sat, 24 Oct 2026 18:00:00 +0000
+
+h96-gaming (8.0.0~r29) resolute; urgency=medium
+
+  * Manual page headers name public release 8.0 instead of package
+    version.
+
+ -- Scrumpper <190908034+Scrumpper@users.noreply.github.com>  Sat, 24 Oct 2026 12:00:00 +0000
+
+h96-gaming (8.0.0~r28) resolute; urgency=medium
+
+  * Version bump with h96-media, h96-audio and h96-base changes; files
+    unchanged apart from version in manual pages.
+
+ -- Scrumpper <190908034+Scrumpper@users.noreply.github.com>  Sat, 24 Oct 2026 06:00:00 +0000
+
+h96-gaming (8.0.0~r27) resolute; urgency=medium
+
+  * Version bump with h96-base change; files unchanged apart from version
+    in manual pages.
+
+ -- Scrumpper <190908034+Scrumpper@users.noreply.github.com>  Fri, 23 Oct 2026 20:00:00 +0000
+
+h96-gaming (8.0.0~r26) resolute; urgency=medium
+
+  * h96-waydroid install disables and masks lxc-net.service (lxc pulled in
+    by waydroid; lxc-net failed at boot, Waydroid uses own waydroid0
+    bridge); remove unmasks it.
+
+ -- Scrumpper <190908034+Scrumpper@users.noreply.github.com>  Fri, 23 Oct 2026 15:00:00 +0000
+
+h96-gaming (8.0.0~r25) resolute; urgency=medium
+
+  * h96-game-mode keeps patched PanVK ICD (h96-vulkan-wsi) for Wine games
+    when switch is on, session is Plasma Wayland and installed Mesa equals
+    pin; stock ICD otherwise (was always stock).
+
+ -- Scrumpper <190908034+Scrumpper@users.noreply.github.com>  Fri, 23 Oct 2026 09:00:00 +0000
+
+h96-gaming (8.0.0~r24) resolute; urgency=medium
+
+  * h96-waydroid start in Plasma Wayland session runs Android natively in
+    KWin (no nested Weston, no fixed window size); X11 keeps nested Weston
+    with size lock.
+
+ -- Scrumpper <190908034+Scrumpper@users.noreply.github.com>  Fri, 23 Oct 2026 03:00:00 +0000
+
+h96-gaming (8.0.0~r23) resolute; urgency=medium
+
+  * Version bump with h96-desktop, h96-media and h96-base changes; files
+    unchanged apart from version in manual pages.
+
+ -- Scrumpper <190908034+Scrumpper@users.noreply.github.com>  Thu, 22 Oct 2026 21:00:00 +0000
+
+h96-gaming (8.0.0~r22) resolute; urgency=medium
+
+  * h96-waydroid status as desktop user prints Android release, model and
+    GPU renderer: waydroid shell probes run through sudo -n (new _probe in
+    sudoers rule, rule refreshed at each start); without that rule status
+    says to run sudo h96-waydroid status.
+
+ -- Scrumpper <190908034+Scrumpper@users.noreply.github.com>  Thu, 22 Oct 2026 18:00:00 +0000
+
+h96-gaming (8.0.0~r21) resolute; urgency=medium
+
+  * Version bump with h96-desktop and h96-base changes; files unchanged
+    apart from version in manual pages.
+
+ -- Scrumpper <190908034+Scrumpper@users.noreply.github.com>  Thu, 22 Oct 2026 12:00:00 +0000
+
+h96-gaming (8.0.0~r20) resolute; urgency=medium
+
+  * Version bump with h96-media and h96-base changes; files unchanged
+    apart from version in manual pages.
+
+ -- Scrumpper <190908034+Scrumpper@users.noreply.github.com>  Thu, 22 Oct 2026 09:00:00 +0000
+
+h96-gaming (8.0.0~r19) resolute; urgency=medium
+
+  * Version bump with h96-desktop, h96-audio, h96-media and h96-base
+    changes; files unchanged apart from version in manual pages.
+
+ -- Scrumpper <190908034+Scrumpper@users.noreply.github.com>  Thu, 22 Oct 2026 06:00:00 +0000
+
+h96-gaming (8.0.0~r18) resolute; urgency=medium
+
+  * Version bump with h96-media change; files unchanged apart from version
+    in manual pages.
+
+ -- Scrumpper <190908034+Scrumpper@users.noreply.github.com>  Thu, 22 Oct 2026 03:00:00 +0000
+
+h96-gaming (8.0.0~r17) resolute; urgency=medium
+
+  * Version bump with h96-audio, h96-desktop and h96-base changes; files
+    unchanged apart from version in manual pages.
+
+ -- Scrumpper <190908034+Scrumpper@users.noreply.github.com>  Wed, 21 Oct 2026 23:30:00 +0000
+
+h96-gaming (8.0.0~r16) resolute; urgency=medium
+
+  * Recommends steam-arm-setup (>= 3.0), was Depends: removing package
+    steam-arm-setup to use Steam ARM script install removed h96-gaming
+    too. h96-steam runs installed copy
+    /usr/local/share/steam-arm/steam-arm-install.sh when package is
+    absent.
+  * h96-game-mode status prints Wine, DXVK, Vulkan ICD and compositor
+    state, installs nothing (was taken as game path and started Wine
+    download); missing game path refused before Wine download.
+  * h96-waydroid, h96-emulators and FEX Steam launcher use display of
+    active session.
+
+ -- Scrumpper <190908034+Scrumpper@users.noreply.github.com>  Wed, 21 Oct 2026 22:00:00 +0000
+
+h96-gaming (8.0.0~r15) resolute; urgency=medium
+
+  * Version bump with h96-audio, h96-boot, h96-media and h96-tools
+    changes; files unchanged apart from version in manual pages.
+
+ -- Scrumpper <190908034+Scrumpper@users.noreply.github.com>  Sun, 18 Oct 2026 23:45:00 +0000
+
+h96-gaming (8.0.0~r14) resolute; urgency=medium
+
+  * Version bump with h96-base, h96-net and h96-tools changes.
+  * Manual page DESCRIPTION holds whole COMMANDS.md paragraph (was cut at
+    first line).
+
+ -- Scrumpper <190908034+Scrumpper@users.noreply.github.com>  Sun, 18 Oct 2026 23:30:00 +0000
+
+h96-gaming (8.0.0~r13) resolute; urgency=medium
+
+  * Version bump with h96-base, h96-net, h96-desktop and h96-tools
+    changes; files unchanged apart from version in manual pages.
+
+ -- Scrumpper <190908034+Scrumpper@users.noreply.github.com>  Sun, 18 Oct 2026 23:00:00 +0000
+
+h96-gaming (8.0.0~r12) resolute; urgency=medium
+
+  * Depends on steam-arm-setup (>= 3.0).
+  * FEX Steam installer writes pad dedup rule equal to packaged seed text.
+
+ -- Scrumpper <190908034+Scrumpper@users.noreply.github.com>  Sun, 18 Oct 2026 22:00:00 +0000
+
+h96-gaming (8.0.0~r11) resolute; urgency=medium
+
+  * Version bump with h96-base, h96-boot, h96-audio, h96-media and
+    h96-tools changes; files unchanged apart from version in manual pages.
+
+ -- Scrumpper <190908034+Scrumpper@users.noreply.github.com>  Sun, 18 Oct 2026 18:00:00 +0000
+
+h96-gaming (8.0.0~r10) resolute; urgency=medium
+
+  * Version bump with h96-base, h96-boot, h96-audio, h96-desktop and
+    h96-tools changes; files unchanged apart from version in manual pages.
+
+ -- Scrumpper <190908034+Scrumpper@users.noreply.github.com>  Sun, 18 Oct 2026 12:00:00 +0000
+
+h96-gaming (8.0.0~r9) resolute; urgency=medium
+
+  * Gaming setup links nothing into /usr/local/bin. FEX Steam installer
+    leaves packaged h96-xpad-dedup in place.
+  * Copyright file lists DXVK and box64 again.
+  * Fresh install warns about locally modified copies left in
+    /usr/local/bin or /usr/local/sbin; they precede packaged commands in
+    PATH.
+
+ -- Scrumpper <190908034+Scrumpper@users.noreply.github.com>  Sat, 17 Oct 2026 22:00:00 +0000
+
+h96-gaming (8.0.0~r8) resolute; urgency=medium
+
+  * Packaged files moved out of /usr/local and /opt: commands to /usr/bin
+    and /usr/sbin, helpers and payloads to /usr/lib/h96, data to
+    /usr/share/h96, units to /usr/lib/systemd/system, udev rules to
+    /usr/lib/udev/rules.d; every reference rewritten. Fresh install over
+    an image that holds the old copies moves exact old copies aside and
+    deletes them at configure; a failed install restores them.
+  * Manual pages for each command; Documentation key on each unit.
+  * DXVK, box64 and gaming env under /usr/lib/h96/gaming; downloaded wine
+    stays under /opt/h96-gaming.
+
+ -- Scrumpper <190908034+Scrumpper@users.noreply.github.com>  Sat, 17 Oct 2026 18:00:00 +0000
+
+h96-gaming (8.0.0~alpha2) resolute; urgency=medium
+
+  * h96-gaming-setup no longer waits on the flag of disabled
+    h96-panthor-setup: defers only while the panthor driver is absent,
+    sets /var/lib/h96-panthor-setup-done after Mesa install.
+
+ -- H96 MAX V58 Unofficial Armbian <h96-max-v58@noreply.invalid>  Sat, 17 Oct 2026 12:00:00 +0000
+
+h96-gaming (8.0.0~alpha1) resolute; urgency=medium
+
+  * Initial packaging of v7.2 h96 userland; files kept at v7.2 paths,
+    /usr/local kept; enablement as on v7.2.
+  * Gaming setup link created on fresh install only.
+
+ -- H96 MAX V58 Unofficial Armbian <h96-max-v58@noreply.invalid>  Fri, 16 Oct 2026 12:00:00 +0000

@@ -1,0 +1,9 @@
+/* H96 Max V58: Armbian has no `admin` group, but Ubuntu's
+   /usr/share/polkit-1/rules.d/49-ubuntu-admin.rules returns one, leaving
+   polkitd to log "Identity `unix-group:admin' is not valid, ignoring" on every
+   administrative check. Declare the sudo group as the sole administrator
+   identity. Members of `sudo` authenticate with their own password, exactly as
+   they do for sudo itself. */
+polkit.addAdminRule(function(action, subject) {
+    return ["unix-group:sudo"];
+});

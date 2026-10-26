@@ -1,0 +1,44 @@
+#!/bin/bash
+# h96-vrr: HDMI variable refresh (FreeSync over HDMI / HDMI 2.1 VRR) on|off|status, default off, experimental
+set -e
+ETC="${H96_ETC:-/etc/h96}"                    # H96_*: host test overrides
+FLAG=$ETC/display-vrr.on                       # switch state (Xorg option installed)
+BLOCKS_OFF=$ETC/display-vrr-blocks.off         # kernel EDID VRR blocks dropped (kept by default)
+XCONF="${H96_XCONF:-/etc/X11/xorg.conf.d/30-h96-vrr.conf}"   # modesetting VariableRefresh
+SRC="${H96_VRR_SRC:-/usr/share/h96/xorg/30-h96-vrr.conf}"
+WARN="experimental: blanking seen on some displays; 8.1 item"
+
+need_root() { [ "$(id -u)" = 0 ] || { echo "run as root: sudo h96-vrr $1" >&2; exit 1; }; }
+
+status() {
+  echo "$WARN"
+  echo "switch:        $([ -e "$FLAG" ] && echo on || echo off)"
+  echo "xorg option:   $([ -e "$XCONF" ] && echo present || echo absent)"
+  echo "edid blocks:   $([ -e "$BLOCKS_OFF" ] && echo "dropped ($BLOCKS_OFF)" || echo "kept (display FreeSync and HDMI VRR range, default)")"
+  echo "kernel range:  rockchipdrm.hdmi_freesync=$(cat /sys/module/rockchipdrm/parameters/hdmi_freesync 2>/dev/null || echo n/a)"
+  if command -v modetest >/dev/null; then
+    echo "vrr_capable:   $(modetest -M rockchip -c 2>/dev/null | awk '/vrr_capable/{f=1} f&&/value:/{print $2; exit}')"
+  else
+    echo "vrr_capable:   modetest missing (apt install libdrm-tests)"
+  fi
+  [ -r /var/log/Xorg.0.log ] && grep -m1 -o 'VariableRefresh: [a-z]*' /var/log/Xorg.0.log | sed 's/^/xorg log:     /' || true
+}
+
+case "${1:-status}" in
+  on)
+    need_root on
+    [ -r "$SRC" ] || { echo "h96-vrr: $SRC missing" >&2; exit 1; }
+    echo "$WARN"
+    mkdir -p "$ETC" "$(dirname "$XCONF")"
+    install -m 0644 "$SRC" "$XCONF"
+    touch "$FLAG"
+    echo "VRR on: applies at next X start (reboot, or all users logged out)"
+    ;;
+  off)
+    need_root off
+    rm -f "$FLAG" "$XCONF"
+    echo "VRR off: applies at next X start (reboot, or all users logged out)"
+    ;;
+  status) status ;;
+  *) echo "usage: h96-vrr on|off|status" >&2; exit 2 ;;
+esac

@@ -1,0 +1,18 @@
+Source: h96-kernel-switch
+Section: admin
+Priority: optional
+Maintainer: Scrumpper <190908034+Scrumpper@users.noreply.github.com>
+Rules-Requires-Root: no
+Standards-Version: 4.7.0
+
+Package: h96-kernel-switch
+Architecture: all
+Multi-Arch: foreign
+Depends: systemd, initramfs-tools-core, u-boot-tools
+Description: H96 MAX V58 kernel switch with boot guard and rollback
+ Copies kernel staged by h96-kernel package into new generation
+ directory under /boot/h96ks. Image, uInitrd and board DTB links
+ resolve through /boot/h96ks/cur, so one rename switches all three.
+ Boot guard falls back to previous generation unless trial boot is
+ confirmed. Rollback and prune commands. Package itself writes nothing
+ under /boot; only command run by administrator does.

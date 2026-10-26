@@ -1,0 +1,17 @@
+[Unit]
+Documentation=file:/usr/share/doc/h96-base/COMMANDS.md
+Description=H96 Max V58 Power Profiles (power-profiles-daemon replacement)
+After=dbus.service h96-tune.service
+Before=gdm.service display-manager.service
+Conflicts=power-profiles-daemon.service
+
+[Service]
+Type=simple
+# Boot state (balanced: CPU floor 1.2 GHz, cpu-sleep off) is written before the desktop starts.
+ExecStartPre=/usr/lib/h96/h96-power-profiles.py --apply balanced
+ExecStart=/usr/lib/h96/h96-power-profiles.py
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

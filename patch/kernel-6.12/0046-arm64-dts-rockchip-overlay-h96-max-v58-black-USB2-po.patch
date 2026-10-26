@@ -1,0 +1,74 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: H96 series reconstruction <builder@h96-build>
+Date: Tue, 20 Oct 2026 09:29:02 -0700
+Subject: [PATCH 46/59] arm64: dts: rockchip: overlay: h96-max-v58 black USB2
+ port dual role
+
+Owner decision 2026-10-20: USB device mode as an optional overlay,
+off by default; the board DTB keeps all three dwc3 controllers in
+host mode.
+
+rk3588-h96-usb-otg.dtbo sets dr_mode = "otg" on usbdrd_dwc3_0, the
+controller behind the black USB2 port (OTG0, the port the maskrom
+loader uses). extcon already points at u2phy0. The Type-A port has
+no ID pin, so the role is set at runtime through the u2phy0
+otg_mode attribute (host, peripheral, otg); peripheral turns the
+vcc5v0_otg VBUS switch off. Enabled with overlays=h96-usb-otg in
+armbianEnv.txt (overlay_prefix rk3588). Gadget stack, configfs and
+dwc3 dual role are built in since t4.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01P6itje71iKPFBX7YKkfvRo
+---
+ arch/arm64/boot/dts/rockchip/overlay/Makefile |  1 +
+ .../rockchip/overlay/rk3588-h96-usb-otg.dtso  | 29 +++++++++++++++++++
+ 2 files changed, 30 insertions(+)
+ create mode 100644 arch/arm64/boot/dts/rockchip/overlay/rk3588-h96-usb-otg.dtso
+
+diff --git a/arch/arm64/boot/dts/rockchip/overlay/Makefile b/arch/arm64/boot/dts/rockchip/overlay/Makefile
+index 0a6e7fd93..9ec0f061d 100644
+--- a/arch/arm64/boot/dts/rockchip/overlay/Makefile
++++ b/arch/arm64/boot/dts/rockchip/overlay/Makefile
+@@ -193,6 +193,7 @@ dtb-$(CONFIG_ARCH_ROCKCHIP) += \
+ 	rk3588-can2-m1.dtbo \
+ 	rk3588-dwc3-host.dtbo \
+ 	rk3588-dwc3-peripheral.dtbo \
++	rk3588-h96-usb-otg.dtbo \
+ 	rk3588-i2c0-m1.dtbo \
+ 	rk3588-i2c1-m0.dtbo \
+ 	rk3588-i2c1-m2.dtbo \
+diff --git a/arch/arm64/boot/dts/rockchip/overlay/rk3588-h96-usb-otg.dtso b/arch/arm64/boot/dts/rockchip/overlay/rk3588-h96-usb-otg.dtso
+new file mode 100644
+index 000000000..dfee57520
+--- /dev/null
++++ b/arch/arm64/boot/dts/rockchip/overlay/rk3588-h96-usb-otg.dtso
+@@ -0,0 +1,29 @@
++// SPDX-License-Identifier: (GPL-2.0+ OR MIT)
++/*
++ * H96 MAX V58: black USB2 port (OTG0, maskrom port) dual role.
++ * Role follows the u2phy0 OTG state machine; Type-A port has no ID pin, so set it
++ * by hand: echo host|peripheral|otg > /sys/devices/platform/fd5d0000.syscon/
++ * fd5d0000.syscon:usb2-phy@0/otg_mode. Peripheral switches vcc5v0_otg off.
++ * Off by default; armbianEnv.txt: overlays=h96-usb-otg
++ */
++
++/dts-v1/;
++/plugin/;
++
++/ {
++	metadata {
++		title = "H96 MAX V58 black USB2 port dual role";
++		compatible = "rockchip,rk3588";
++		category = "misc";
++		exclusive = "usbdrd_dwc3-dr_mode";
++		description = "Black USB2 port (OTG0) host or USB device, switched at runtime.";
++	};
++
++	fragment@0 {
++		target = <&usbdrd_dwc3_0>;
++
++		__overlay__ {
++			dr_mode = "otg";
++		};
++	};
++};

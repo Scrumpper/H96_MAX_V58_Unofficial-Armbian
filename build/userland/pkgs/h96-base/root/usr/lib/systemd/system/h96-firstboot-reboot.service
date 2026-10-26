@@ -1,0 +1,16 @@
+[Unit]
+Documentation=file:/usr/share/doc/h96-base/COMMANDS.md
+Description=H96 Max V58 auto-reboot after first-boot setup
+After=h96-firstboot.service h96-gpu-setup.service h96-gaming-setup.service h96-firstboot-cleanup.service h96-video-setup.service h96-panthor-setup.service
+ConditionPathExists=!/var/lib/h96-firstboot-reboot-done
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/bin/bash -c 'touch /var/lib/h96-firstboot-reboot-done; for i in $(seq 1 180); do fuser /var/lib/dpkg/lock-frontend >/dev/null 2>&1 || break; sleep 5; done; echo "[h96-reboot] firstboot setup done -- rebooting"; systemctl reboot -i || systemctl reboot'
+StandardOutput=journal+console
+StandardError=journal+console
+TimeoutStartSec=0
+
+[Install]
+WantedBy=multi-user.target

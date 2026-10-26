@@ -1,0 +1,20 @@
+[Unit]
+Description=H96 Max V58 online extras (retried until installed)
+Documentation=file:/usr/share/doc/h96-base/COMMANDS.md
+# No hard dependency on network-online.target: it can be satisfied before the link negotiates, so the script waits for connectivity itself.
+After=multi-user.target h96-gaming-setup.service
+ConditionPathExists=!/var/lib/h96-online-extras-done
+
+[Service]
+Type=oneshot
+# Inner timeout (870s) stays below the outer bound (900s) so it always wins and exits 124, which SuccessExitStatus treats as success; apt needs headroom after up to 300s spent waiting for connectivity.
+# Truncation is safe: the done-flag is set only when everything installs, so a truncated run retries next boot.
+ExecStart=/usr/bin/timeout 870 /usr/lib/h96/h96-online-extras.sh
+# 124 is GNU timeout's exit on firing; SIGTERM/SIGKILL are also accepted since this image's uutils timeout may differ, and the script itself always exits 0.
+SuccessExitStatus=124 SIGTERM SIGKILL
+TimeoutStartSec=900
+StandardOutput=journal
+StandardError=journal
+
+# No [Install] section: started by h96-online-extras.timer instead, off the boot transaction, so the connectivity wait never counts as boot time; being static also keeps systemd preset from re-enabling it.
+# Type=oneshot is required: Type=simple silently ignores TimeoutStartSec and leaves the installer unbounded.
