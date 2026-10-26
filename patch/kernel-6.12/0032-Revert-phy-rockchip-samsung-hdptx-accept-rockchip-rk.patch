@@ -1,0 +1,34 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Scrumpper <190908034+Scrumpper@users.noreply.github.com>
+Date: Mon, 19 Oct 2026 22:38:15 -0700
+Subject: [PATCH 32/59] Revert "phy: rockchip: samsung-hdptx: accept
+ rockchip,rk3588-hdptx-phy-hdmi"
+
+This reverts commit e4ac3cdff (series 0013). The compatible served the
+8.0 overlay DTB on 6.1, whose HDMI PHY nodes use it. The 6.12 board DTS
+uses the vendor compatibles and no node in any 6.12 DTB names
+rockchip,rk3588-hdptx-phy-hdmi, so the match entry is dead code on this
+tree. 6.12 t6.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01P6itje71iKPFBX7YKkfvRo
+---
+ drivers/phy/rockchip/phy-rockchip-samsung-hdptx.c | 5 -----
+ 1 file changed, 5 deletions(-)
+
+diff --git a/drivers/phy/rockchip/phy-rockchip-samsung-hdptx.c b/drivers/phy/rockchip/phy-rockchip-samsung-hdptx.c
+index b4dd03491..c3bd876ec 100644
+--- a/drivers/phy/rockchip/phy-rockchip-samsung-hdptx.c
++++ b/drivers/phy/rockchip/phy-rockchip-samsung-hdptx.c
+@@ -3124,11 +3124,6 @@ static const struct of_device_id rk_hdptx_phy_of_match[] = {
+ 		.compatible = "rockchip,rk3588-hdptx-phy",
+ 		.data = &rk3588_hdptx_phy_cfgs
+ 	},
+-	{
+-		/* H96: pre-rkr7 vendor DTBs bind HDMI through a separate hdmiphy node */
+-		.compatible = "rockchip,rk3588-hdptx-phy-hdmi",
+-		.data = &rk3588_hdptx_phy_cfgs
+-	},
+ 	{}
+ };
+ MODULE_DEVICE_TABLE(of, rk_hdptx_phy_of_match);

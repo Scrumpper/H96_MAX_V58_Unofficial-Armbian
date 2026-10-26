@@ -1,0 +1,13 @@
+[Unit]
+Documentation=file:/usr/share/doc/h96-base/COMMANDS.md
+Description=H96 desktop hand-off boot check (SDDM mask after an interrupted hand-off)
+ConditionPathExists=/var/lib/h96-kde-configure-done
+After=local-fs.target
+Before=display-manager.service sddm.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/sbin/h96-dm-handoff --boot-check
+
+[Install]
+WantedBy=multi-user.target

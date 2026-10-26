@@ -1,0 +1,630 @@
+#!/usr/bin/env bash
+# h96-bench: H96 Max V58 benchmark, thermal monitor and undervolt tuner
+# usage: h96-bench [MODE] [OPTIONS]
+
+# shared block-letter header; stub avoids command-not-found when banner.sh is missing
+[ -r /usr/lib/h96/banner.sh ] && . /usr/lib/h96/banner.sh
+command -v h96_banner >/dev/null 2>&1 || h96_banner() { :; }
+
+set -euo pipefail
+
+h96_banner "B E N C H M A R K   &   T U N E R"
+
+
+RED='\033[0;31m'; YLW='\033[1;33m'; GRN='\033[0;32m'; CYN='\033[0;36m'
+BLD='\033[1m'; DIM='\033[2m'; NC='\033[0m'
+
+VERSION="4.4.0"
+LOG_DIR="/var/log/h96-bench"
+TUNE_CONF="/etc/h96-tune.conf"
+mkdir -p "$LOG_DIR"
+
+# --- sysfs paths ---
+CPU_THERMAL=/sys/class/thermal/thermal_zone0/temp
+GPU_THERMAL=/sys/class/thermal/thermal_zone1/temp
+GPU_LOAD=/sys/class/devfreq/fb000000.gpu/load
+GPU_FREQ_CUR=/sys/class/devfreq/fb000000.gpu/cur_freq
+GPU_FREQ_MAX=/sys/class/devfreq/fb000000.gpu/max_freq
+
+# cpu numbering varies per build: LITTLE_FREQ/BIG_FREQ follow cpu_sets (cpu_capacity) below
+
+read_file() { cat "$1" 2>/dev/null || echo "N/A"; }
+
+# --- snapshot ---
+snapshot() {
+    local soc_raw gpu_raw little_khz big_khz gpu_hz gpu_util_val
+    soc_raw=$(read_file "$CPU_THERMAL")
+    gpu_raw=$(read_file "$GPU_THERMAL")
+    little_khz=$(read_file "$LITTLE_FREQ")
+    big_khz=$(read_file "$BIG_FREQ")
+    gpu_hz=$(read_file "$GPU_FREQ_CUR")
+    gpu_util_val=$(read_file "$GPU_LOAD")
+    gpu_util_val="${gpu_util_val%%@*}"
+    [[ "$gpu_util_val" =~ ^[0-9]+$ ]] && gpu_util_val="$gpu_util_val%" || gpu_util_val="?"
+
+    local soc_c gpu_c little_mhz big_mhz gpu_mhz
+    [[ "$soc_raw" =~ ^[0-9]+$ ]] && soc_c=$(( soc_raw / 1000 )) || soc_c="?"
+    [[ "$gpu_raw" =~ ^[0-9]+$ ]] && gpu_c=$(( gpu_raw / 1000 )) || gpu_c="?"
+    [[ "$little_khz" =~ ^[0-9]+$ ]] && little_mhz=$(( little_khz / 1000 )) || little_mhz="?"
+    [[ "$big_khz" =~ ^[0-9]+$ ]] && big_mhz=$(( big_khz / 1000 )) || big_mhz="?"
+    [[ "$gpu_hz" =~ ^[0-9]+$ ]] && gpu_mhz=$(( gpu_hz / 1000000 )) || gpu_mhz="?"
+
+    printf "SoC:%-4s°C  GPU:%-4s°C  LITTLE:%-5sMHz  BIG:%-5sMHz  GPU:%-4sMHz  util:%-4s" \
+        "$soc_c" "$gpu_c" "$little_mhz" "$big_mhz" "$gpu_mhz" "$gpu_util_val"
+}
+
+soc_temp_c() {
+    local v; v=$(read_file "$CPU_THERMAL")
+    [[ "$v" =~ ^[0-9]+$ ]] && echo $(( v / 1000 )) || echo 0
+}
+
+# --- regulator discovery ---
+# find regulator controlling CPU BIG voltage by name pattern; RK806 on RK3588:
+# dcdc_reg3 is typically vdd_cpu_big0_s0/vdd_cpu_big1_s0
+find_cpu_big_regulator() {
+    local path uv name
+    for path in /sys/class/regulator/regulator.*/; do
+        name=$(cat "${path}name" 2>/dev/null || echo "")
+        uv=$(cat "${path}microvolts" 2>/dev/null || echo "")
+        # match common RK3588 CPU BIG rail names
+        if echo "$name" | grep -qiE "cpu_big|vdd_cpu_big|dcdc_reg3"; then
+            echo "${path%/}"
+            return 0
+        fi
+    done
+    # fallback: find any regulator in 850-1100mV range with name containing cpu
+    for path in /sys/class/regulator/regulator.*/; do
+        name=$(cat "${path}name" 2>/dev/null || echo "")
+        uv=$(cat "${path}microvolts" 2>/dev/null || echo "")
+        if echo "$name" | grep -qi "cpu" && [[ "$uv" =~ ^[0-9]+$ ]]; then
+            local mv=$(( uv / 1000 ))
+            if (( mv >= 800 && mv <= 1200 )); then
+                echo "${path%/}"
+                return 0
+            fi
+        fi
+    done
+    return 1
+}
+
+# --- voltage / frequency controls ---
+set_big_volt_mv() {
+    local mv=$1
+    local reg
+    reg=$(find_cpu_big_regulator) || { echo "ERROR: CPU BIG regulator not found"; return 1; }
+    local uv=$(( mv * 1000 ))
+    if ! echo "$uv" > "${reg}/microvolts" 2>/dev/null; then
+        echo "ERROR: CPU voltage cannot be set at runtime on this board."
+        echo "  /sys/class/regulator/.../microvolts is read-only (0444) in the"
+        echo "  kernel regulator core. This is by design: voltage is owned by the"
+        echo "  OPP/cpufreq consumer, not by userspace, so root does not help."
+        echo "  To change it, edit opp-microvolt in the device tree and rebuild"
+        echo "  the DTB. Measured stock: 962500 uV on big0 under load at 2208MHz."
+        return 1
+    fi
+    echo "  CPU BIG voltage → ${mv}mV  (reg: $(basename "$reg"))"
+}
+
+get_big_volt_mv() {
+    local reg
+    reg=$(find_cpu_big_regulator) || { echo "?"; return; }
+    local uv; uv=$(read_file "${reg}/microvolts")
+    [[ "$uv" =~ ^[0-9]+$ ]] && echo $(( uv / 1000 )) || echo "?"
+}
+
+# big = cpus with max cpu_capacity (A76 = cpu1-4 on this build), little = rest
+SYS_CPU=/sys/devices/system/cpu
+BIG_CPUS=(); LITTLE_CPUS=()
+cpu_sets() {
+    local f n cap max=0
+    for f in "$SYS_CPU"/cpu[0-9]*/cpu_capacity; do
+        cap=$(cat "$f" 2>/dev/null || echo 0); (( cap > max )) && max=$cap
+    done
+    for f in "$SYS_CPU"/cpu[0-9]*/cpu_capacity; do
+        [ -r "$f" ] || continue
+        n=${f%/cpu_capacity}; n=${n##*/cpu}
+        if [ "$(cat "$f")" -eq "$max" ]; then BIG_CPUS+=("$n"); else LITTLE_CPUS+=("$n"); fi
+    done
+    # no cpu_capacity: old fixed layout
+    if (( max == 0 )) || (( ${#LITTLE_CPUS[@]} == 0 )); then BIG_CPUS=(4 5 6 7); LITTLE_CPUS=(0 1 2 3); fi
+}
+cpu_sets
+LITTLE_FREQ=$SYS_CPU/cpu${LITTLE_CPUS[0]}/cpufreq/scaling_cur_freq
+BIG_FREQ=$SYS_CPU/cpu${BIG_CPUS[0]}/cpufreq/scaling_cur_freq
+
+# live write of BIG scaling_max_freq; 0 = top OPP
+write_big_maxfreq_khz() {
+    local khz=$1 cpu path
+    if [ "$khz" -le 0 ]; then
+        khz=$(tr ' ' '\n' < "$SYS_CPU/cpu${BIG_CPUS[0]}/cpufreq/scaling_available_frequencies" | grep . | sort -n | tail -1)
+    fi
+    for cpu in "${BIG_CPUS[@]}"; do
+        path="$SYS_CPU/cpu${cpu}/cpufreq/scaling_max_freq"
+        [ -f "$path" ] && echo "$khz" > "$path" 2>/dev/null || true
+    done
+}
+
+# set one key in tune.conf (created with ENABLED=1 when absent); other keys untouched
+tune_conf_set() {
+    local key=$1 val=$2 tmp
+    tmp=$(mktemp "$TUNE_CONF.XXXXXX") || return 1
+    if [ -f "$TUNE_CONF" ]; then
+        grep -v "^${key}=" "$TUNE_CONF" > "$tmp" || true
+    else
+        printf '# h96-tune.conf: applied at boot by h96-tune.service; BIG_MAX_FREQ_MHZ also caps balanced and power-saver\nENABLED=1\n' > "$tmp"
+    fi
+    echo "${key}=${val}" >> "$tmp"
+    chmod 0644 "$tmp" && mv -f "$tmp" "$TUNE_CONF"
+}
+
+# --set-maxfreq: saved cap for big cores (balanced and power-saver; performance keeps top OPP); 0 clears it
+set_big_maxfreq_mhz() {
+    local mhz=$1 prof
+    [[ "$mhz" =~ ^[0-9]+$ ]] || { echo "Usage: h96-bench --set-maxfreq <MHz> (0 = no cap)"; exit 2; }
+    [ "$(id -u)" -eq 0 ] || { echo "needs root: sudo h96-bench --set-maxfreq $mhz"; exit 1; }
+    tune_conf_set BIG_MAX_FREQ_MHZ "$mhz" || { echo "ERROR: cannot write $TUNE_CONF"; exit 1; }
+    prof=$(powerprofilesctl get 2>/dev/null || true)
+    if [ "$prof" = performance ] && [ "$mhz" -gt 0 ]; then
+        echo "  BIG core max freq ${mhz}MHz saved to $TUNE_CONF (applies in balanced and power-saver; performance keeps top OPP)"
+        return 0
+    fi
+    write_big_maxfreq_khz $(( mhz * 1000 ))
+    if [ "$mhz" -eq 0 ]; then
+        echo "  BIG core max freq cap cleared in $TUNE_CONF (top OPP)"
+    else
+        echo "  BIG core max freq → ${mhz}MHz, saved to $TUNE_CONF (kept across profile switches and reboots; performance keeps top OPP)"
+    fi
+}
+
+set_big_governor() {
+    local gov=$1
+    for cpu in "${BIG_CPUS[@]}"; do
+        local path="$SYS_CPU/cpu${cpu}/cpufreq/scaling_governor"
+        [ -f "$path" ] && echo "$gov" > "$path" 2>/dev/null || true
+    done
+    echo "  BIG core governor → ${gov}"
+}
+
+# --- monitor mode ---
+monitor_loop() {
+    local interval=${1:-1}
+    echo -e "${BLD}H96 Max V58: Live Monitor  (Ctrl-C to stop)${NC}"
+    echo -e "${DIM}$(date)${NC}\n"
+    while true; do
+        local volt; volt=$(get_big_volt_mv)
+        printf "\r$(snapshot)  volt:${volt}mV   "
+        sleep "$interval"
+    done
+}
+
+# --- voltage scan ---
+scan_regulators() {
+    echo -e "\n${BLD}Voltage rails (all regulators):${NC}"
+    printf "  %-6s %-35s %8s %8s %8s\n" "ID" "Name" "Current" "Min" "Max"
+    echo "  $(printf '─%.0s' {1..70})"
+    for path in /sys/class/regulator/regulator.*/; do
+        local id name uv uv_min uv_max mv mv_min mv_max
+        id=$(basename "$path" | grep -oP '\d+')
+        name=$(cat "${path}name" 2>/dev/null || echo "(unnamed)")
+        uv=$(cat "${path}microvolts" 2>/dev/null || echo "")
+        uv_min=$(cat "${path}min_microvolts" 2>/dev/null || echo "")
+        uv_max=$(cat "${path}max_microvolts" 2>/dev/null || echo "")
+        [[ "$uv"     =~ ^[0-9]+$ ]] && mv="${uv/%???/}mV"         || mv="N/A"
+        [[ "$uv_min" =~ ^[0-9]+$ ]] && mv_min="${uv_min/%???/}mV" || mv_min="N/A"
+        [[ "$uv_max" =~ ^[0-9]+$ ]] && mv_max="${uv_max/%???/}mV" || mv_max="N/A"
+        printf "  %-6s %-35s %8s %8s %8s\n" "$id" "$name" "$mv" "$mv_min" "$mv_max"
+    done
+    echo ""
+    local reg
+    if reg=$(find_cpu_big_regulator 2>/dev/null); then
+        echo -e "  ${GRN}CPU BIG detected → $(basename "$reg")${NC}"
+    else
+        echo -e "  ${YLW}CPU BIG regulator not auto-detected: check names above${NC}"
+    fi
+}
+
+# --- frequency tables ---
+show_freqs() {
+    echo -e "\n${BLD}CPU/GPU frequency tables:${NC}"
+    local pol
+    for pol in /sys/devices/system/cpu/cpufreq/policy*; do
+        local avail max cur gov cpus cap
+        avail=$(cat "$pol/scaling_available_frequencies" 2>/dev/null || echo "N/A")
+        max=$(cat "$pol/scaling_max_freq" 2>/dev/null || echo "N/A")
+        cur=$(cat "$pol/scaling_cur_freq" 2>/dev/null || echo "N/A")
+        gov=$(cat "$pol/scaling_governor" 2>/dev/null || echo "N/A")
+        # cluster from cpu_capacity, never from cpu numbers (A76 = cpu1-4 on this build)
+        cpus=$(cat "$pol/related_cpus" 2>/dev/null); cap=$(cat "/sys/devices/system/cpu/cpu${cpus%% *}/cpu_capacity" 2>/dev/null || echo 0)
+        local cluster; [ "$cap" -ge 1000 ] && cluster="BIG (A76, cpu ${cpus// /,})" || cluster="LITTLE (A55, cpu ${cpus// /,})"
+        echo "  ${cluster}: ${gov} | cur=$(( ${cur:-0}/1000 ))MHz | max=$(( ${max:-0}/1000 ))MHz"
+        echo -n "    OPPs: "
+        echo "$avail" | tr ' ' '\n' | awk 'NF{printf "%dMHz ", $1/1000}' && echo ""
+    done
+    echo ""
+    echo "  GPU: cur=$(( $(read_file $GPU_FREQ_CUR) / 1000000 ))MHz | max=$(( $(read_file $GPU_FREQ_MAX) / 1000000 ))MHz"
+    echo -n "    OPPs: "
+    cat /sys/class/devfreq/fb000000.gpu/available_frequencies 2>/dev/null | tr ' ' '\n' | \
+        awk '{printf "%dMHz ", $1/1000000}' && echo "" || echo "N/A"
+}
+
+# --- benchmarks ---
+run_stress() {
+    local duration=$1 log=$2
+    # prefer stress-ng (bogo-ops metrics), fall back to stress from the offline repo;
+    # fails only if neither is present
+    if command -v stress-ng &>/dev/null; then
+        stress-ng --cpu 0 --timeout "${duration}s" --metrics-brief 2>&1 >> "$log" &
+        echo $!
+    elif command -v stress &>/dev/null; then
+        echo "  (stress-ng absent; using stress -- load only, no bogo-ops)" >> "$log"
+        stress --cpu "$(nproc)" --timeout "${duration}s" >> "$log" 2>&1 &
+        echo $!
+    else
+        echo "  neither stress-ng nor stress is installed" >&2
+        return 1
+    fi
+}
+
+bench_cpu() {
+    local duration=${1:-30}
+    local log="$LOG_DIR/cpu_$(date +%Y%m%d_%H%M%S).log"
+    echo -e "\n${BLD}CPU benchmark: ${duration}s${NC}  log: $log\n"
+    echo "  Pre:  $(snapshot)"
+    local pid; pid=$(run_stress "$duration" "$log")
+    local e=0
+    while kill -0 "$pid" 2>/dev/null; do
+        printf "\r  [%3ds] $(snapshot)" "$e"; sleep 1; e=$((e+1))
+    done; echo ""; wait "$pid" 2>/dev/null || true
+    sleep 5; echo "  Post: $(snapshot)"
+    echo -e "\n${GRN}Done. Log: $log${NC}"
+}
+
+# pick glmark2 binary matching running session; this image runs KDE on X11, the
+# -wayland variant cannot init an EGL canvas on X11 ("Could not initialize canvas"),
+# so select by session type. falls back to wayland binary only with no X11 DISPLAY
+gpu_glmark2() {
+    if [ -n "${WAYLAND_DISPLAY:-}" ] && command -v glmark2-es2-wayland &>/dev/null; then
+        echo glmark2-es2-wayland
+    elif [ -n "${DISPLAY:-}" ] && command -v glmark2-es2 &>/dev/null; then
+        echo glmark2-es2
+    elif command -v glmark2-es2-wayland &>/dev/null; then
+        echo glmark2-es2-wayland
+    else
+        return 1
+    fi
+}
+
+bench_gpu() {
+    local duration=${1:-30}
+    local log="$LOG_DIR/gpu_$(date +%Y%m%d_%H%M%S).log"
+    echo -e "\n${BLD}GPU benchmark: ${duration}s${NC}  log: $log\n"
+    echo "  Pre:  $(snapshot)"
+    local gm; gm=$(gpu_glmark2) || { echo "  no glmark2-es2 binary for this session"; return 1; }
+    timeout "${duration}s" $gm --off-screen >> "$log" 2>&1 &
+    local pid=$!; local e=0
+    while kill -0 "$pid" 2>/dev/null; do
+        printf "\r  [%3ds] $(snapshot)" "$e"; sleep 1; e=$((e+1))
+    done; echo ""; wait "$pid" 2>/dev/null || true
+    sleep 10; echo "  Post: $(snapshot)"
+    echo -e "\n${GRN}Done. Log: $log${NC}"
+}
+
+bench_combined() {
+    local duration=${1:-60}
+    local log="$LOG_DIR/combined_$(date +%Y%m%d_%H%M%S).log"
+    echo -e "\n${BLD}Combined CPU+GPU: ${duration}s${NC}  log: $log\n"
+    echo "  Pre:  $(snapshot)"
+    local pids=()
+    local spid; spid=$(run_stress "$duration" "$log"); pids+=($spid)
+    local gm; gm=$(gpu_glmark2)
+    [ -n "$gm" ] && \
+        { timeout "${duration}s" $gm --off-screen >> "$log" 2>&1 & pids+=($!); }
+    local e=0 peak_t=0
+    while (( e < duration )); do
+        local t; t=$(soc_temp_c)
+        (( t > peak_t )) && peak_t=$t
+        printf "\r  [%3ds] $(snapshot)" "$e"; sleep 1; e=$((e+1))
+    done; echo ""
+    for p in "${pids[@]}"; do kill "$p" 2>/dev/null || true; done
+    sleep 15; echo "  Post: $(snapshot)"
+    echo -e "\n${BLD}Peak SoC: ${peak_t}°C${NC}"
+    echo -e "${GRN}Done. Log: $log${NC}"
+}
+
+bench_idle() {
+    local duration=${1:-30}
+    local log="$LOG_DIR/idle_$(date +%Y%m%d_%H%M%S).log"
+    echo -e "\n${BLD}Idle baseline: ${duration}s${NC}  log: $log\n"
+    local e=0
+    while (( e < duration )); do
+        local snap; snap=$(snapshot)
+        printf "\r  [%3ds] %s" "$e" "$snap"
+        echo "[${e}s] $snap" >> "$log"
+        sleep 1; e=$((e+1))
+    done; echo ""
+    echo -e "${GRN}Done. Log: $log${NC}"
+}
+
+# --- undervolt tuner ---
+# ARM Cortex-A76 safe sustained temp 85C, throttle at 80C
+TUNE_TEMP_LIMIT=80      # abort step if SoC hits this during test
+TUNE_STEP_MV=25         # step size per iteration
+TUNE_TEST_SECS=45       # stress duration per voltage step
+TUNE_FLOOR_MV=800       # never go below this (hard safety floor for RK3588)
+
+tune() {
+    local log="$LOG_DIR/tune_$(date +%Y%m%d_%H%M%S).log"
+    echo -e "\n${BLD}Undervolt tuner: RK3588 CPU BIG${NC}"
+    echo -e "${YLW}WARNING: undervolt can cause instability. Watch for system errors.${NC}"
+    echo -e "${YLW}ARM Cortex-A76 safe sustained: ≤80°C. Hard floor: ${TUNE_FLOOR_MV}mV.${NC}\n"
+
+    local reg
+    reg=$(find_cpu_big_regulator) || { echo "ERROR: CPU BIG regulator not found. Run: h96-bench --scan"; exit 1; }
+    echo "  Regulator: $(basename "$reg") ($(cat "${reg}/name" 2>/dev/null))"
+
+    # set performance governor and max freq first
+    set_big_governor performance
+    local max_khz
+    max_khz=$(cat $SYS_CPU/cpu${BIG_CPUS[0]}/cpufreq/scaling_available_frequencies 2>/dev/null | \
+              tr ' ' '\n' | sort -n | tail -1)
+    [ -n "$max_khz" ] && set_big_maxfreq_mhz $(( max_khz / 1000 ))
+
+    local stock_mv start_mv
+    stock_mv=$(get_big_volt_mv)
+    start_mv=$stock_mv
+    echo "  Stock voltage: ${stock_mv}mV"
+    echo "  Test duration per step: ${TUNE_TEST_SECS}s"
+    echo "  Step size: ${TUNE_STEP_MV}mV"
+    echo "  Log: $log"
+    echo ""
+    echo "  Stock voltage: ${stock_mv}mV" >> "$log"
+
+    local current_mv=$stock_mv
+    local last_stable_mv=$stock_mv
+    local step=0
+
+    while true; do
+        local next_mv=$(( current_mv - TUNE_STEP_MV ))
+        (( next_mv < TUNE_FLOOR_MV )) && { echo -e "\n  ${YLW}Reached floor (${TUNE_FLOOR_MV}mV). Stopping.${NC}"; break; }
+
+        echo -e "\n  ── Step $((++step)): testing ${next_mv}mV ─────────────────"
+        set_big_volt_mv "$next_mv" | tee -a "$log"
+
+        # cooldown before stressing
+        sleep 2
+
+        # run stress, monitor for crashes/overtemp
+        local pid; pid=$(run_stress "$TUNE_TEST_SECS" "$log")
+        local elapsed=0 ok=1 peak_t=0
+        while kill -0 "$pid" 2>/dev/null && (( elapsed < TUNE_TEST_SECS )); do
+            local t; t=$(soc_temp_c)
+            (( t > peak_t )) && peak_t=$t
+            if (( t >= TUNE_TEMP_LIMIT )); then
+                echo -e "\n  ${RED}THERMAL LIMIT ${t}°C: aborting step${NC}"
+                kill "$pid" 2>/dev/null || true
+                ok=0; break
+            fi
+            printf "\r    [%2ds/%ds] $(snapshot)  peak:${peak_t}°C" "$elapsed" "$TUNE_TEST_SECS"
+            sleep 1; (( elapsed++ ))
+        done; echo ""
+        wait "$pid" 2>/dev/null || { ok=0; echo -e "  ${RED}stress-ng exited unexpectedly: possible instability${NC}"; }
+
+        if (( ok )); then
+            echo -e "  ${GRN}PASS  ${next_mv}mV: stable (peak SoC: ${peak_t}°C)${NC}"
+            echo "PASS  ${next_mv}mV  peak:${peak_t}°C" >> "$log"
+            last_stable_mv=$next_mv
+            current_mv=$next_mv
+        else
+            echo -e "  ${RED}FAIL  ${next_mv}mV: restoring ${current_mv}mV${NC}"
+            echo "FAIL  ${next_mv}mV" >> "$log"
+            set_big_volt_mv "$current_mv"
+            break
+        fi
+
+        # brief cooldown between steps
+        sleep 5
+    done
+
+    # restore stock voltage and summarise
+    echo ""
+    set_big_volt_mv "$stock_mv"
+    echo -e "\n${BLD}Tuning complete${NC}"
+    echo "  Stock voltage:         ${stock_mv}mV"
+    echo "  Safe undervolt floor:  ${last_stable_mv}mV"
+    echo "  Headroom saved:        $(( stock_mv - last_stable_mv ))mV"
+    echo ""
+    echo "RESULT: stock=${stock_mv}mV  safe_floor=${last_stable_mv}mV  saved=$(( stock_mv - last_stable_mv ))mV" >> "$log"
+
+    # write tune profile
+    local big_max_mhz
+    big_max_mhz=$(cat $SYS_CPU/cpu${BIG_CPUS[0]}/cpufreq/scaling_max_freq 2>/dev/null || echo "0")
+    big_max_mhz=$(( big_max_mhz / 1000 ))
+    local big_gov
+    big_gov=$(cat $SYS_CPU/cpu${BIG_CPUS[0]}/cpufreq/scaling_governor 2>/dev/null || echo "performance")
+
+    cat > "$TUNE_CONF" << CONFEOF
+# h96-tune.conf: written by h96-bench --tune $(date)
+# applied at every boot by h96-tune.service
+ENABLED=1
+BIG_VOLT_MV=${last_stable_mv}
+BIG_MAX_FREQ_MHZ=${big_max_mhz}
+BIG_GOVERNOR=${big_gov}
+LITTLE_GOVERNOR=schedutil
+CONFEOF
+    echo -e "  ${GRN}Tune profile saved → ${TUNE_CONF}${NC}"
+    echo "  Full log: $log"
+
+    # enable boot service if present
+    if systemctl cat h96-tune.service &>/dev/null 2>&1; then
+        systemctl enable h96-tune.service 2>/dev/null && \
+            echo -e "  ${GRN}h96-tune.service enabled: profile will apply on every boot${NC}"
+    fi
+}
+
+# --- fix 2.4GHz performance mode ---
+fix_perf() {
+    echo -e "\n${BLD}Fixing BIG core performance mode for RK3588${NC}"
+    # find actual max freq from OPP table
+    local max_khz
+    max_khz=$(cat "$SYS_CPU/cpu${BIG_CPUS[0]}/cpufreq/scaling_available_frequencies" 2>/dev/null | \
+              tr ' ' '\n' | grep -v '^$' | sort -n | tail -1)
+    if [ -z "$max_khz" ]; then
+        echo "  ERROR: cannot read available frequencies for cpu${BIG_CPUS[0]}"
+        return 1
+    fi
+    local max_mhz=$(( max_khz / 1000 ))
+    echo "  BIG core OPP max: ${max_mhz}MHz"
+    set_big_governor performance
+    write_big_maxfreq_khz "$max_khz"
+    echo "  BIG core max freq → ${max_mhz}MHz"
+    # also set LITTLE cores
+    local little_max
+    little_max=$(cat "$SYS_CPU/cpu${LITTLE_CPUS[0]}/cpufreq/scaling_available_frequencies" 2>/dev/null | \
+                 tr ' ' '\n' | sort -n | tail -1)
+    [ -n "$little_max" ] && {
+        for cpu in "${LITTLE_CPUS[@]}"; do
+            echo "$little_max" > "$SYS_CPU/cpu${cpu}/cpufreq/scaling_max_freq" 2>/dev/null || true
+        done
+        echo "  LITTLE core max: $(( little_max / 1000 ))MHz"
+    }
+
+    # write/update tune profile (freq + governor), preserve volt if already set
+    local existing_volt=0
+    [ -f "$TUNE_CONF" ] && existing_volt=$(grep "^BIG_VOLT_MV=" "$TUNE_CONF" 2>/dev/null | cut -d= -f2 || echo 0)
+    cat > "$TUNE_CONF" << CONFEOF
+# h96-tune.conf: updated by h96-bench --fix-perf $(date)
+# applied at every boot by h96-tune.service
+ENABLED=1
+BIG_VOLT_MV=${existing_volt}
+BIG_MAX_FREQ_MHZ=${max_mhz}
+BIG_GOVERNOR=performance
+LITTLE_GOVERNOR=schedutil
+CONFEOF
+    echo -e "  ${GRN}Freq profile saved → ${TUNE_CONF}${NC}"
+    echo "  (Undervolt: h96-undervolt)"
+
+    if systemctl cat h96-tune.service &>/dev/null 2>&1; then
+        systemctl enable h96-tune.service 2>/dev/null && \
+            echo -e "  ${GRN}h96-tune.service enabled${NC}"
+    fi
+
+    echo ""
+    echo "  Current state:"
+    show_freqs
+}
+
+# --- apply tune profile ---
+apply_tune() {
+    [ -f "$TUNE_CONF" ] || { echo "No tune profile at $TUNE_CONF: run h96-bench --fix-perf or --tune first"; exit 0; }
+    source "$TUNE_CONF"
+    [ "${ENABLED:-0}" = "1" ] || { echo "Tune profile disabled (ENABLED=0)"; exit 0; }
+
+    echo "Applying h96 tune profile..."
+    local reg; reg=$(find_cpu_big_regulator 2>/dev/null) || true
+
+    if [ -n "$reg" ] && [ "${BIG_VOLT_MV:-0}" -gt 0 ] 2>/dev/null; then
+        echo "  BIG volt → ${BIG_VOLT_MV}mV"
+        echo "$(( BIG_VOLT_MV * 1000 ))" > "${reg}/microvolts" 2>/dev/null || \
+            echo "  WARN: cannot set voltage"
+    fi
+
+    # big/little policies from cpu_sets (cpu_capacity); numbering differs per build
+    local big_policies=() little_policies=() p c is_big
+    for p in /sys/devices/system/cpu/cpufreq/policy*/; do
+        is_big=0
+        for c in $(cat "$p/related_cpus" 2>/dev/null); do
+            [[ " ${BIG_CPUS[*]} " == *" $c "* ]] && is_big=1
+        done
+        if [ "$is_big" -eq 1 ]; then big_policies+=("$p"); else little_policies+=("$p"); fi
+    done
+
+    if [ "${BIG_MAX_FREQ_MHZ:-0}" -gt 0 ] 2>/dev/null; then
+        local khz=$(( BIG_MAX_FREQ_MHZ * 1000 ))
+        for p in "${big_policies[@]}"; do
+            echo "$khz" > "$p/scaling_max_freq" 2>/dev/null || true
+        done
+        echo "  BIG max freq → ${BIG_MAX_FREQ_MHZ}MHz (${#big_policies[@]} policies)"
+    fi
+
+    # governors only when the profile names them (--set-maxfreq writes no governor key)
+    if [ -n "${BIG_GOVERNOR:-}" ]; then
+        for p in "${big_policies[@]}"; do
+            echo "$BIG_GOVERNOR" > "$p/scaling_governor" 2>/dev/null || true
+        done
+        echo "  BIG governor → ${BIG_GOVERNOR}"
+    fi
+    if [ -n "${LITTLE_GOVERNOR:-}" ]; then
+        for p in "${little_policies[@]}"; do
+            echo "$LITTLE_GOVERNOR" > "$p/scaling_governor" 2>/dev/null || true
+        done
+        echo "  LITTLE governor → ${LITTLE_GOVERNOR}"
+    fi
+
+    echo "Done."
+}
+
+# --- help ---
+usage() {
+    echo -e "${BLD}h96-bench v${VERSION}${NC} - H96 Max V58 benchmark, monitor & undervolt tuner"
+    echo ""
+    echo "  Monitoring:"
+    echo "    h96-bench --monitor              live readout (1s)"
+    echo "    h96-bench --scan                 list all voltage rails"
+    echo "    h96-bench --freqs                CPU/GPU frequency tables"
+    echo ""
+    echo "  Benchmarks:"
+    echo "    h96-bench --cpu [--quick]        CPU stress (30s / 10s)"
+    echo "    h96-bench --gpu [--quick]        GPU glmark2 (30s / 10s)"
+    echo "    h96-bench --combined [--soak]    CPU+GPU (60s / 180s thermal soak)"
+    echo "    h96-bench --idle                 idle baseline (30s)"
+    echo ""
+    echo "  Tuning (run as root):"
+    echo "    h96-bench --fix-perf             force BIG cores to OPP max + perf governor"
+    echo "    h96-bench --apply-tune           apply saved profile (/etc/h96-tune.conf)"
+    echo "    h96-bench --set-maxfreq <MHz>    saved CPU BIG cap (balanced, power-saver); 0 = no cap"
+    echo "    h96-bench --tune, --set-volt     unsupported: CPU voltage is read-only at runtime;"
+    echo "                                     use h96-undervolt (device tree OPP table)"
+    echo ""
+    echo "  Logs: $LOG_DIR/"
+}
+
+# --- dispatch ---
+QUICK=0; SOAK=0; MODE=""; ARG=""
+
+for arg in "$@"; do
+    case "$arg" in
+        --cpu)       MODE=cpu ;;
+        --gpu)       MODE=gpu ;;
+        --combined)  MODE=combined ;;
+        --idle)      MODE=idle ;;
+        --monitor)   MODE=monitor ;;
+        --scan)      MODE=scan ;;
+        --freqs)     MODE=freqs ;;
+        --tune)      MODE=tune ;;
+        --fix-perf)   MODE=fixperf ;;
+        --apply-tune) MODE=applytune ;;
+        --quick)     QUICK=1 ;;
+        --soak|--thermal-soak) SOAK=1 ;;
+        --set-volt)  MODE=setvolt ;;
+        --set-maxfreq) MODE=setfreq ;;
+        --help|-h)   usage; exit 0 ;;
+        [0-9]*)      ARG="$arg" ;;
+        *) echo "Unknown: $arg"; usage; exit 2 ;;
+    esac
+done
+
+case "$MODE" in
+    cpu)      bench_cpu      $([ $QUICK -eq 1 ] && echo 10 || echo 30) ;;
+    gpu)      bench_gpu      $([ $QUICK -eq 1 ] && echo 10 || echo 30) ;;
+    combined) bench_combined $([ $SOAK  -eq 1 ] && echo 180 || echo 60) ;;
+    idle)     bench_idle     30 ;;
+    monitor)  monitor_loop   1 ;;
+    scan)     scan_regulators ;;
+    freqs)    show_freqs ;;
+    tune)     tune ;;
+    fixperf)    fix_perf ;;
+    applytune)  apply_tune ;;
+    setvolt)  [ -n "$ARG" ] && set_big_volt_mv "$ARG" || { echo "Usage: h96-bench --set-volt <mV>"; exit 1; } ;;
+    setfreq)  [ -n "$ARG" ] && set_big_maxfreq_mhz "$ARG" || { echo "Usage: h96-bench --set-maxfreq <MHz>"; exit 1; } ;;
+    "")       echo -e "${BLD}Live snapshot:${NC}"; snapshot; echo ""; echo ""; usage ;;
+esac

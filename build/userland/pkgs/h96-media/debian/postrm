@@ -1,0 +1,74 @@
+#!/bin/sh
+# purge removes links, masks and seeded files created by postinst
+set -e
+R="${DPKG_ROOT:-}"
+rmlink() { [ -L "$R$1" ] && [ "$(readlink "$R$1")" = "$2" ] && rm -f "$R$1"; return 0; }
+case "$1" in
+purge)
+  rmlink /etc/systemd/system/multi-user.target.wants/h96-video-setup.service /usr/lib/systemd/system/h96-video-setup.service
+  rmlink /etc/systemd/system/timers.target.wants/h96-ytdlp-update.timer /usr/lib/systemd/system/h96-ytdlp-update.timer
+  rm -f "$R/etc/mpv/mpv.conf"
+  rm -f "$R/var/lib/h96/seed-sums/mpv.conf"; rmdir "$R/var/lib/h96/seed-sums" "$R/var/lib/h96" 2>/dev/null || true
+  rm -f "$R/etc/skel/.config/chromium/NativeMessagingHosts/ff2mpv.json"
+  rm -f "$R/etc/udev/rules.d/99-h96-npu-power.rules"
+  rm -f "$R/var/lib/h96/bin/yt-dlp"; rmdir "$R/var/lib/h96/bin" 2>/dev/null || true
+  rmlink /etc/systemd/system/dev-cec0.device.wants/h96-cec.service /usr/lib/systemd/system/h96-cec.service
+  rm -f "$R/var/lib/h96/cec-default-on"; rmdir "$R/var/lib/h96" 2>/dev/null || true
+  rm -f "$R/var/lib/h96/video-stack.sha256"; rmdir "$R/var/lib/h96" 2>/dev/null || true
+  ;;
+esac
+if [ "$1" = abort-install ]; then
+  while read -r _ _ p; do
+    if { [ -e "$R$p.h96-v72" ] || [ -L "$R$p.h96-v72" ]; } && ! { [ -e "$R$p" ] || [ -L "$R$p" ]; }; then
+      mv -f "$R$p.h96-v72" "$R$p"
+    fi
+  done <<'EOF'
+f 11d65b7b5b4b9ac4e7d5e0b5c06baae604132505140ba4bde526f6dfee504d84 /etc/chromium-browser/native-messaging-hosts/ff2mpv.json
+f 11d65b7b5b4b9ac4e7d5e0b5c06baae604132505140ba4bde526f6dfee504d84 /etc/chromium/native-messaging-hosts/ff2mpv.json
+f e16d65d2361f9944196ecca3b0c26c811ffad59cbe8c144f1e9b57eeaaa8616a /etc/h96/cec-keymap.conf
+f 9b8480bfee9e67d6e21a48df76f6b71373fa7a0fa50e5edc3db893f0c1474481 /etc/mpv/mpv.conf
+f 11d65b7b5b4b9ac4e7d5e0b5c06baae604132505140ba4bde526f6dfee504d84 /etc/opt/chrome/native-messaging-hosts/ff2mpv.json
+f 11d65b7b5b4b9ac4e7d5e0b5c06baae604132505140ba4bde526f6dfee504d84 /etc/skel/.config/chromium/NativeMessagingHosts/ff2mpv.json
+f 99b1644c584100cafbf076ff8a1840125358fbcccb98c747b254305d9ef3f96f /etc/udev/rules.d/99-h96-cec.rules
+f b8e958e47cc4a84910393a453cc3316f4806a098f3f5b84e20b4821b263dd066 /etc/udev/rules.d/99-h96-dma-heap.rules
+f 0f33f513da8ecc33dd8d5a5d5e178e2431c1b8abdffb53cbe3db33bd8dccdc2f /etc/xdg/autostart/h96-cec-wake.desktop
+f e754f0078a5eacb2d2280fc7106c619dfde4a6aa74a45bf1dff1b05300d3f018 /opt/h96-video/h96-video-stack.tar.gz
+f b4b48db738838031e44b416ea7f06afa31e0e46b36bbcf6ccf4f7f3571be958f /usr/local/bin/ff2mpv
+f 0ee759a16bf4d2b996409955977e3461895d2db994553695a53688c99d740053 /usr/local/bin/h96-cast
+f 3e139540ff9cf9936f351a3934d9544532dfd5067af2c2282b53d9bfa891cb0f /usr/local/bin/h96-cec
+f 03e0ba64e3a0c4033be235b305c6d70bfcee2897c72970b74aebda855a6ce90b /usr/local/bin/h96-encode
+f 616c263036a9bc45e03d8f388724bc89854a5870eb76727aa632a73d23d1ec77 /usr/local/bin/h96-hdr
+f 831755fbe4c088cfda58fa278e6fad8be415bf95e7a06125ccb1288fc59fa846 /usr/local/bin/h96-motion
+f 78d3723dcf0bdb82a4f4326de4c4ca2dc6f850e8c4d8788a470110de5cec302f /usr/local/bin/h96-mpv-kiosk
+f 4d2831c2a9b2c3d5032a5c2072da0348fc407295f457ca21ced6ec096b8f5442 /usr/local/bin/h96-npu
+f ec44c07d9abda7a8c68540f402db5f9796b033e50a51fca18a1bb5364a0d48f6 /usr/local/bin/h96-npu-upscale
+f 4b1b97ca66e0a34007d2cbe4a8b344ef1825a33c275cb3e7b19ad5a939daa055 /usr/local/bin/h96-npu-upscale-setup
+f e002cc0b83fa127b779039a4df7b1e7a3cf8c537336282b55675b21c9808a02e /usr/local/bin/h96-subtitles
+f 35b094bf77c4d055adbacb36c1b25436fbca7ef531974619bdd4788543870e6f /usr/local/bin/h96-transcode-server
+f e64d49a9318b4cbd17bb357a89edcf85f1f126e359ea50037930f05f76fad985 /usr/local/bin/h96-upscale
+f 0624f127950b80735668ad6e2fb4d1426e7491245cff5df1d84fe9252d01048e /usr/local/bin/h96-watch-mpv
+f c058eabdde8184bd6f865df04247a86ea31d7673039594dc98636f9c306ac948 /usr/local/bin/play-with-mpv
+f 1fa6733c37ea6fb51c99ad8fe785e7b7e5f3246c9b980230329d4fb72ed8d4d6 /usr/local/bin/yt-dlp
+f 778fc8f51a503d24f83f2e01e355af443a55ede14ebd16109f747cc15ef21402 /usr/local/lib/h96/h96-cec-wake
+f b2fd54e0b9da1dbc93589e8cc428bf58ceed290cf234a1dd892701cd6f6cfb8a /usr/local/lib/h96/h96-cecd
+f 4cd31bf0b386e1c0e20d53542e51dcf26f9a479abba0cf0117a0f79a21fde05b /usr/local/lib/h96/npuload
+f 310f825ca52c08d9d025956f6e3a4e3e8ca7880b8ccaf25025730a172b763c95 /usr/local/lib/h96/subtitles/render.py
+f 2f3c54cd86565ab1156b6d212e39c1190c3fba0452f8981f2ec70572127bc543 /usr/local/sbin/h96-npu-setup
+f a2f5eb75cad1b389eccb3e7b9756401f0d3d34a462c14d7af5a4191f692799fd /usr/local/sbin/h96-subtitles-setup
+f 8c000c0ce8263bde347b48932472c877c8fa3feaf6df7ee9f0f18d2f3999b9cd /usr/local/sbin/h96-video-setup.sh
+f ff2a3a2c4a33590a99fee3546c4412d33dbc17e16ecf632c40a655d0ed528973 /usr/local/sbin/h96-widevine-setup
+f 3301189a1eafeb573bddb0ae8e420933e89d235aa0ebe85d393436caebaafee5 /usr/local/share/applications/mpv.desktop
+f 2e7c9beb79be10c57c85eede7a4b6ba1f031a97a26170d88450fc4330a5e8408 /usr/local/share/h96/shaders/ravu-lite-ar-r4.hook
+f 9b9d689ad872385f37129de66970f3975aa354334b9dd4378efa2cfc3b7f7545 /usr/share/applications/h96-mpv-kiosk.desktop
+EOF
+fi
+case "$1" in
+remove)
+  dpkg-divert --package h96-media --remove --rename --divert /usr/share/applications/mpv.desktop.distrib /usr/share/applications/mpv.desktop
+  ;;
+abort-install|disappear)
+  dpkg-divert --package h96-media --remove --rename --divert /usr/share/applications/mpv.desktop.distrib /usr/share/applications/mpv.desktop
+  ;;
+esac
+if [ -z "$R" ] && [ -d /run/systemd/system ]; then systemctl daemon-reload || true; fi
+exit 0

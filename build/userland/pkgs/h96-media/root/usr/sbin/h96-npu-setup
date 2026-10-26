@@ -1,0 +1,122 @@
+#!/bin/bash
+# h96-npu-setup: install the proprietary Rockchip RKNN inference runtime on demand; not bundled because its RKNN SDK License permits internal-use copies only, incompatible with this image's GPL-2.0 distribution. NPU hardware/driver work without it; see h96-npu.
+
+set -uo pipefail
+
+[ -r /usr/lib/h96/banner.sh ] && . /usr/lib/h96/banner.sh
+command -v h96_banner >/dev/null 2>&1 || h96_banner() { :; }
+
+# Pinned commit (master 2025-07-29); runtime 2.3.2, same file as tag v2.3.2.
+RKNN_COMMIT="59a913d172e7f5ff03c9076e2ec7b1b1288ffd08"
+RUNTIME_URL="https://raw.githubusercontent.com/airockchip/rknn-toolkit2/$RKNN_COMMIT/rknpu2/runtime/Linux/librknn_api/aarch64/librknnrt.so"
+RUNTIME_SHA256="d31fc19c85b85f6091b2bd0f6af9d962d5264a4e410bfb536402ec92bac738e8"
+LICENSE_URL="https://raw.githubusercontent.com/airockchip/rknn-toolkit2/$RKNN_COMMIT/LICENSE"
+DEST="/usr/lib/aarch64-linux-gnu/librknnrt.so"
+ACCEPT=0
+
+die() { echo "h96-npu-setup: $*" >&2; exit 1; }
+
+for a in "$@"; do
+    case "$a" in
+        --accept-license) ACCEPT=1 ;;
+        --uninstall)
+            [ "$(id -u)" -eq 0 ] || die "--uninstall needs root"
+            if [ -e "$DEST" ]; then rm -f "$DEST"; ldconfig; echo "removed $DEST"; else echo "not installed"; fi
+            exit 0 ;;
+        -h|--help)
+            cat <<'USAGE'
+h96-npu-setup: install the Rockchip RKNN inference runtime (opt-in)
+
+  sudo h96-npu-setup                     interactive; shows the licence first
+  sudo h96-npu-setup --accept-license    non-interactive
+  sudo h96-npu-setup --uninstall         remove the runtime
+
+The runtime is proprietary Rockchip software and is deliberately NOT included in
+this image. This downloads runtime 2.3.2 from Rockchip's own repository and
+refuses any file whose sha256 differs from the pinned value.
+USAGE
+            exit 0 ;;
+        *) die "unknown option '$a' (try --help)" ;;
+    esac
+done
+
+[ "$(id -u)" -eq 0 ] || die "needs root (try: sudo h96-npu-setup)"
+command -v curl >/dev/null 2>&1 || die "curl is required"
+[ -d /proc/rknpu ] || die "no /proc/rknpu: NPU driver is not loaded; nothing to do"
+
+h96_banner "N P U   R U N T I M E"
+
+drv=$(tr -d '\n' < /proc/rknpu/version 2>/dev/null)
+echo "  kernel driver : ${drv:-unknown}"
+echo "  runtime source: Rockchip rknn-toolkit2 (upstream)"
+echo
+
+if [ "$ACCEPT" -ne 1 ]; then
+    cat <<TXT
+  This installs librknnrt.so, which is PROPRIETARY Rockchip software, not part
+  of this image and not covered by its GPL-2.0 licence. It is distributed under
+  Rockchip's "RKNN SDK License":
+
+      $LICENSE_URL
+
+  By continuing you are obtaining it directly from Rockchip and accepting their
+  terms. Nothing about the NPU hardware or its kernel driver depends on this;
+  it only adds the userspace inference library.
+
+TXT
+    printf "  Type 'yes' to continue: "
+    read -r reply
+    [ "$reply" = yes ] || { echo "  aborted, nothing changed"; exit 1; }
+    echo
+fi
+
+tmp=$(mktemp -d) || die "cannot make a temp dir"
+trap 'rm -rf "$tmp"' EXIT
+
+echo "  downloading..."
+curl -fsSL --retry 3 --connect-timeout 15 -o "$tmp/librknnrt.so" "$RUNTIME_URL" \
+    || die "download failed: check the network and try again (nothing was changed)"
+
+got=$(sha256sum "$tmp/librknnrt.so" | cut -d' ' -f1)
+[ "$got" = "$RUNTIME_SHA256" ] || die "sha256 mismatch for $RUNTIME_URL
+  expected (RUNTIME_SHA256 pin): $RUNTIME_SHA256
+  got:                           $got
+  nothing was changed"
+echo "  sha256 verified"
+
+# Validate before installing: must be an aarch64 shared object, not an HTML error page.
+case "$(file -b "$tmp/librknnrt.so" 2>/dev/null)" in
+    *"ELF 64-bit"*aarch64*) : ;;
+    *) die "downloaded file is not an aarch64 shared object (nothing was changed)" ;;
+esac
+
+ver=$(strings "$tmp/librknnrt.so" 2>/dev/null | sed -n 's/^librknnrt version: *//p' | head -1)
+[ -n "$ver" ] || ver="unknown"
+echo "  runtime version: $ver"
+
+install -m 0644 "$tmp/librknnrt.so" "$DEST" || die "install to $DEST failed"
+ldconfig
+
+# Confirm the loader sees it; capture with awk instead of grep -q, which would SIGPIPE ldconfig under pipefail. Fall back to a direct file check for a cache miss.
+if [ -n "$(ldconfig -p 2>/dev/null | awk '/librknnrt\.so/{print; exit}')" ] || [ -e "$DEST" ]; then
+    echo "  installed: $DEST"
+else
+    die "installed to $DEST but the linker cannot see it; check /etc/ld.so.conf.d"
+fi
+
+cat <<TXT
+
+  Done. The NPU is now usable from the C API (link against -lrknnrt).
+
+  Version pairing: this runtime checks the kernel driver at load time and will
+  say so itself if they are incompatible. Yours is driver ${drv:-unknown} with
+  runtime $ver.
+
+  NOTE on Python: Rockchip publishes rknn-toolkit-lite2 wheels only up to
+  CPython 3.12. This image is Ubuntu 26.04 with Python $(python3 -V 2>&1 | awk '{print $2}'),
+  so those wheels will NOT install against the system interpreter. Use the C API,
+  or bring your own CPython <= 3.12 (venv, conda or a container).
+
+  Model conversion (.onnx/.pt -> .rknn) runs on a PC, not on the box: see
+  rknn-toolkit2. Check 'h96-npu' for live load and frequency.
+TXT

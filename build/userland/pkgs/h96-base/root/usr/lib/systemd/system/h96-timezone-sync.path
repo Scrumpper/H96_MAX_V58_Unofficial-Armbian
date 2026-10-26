@@ -1,0 +1,10 @@
+[Unit]
+Description=H96 time zone sync watch (/etc/timezone follows /etc/localtime)
+
+[Path]
+PathChanged=/etc/localtime
+PathChanged=/etc/timezone
+Unit=h96-timezone-sync.service
+
+[Install]
+WantedBy=multi-user.target

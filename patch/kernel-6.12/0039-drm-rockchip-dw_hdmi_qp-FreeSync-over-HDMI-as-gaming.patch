@@ -1,0 +1,85 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Scrumpper <190908034+Scrumpper@users.noreply.github.com>
+Date: Tue, 20 Oct 2026 07:20:28 -0700
+Subject: [PATCH 39/59] drm/rockchip: dw_hdmi_qp: FreeSync over HDMI as gaming
+ VRR
+
+A sink without HDMI 2.1 VRR bytes in its HF-VSDB but with an AMD VSDB
+range (FreeSync over HDMI, for example the LG UltraGear 48-144 Hz on
+the test bench) now gets that range as gaming VRR range, so the
+connector reports vrr_capable = 1 and VOP2 stretches the front porch
+as for HDMI VRR when userspace sets the CRTC VRR_ENABLED property.
+
+For such a sink the vrr_enable callback sends the AMD FreeSync SPD
+infoframe (range min to the lower of sink max and mode refresh) in
+place of the VTEM packet, on the same 3-frame lead the VTEM path uses.
+HDMI 2.1 VRR wins when a sink lists both.
+
+Module parameter rockchipdrm.hdmi_freesync (default on, 0644) turns
+the FreeSync range off; it applies at the next EDID parse (hotplug or
+forced reprobe).
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01P6itje71iKPFBX7YKkfvRo
+---
+ .../gpu/drm/rockchip/dw_hdmi_qp-rockchip.c    | 26 ++++++++++++++++++-
+ 1 file changed, 25 insertions(+), 1 deletion(-)
+
+diff --git a/drivers/gpu/drm/rockchip/dw_hdmi_qp-rockchip.c b/drivers/gpu/drm/rockchip/dw_hdmi_qp-rockchip.c
+index f23a311db..8bd2b7480 100644
+--- a/drivers/gpu/drm/rockchip/dw_hdmi_qp-rockchip.c
++++ b/drivers/gpu/drm/rockchip/dw_hdmi_qp-rockchip.c
+@@ -183,6 +183,11 @@
+ #define HDMI_MAX_VRR_REFRESH_RATE	120
+ #define HDMI_MIN_VRR_REFRESH_RATE	24
+ 
++/* FreeSync over HDMI for sinks with an AMD VSDB; read at the next EDID parse */
++static bool hdmi_freesync = true;
++module_param(hdmi_freesync, bool, 0644);
++MODULE_PARM_DESC(hdmi_freesync, "Use the AMD VSDB range as VRR range on HDMI (default: true)");
++
+ /* Pixel rates in KPixels/sec */
+ #define HDMI_DSC_PEAK_PIXEL_RATE		2720000
+ /*
+@@ -334,6 +339,7 @@ struct rockchip_dw_hdmi_qp {
+ 	enum hdmi_vrr_state old_vrr_state;
+ 	enum TARGET_FRAME_RATE brr_tfr;
+ 	struct hdmi_vrr_capacity vrr_cap;
++	bool freesync_sink;
+ 	enum rk_if_color_format hdmi_output;
+ 	struct rockchip_drm_sub_dev sub_dev;
+ 
+@@ -1871,7 +1877,15 @@ static void dw_hdmi_rockchip_vrr_enable(struct rockchip_drm_sub_dev *sub_dev,
+ 		return;
+ 	}
+ 
+-	dw_hdmi_qp_set_gaming_vrr_enable(hdmi->hdmi_qp, on);
++	if (hdmi->freesync_sink) {
++		int vrefresh = drm_mode_vrefresh(&crtc_state->adjusted_mode);
++
++		dw_hdmi_qp_set_freesync(hdmi->hdmi_qp, on,
++					hdmi->vrr_cap.gaming_vrr_rate_min,
++					min_t(int, hdmi->vrr_cap.gaming_vrr_rate_max, vrefresh));
++	} else {
++		dw_hdmi_qp_set_gaming_vrr_enable(hdmi->hdmi_qp, on);
++	}
+ 
+ 	if (on) {
+ 		s->vrr_mode = ROCKCHIP_VRR_VFP_MODE;
+@@ -3045,6 +3059,16 @@ static void dw_hdmi_rockchip_get_vrr_range(struct rockchip_dw_hdmi_qp *hdmi)
+ 		hdmi->vrr_cap.gaming_vrr_rate_max = 0;
+ 		hdmi->vrr_cap.gaming_vrr_rate_min = 0;
+ 	}
++
++	/* HDMI 2.1 VRR wins; FreeSync range only for sinks without it */
++	hdmi->freesync_sink = false;
++	if (!hdmi->vrr_cap.gaming_vrr_rate_max && hdmi_freesync &&
++	    hdmi->hdmi21_data.vrr_cap.freesync) {
++		hdmi->freesync_sink = true;
++		hdmi->vrr_cap.vrr_mode |= BIT(GAMING_VRR_SUPPORTED);
++		hdmi->vrr_cap.gaming_vrr_rate_min = hdmi->hdmi21_data.vrr_cap.fs_min;
++		hdmi->vrr_cap.gaming_vrr_rate_max = hdmi->hdmi21_data.vrr_cap.fs_max;
++	}
+ }
+ 
+ static int

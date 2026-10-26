@@ -1,0 +1,16 @@
+Source: h96-desktop
+Section: x11
+Priority: optional
+Maintainer: Scrumpper <190908034+Scrumpper@users.noreply.github.com>
+Rules-Requires-Root: no
+Standards-Version: 4.7.0
+
+Package: h96-desktop
+Architecture: arm64
+Multi-Arch: foreign
+Depends: h96-base (= 8.0.0~r39), libc6 (>= 2.38), python3
+Recommends: ddcutil
+Description: H96 MAX V58 desktop integration: X11 display, LightDM, KDE and GNOME setup
+ X11 display configuration, display manager hand-off, autologin unit, KDE,
+ GNOME and LightDM configure units, display wake and guard, DDC tools, SCDC
+ lock verify, power profiles service, desktop skeleton files.

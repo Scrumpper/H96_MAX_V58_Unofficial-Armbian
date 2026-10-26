@@ -1,0 +1,315 @@
+#!/bin/bash
+# =============================================================================
+# h96-game-mode - launch a Windows game on the H96 Max V58 (RK3588 / Mali-G610)
+# under box64 + wine(wow64) + stripped-DXVK, inside a NESTED Wayland compositor
+# (cage by default, gamescope optional) started FROM the X11 Plasma desktop.
+#
+# The desktop keeps running on Panfrost GL; this launcher gives the game its own
+# Wayland socket and points Vulkan at the PanVK ICD. PanVK is per-process, so
+# desktop-GL and game-Vulkan share the same bound panthor kernel driver with no
+# driver switch (the whole point of the all-open stack).
+#
+# Usage:
+#   h96-game-mode [options] <path-to-game.exe> [game args...]
+#   h96-game-mode --winecfg              # open winecfg in the default prefix
+#   h96-game-mode --wine-file FILE       # install Wine from local wine-11.12-staging-tkg-amd64-wow64.tar.xz
+#   h96-game-mode status                 # Wine, DXVK, Vulkan ICD, compositors; installs nothing
+#
+# Options:
+#   -p, --prefix DIR     wineprefix (default: ~/.local/share/h96-gaming/prefixes/default)
+#   -d, --dxvk KIND      sarek | stripped | auto (default: auto, see below)
+#   -c, --compositor C   cage | gamescope (default: cage)
+#   -r, --res WxH        output resolution for gamescope (e.g. 1280x720)
+#       --hud            enable DXVK_HUD=fps,frametimes,version
+#       --no-dxvk        don't (re)install DXVK into the prefix, just run
+#       --winecfg        run winecfg instead of a game
+#       --wine-file F    install Wine from local tarball F, then exit
+#       --stack-file F   install older h96-gaming-stack.tar.gz F, then exit
+#   -h, --help
+#
+# DXVK choice (auto): d3d8/d3d9/ddraw legacy titles -> DXVK-Sarek 1.12 (dyasync,
+# VK 1.1/1.2, has d7vk ddraw). d3d10/d3d11 -> khanh-it dxvk-2.7.1-stripped.
+# `auto` defaults to STRIPPED (D3D11 is the common case); pass `-d sarek` for
+# D3D8/9/legacy titles. Both DXVK builds are in the image under /usr/lib/h96/gaming.
+#
+# Wine: first run downloads Kron4ek Wine 11.12 staging-tkg amd64-wow64 (about 100 MB)
+# from github.com/Kron4ek/Wine-Builds, checks its sha256 and unpacks it to
+# /opt/h96-gaming/wine. Other build: URL in /etc/h96/wine.url, its sha256 in /etc/h96/wine.sha256.
+#
+# x86 emulation: wine runs under explicit `box64`; box64 starts wine's x86 child
+# processes itself, so binfmt_misc is not needed. While Steam ARM is installed FEX
+# owns the x86 binfmt entries (box64/box32 entries disabled); that is expected.
+# Wine Mono/Gecko installer dialogs are suppressed (mscoree,mshtml=d).
+# =============================================================================
+
+# Shared block-letter header (art and colours live in one place).
+# The stub matters: without it, a missing library turns every invocation into
+# "h96_banner: command not found" on stderr.
+[ -r /usr/lib/h96/banner.sh ] && . /usr/lib/h96/banner.sh
+command -v h96_banner >/dev/null 2>&1 || h96_banner() { :; }
+
+set -euo pipefail
+
+h96_banner "G A M E   M O D E"
+
+
+GAMING_ROOT=/usr/lib/h96/gaming
+WINE_ROOT=/opt/h96-gaming
+WINE_DIR="$WINE_ROOT/wine"
+ENV_FILE="$GAMING_ROOT/env/gaming.env"
+DEFAULT_PREFIX="${HOME}/.local/share/h96-gaming/prefixes/default"
+
+PREFIX="$DEFAULT_PREFIX"
+DXVK="auto"
+COMPOSITOR="cage"
+RES=""
+HUD=0
+NO_DXVK=0
+WINECFG=0
+STACK_FILE=""
+WINE_FILE=""
+
+die() { echo "h96-game-mode: $*" >&2; exit 1; }
+
+if [ "${1:-}" = status ]; then
+  w="not installed (downloads on first game start, about 100 MB)"
+  for f in "$WINE_DIR/bin/wine" "$WINE_DIR/bin/wine64"; do
+    if [ -x "$f" ]; then w="installed, $f"; break; fi
+  done
+  echo "wine:        $w"
+  for d in "$GAMING_ROOT/dxvk-sarek" "$GAMING_ROOT/dxvk-stripped"; do
+    if [ -d "$d" ]; then s="$d"; else s=absent; fi
+    printf '%-12s %s\n' "${d##*/}:" "$s"
+  done
+  icd=$(ls /usr/share/vulkan/icd.d/*panfrost*_icd*.json 2>/dev/null | head -1) || true
+  echo "vulkan icd:  ${icd:-absent (Mesa PanVK not installed)}"
+  echo "box64:       $(command -v box64 || echo absent)"
+  echo "cage:        $(command -v cage || echo absent)   gamescope: $(command -v gamescope || echo absent)"
+  echo "prefix:      $DEFAULT_PREFIX $([ -f "$DEFAULT_PREFIX/system.reg" ] && echo '(created)' || echo '(created on first run)')"
+  exit 0
+fi
+
+# --- arg parse ---
+ARGS=()
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -p|--prefix)     PREFIX="$2"; shift 2;;
+    -d|--dxvk)       DXVK="$2"; shift 2;;
+    -c|--compositor) COMPOSITOR="$2"; shift 2;;
+    -r|--res)        RES="$2"; shift 2;;
+    --hud)           HUD=1; shift;;
+    --no-dxvk)       NO_DXVK=1; shift;;
+    --winecfg)       WINECFG=1; shift;;
+    --stack-file)    STACK_FILE="$2"; shift 2;;
+    --wine-file)     WINE_FILE="$2"; shift 2;;
+    -h|--help)       sed -n '2,44p' "$0" | sed 's/^# \{0,1\}//'; exit 0;;
+    --)              shift; while [ $# -gt 0 ]; do ARGS+=("$1"); shift; done;;
+    -*)              [ ${#ARGS[@]} -gt 0 ] || die "unknown option '$1' (try --help)"
+                     ARGS+=("$1"); shift;;
+    *)               ARGS+=("$1"); shift;;
+  esac
+done
+
+# --- Wine on first use: upstream build, pinned sha256; DXVK is in the image ---
+WINE_DEFAULT_URL='https://github.com/Kron4ek/Wine-Builds/releases/download/11.12/wine-11.12-staging-tkg-amd64-wow64.tar.xz'
+WINE_SHA256=5cf2bcee41ae2c926c8fade6297d5c0c3e9cbe1d1f0a77d69197d739af805e59
+WINE_URL_FILE=/etc/h96/wine.url
+WINE_SHA_FILE=/etc/h96/wine.sha256
+WINE_URL="$WINE_DEFAULT_URL"
+if [ -s "$WINE_URL_FILE" ]; then
+  # other URL needs its own pin
+  WINE_URL="$(head -1 "$WINE_URL_FILE" | tr -d '[:space:]')"
+  WINE_SHA256=""
+  if [ -r "$WINE_SHA_FILE" ]; then WINE_SHA256="$(head -1 "$WINE_SHA_FILE" | tr -d '[:space:]' | tr 'A-F' 'a-f')"; fi
+fi
+have_wine() { [ -x "$WINE_DIR/bin/wine" ] || [ -x "$WINE_DIR/bin/wine64" ]; }
+wine_unavailable() {
+  echo "h96-game-mode: Wine is not installed and could not be downloaded:" >&2
+  echo "  $WINE_URL ($1)" >&2
+  echo "  Local copy:  h96-game-mode --wine-file /path/to/wine-11.12-staging-tkg-amd64-wow64.tar.xz" >&2
+  echo "  Other URL:   write it to $WINE_URL_FILE and its sha256 to $WINE_SHA_FILE" >&2
+  echo "  Windows games through Steam (Proton) do not need it: sudo h96-steam install" >&2
+  exit 2
+}
+# older all-in-one archive (wine + DXVK under opt/), kept for existing copies
+extract_stack() {
+  local f="$1" bad
+  bad=$(tar tzf "$f" 2>/dev/null | sed 's#^\./##' | grep -v -E '^($|opt/|opt$)' | head -1) || true
+  tar tzf "$f" >/dev/null 2>&1 || die "not a readable .tar.gz: $f"
+  [ -z "$bad" ] || die "stack archive has paths outside /opt (first: $bad); not extracting"
+  echo "h96-game-mode: extracting stack into /opt ..."
+  sudo tar xzmf "$f" -C / --overwrite --no-same-owner || die "extraction of the gaming stack failed"
+  have_wine || die "stack extracted but wine still missing under $WINE_DIR/bin"
+  echo "h96-game-mode: wine/DXVK stack installed."
+}
+# Wine tarball: one top folder holding bin/ lib/ share/; unpacked beside, then renamed into place
+install_wine() {
+  local f="$1" top bad new="$WINE_ROOT/.wine-new"
+  top=$(tar tJf "$f" 2>/dev/null | head -1 | cut -d/ -f1) || true
+  [ -n "$top" ] || die "not a readable .tar.xz: $f"
+  bad=$(tar tJf "$f" | grep -v -E "^$top(/|$)" | head -1) || true
+  [ -z "$bad" ] && ! tar tJf "$f" | grep -q -E '(^|/)\.\.(/|$)' || die "Wine archive has unexpected paths (first: ${bad:-..}); not extracting"
+  echo "h96-game-mode: unpacking Wine into $WINE_DIR ..."
+  sudo rm -rf "$new" && sudo mkdir -p "$new" || die "cannot create $new"
+  sudo tar xJf "$f" -C "$new" --strip-components=1 --no-same-owner || { sudo rm -rf "$new"; die "unpacking Wine failed"; }
+  [ -x "$new/bin/wine" ] || { sudo rm -rf "$new"; die "archive has no bin/wine: $f"; }
+  sudo rm -rf "$new/include" "$new/share/man"
+  sudo rm -rf "$WINE_DIR" && sudo mv "$new" "$WINE_DIR" || die "cannot move Wine into $WINE_DIR"
+  echo "h96-game-mode: Wine installed ($(basename "$f"))."
+}
+ensure_wine() {
+  have_wine && return 0
+  echo "h96-game-mode: Wine not installed; downloading on first use (about 100 MB, one time)..."
+  command -v curl >/dev/null 2>&1 || die "need curl to download Wine"
+  local code tmp="$WINE_ROOT/wine-download.tar.xz" sum
+  printf '%s' "$WINE_SHA256" | grep -qxE '[0-9a-f]{64}' \
+    || die "$WINE_URL_FILE is set but $WINE_SHA_FILE holds no sha256 (64 hex digits); nothing downloaded"
+  code=$(curl -sIL -o /dev/null -w '%{http_code}' --max-time 20 "$WINE_URL" 2>/dev/null) || code=000
+  [ "$code" = 200 ] || wine_unavailable "HTTP $code"
+  sudo mkdir -p "$WINE_ROOT" || die "cannot create $WINE_ROOT"
+  sudo curl -fL --progress-bar "$WINE_URL" -o "$tmp" || { sudo rm -f "$tmp"; wine_unavailable "download failed"; }
+  sum=$(sha256sum "$tmp" | cut -d' ' -f1)
+  if [ "$sum" != "$WINE_SHA256" ]; then
+    sudo rm -f "$tmp"
+    if [ -s "$WINE_URL_FILE" ]; then die "Wine download sha256 $sum does not match $WINE_SHA_FILE ($WINE_SHA256); nothing installed"; fi
+    die "Wine download sha256 $sum does not match $WINE_SHA256; nothing installed"
+  fi
+  install_wine "$tmp"
+  sudo rm -f "$tmp"
+}
+if [ -n "$STACK_FILE" ]; then
+  [ -f "$STACK_FILE" ] || die "no such file: $STACK_FILE"
+  extract_stack "$STACK_FILE"
+  exit 0
+fi
+if [ -n "$WINE_FILE" ]; then
+  [ -f "$WINE_FILE" ] || die "no such file: $WINE_FILE"
+  install_wine "$WINE_FILE"
+  exit 0
+fi
+# args before any download: bare call prints usage
+if [ "$WINECFG" -eq 0 ] && [ ${#ARGS[@]} -eq 0 ]; then
+  echo "h96-game-mode: no game executable given" >&2
+  sed -n '12,17p' "$0" | sed 's/^# \{0,1\}//' >&2
+  exit 2
+fi
+[ "$WINECFG" -eq 1 ] || have_wine || [ -e "${ARGS[0]}" ] || die "no such file: ${ARGS[0]} (Wine not downloaded; see --help)"
+# root would own the prefix under /root; Wine install calls sudo itself
+[ "$(id -u)" -ne 0 ] || die "run as desktop user, not root or sudo (Wine install asks for sudo itself)"
+ensure_wine
+
+# --- locate wine binary (wow64 ships bin/wine, older ships wine64) ---
+WINE=""
+for w in "$WINE_DIR/bin/wine" "$WINE_DIR/bin/wine64"; do
+  [ -x "$w" ] && { WINE="$w"; break; }
+done
+[ -n "$WINE" ] || die "wine not found under $WINE_DIR/bin after download"
+
+# --- locate PanVK ICD (filename varies across Mesa builds) ---
+ICD=""
+for f in /usr/share/vulkan/icd.d/panfrost_icd.aarch64.json \
+         /usr/share/vulkan/icd.d/panfrost_icd.json; do
+  [ -f "$f" ] && { ICD="$f"; break; }
+done
+[ -n "$ICD" ] || ICD=$(ls /usr/share/vulkan/icd.d/*panfrost*_icd*.json 2>/dev/null | head -1) || true
+[ -n "$ICD" ] || die "no panfrost/PanVK Vulkan ICD in /usr/share/vulkan/icd.d/ (Mesa/PanVK not installed?)"
+# h96-vulkan-wsi on in Plasma Wayland session: keep patched ICD that login env script set, same Mesa pin check
+WSI_DIR=/usr/lib/h96/vulkan-wsi
+WSI_ICD=$WSI_DIR/h96_panfrost_wsi_icd.json
+if [ -e /etc/h96/vulkan-wsi.on ] && [ "${XDG_SESSION_TYPE:-}" = wayland ] && [ "${VK_DRIVER_FILES:-}" = "$WSI_ICD" ] &&
+   [ -r "$WSI_ICD" ] && [ -n "$(cat "$WSI_DIR/mesa-pin" 2>/dev/null)" ] &&
+   [ "$(dpkg-query -W -f='${Version}' mesa-vulkan-drivers:arm64 2>/dev/null)" = "$(cat "$WSI_DIR/mesa-pin" 2>/dev/null)" ]; then
+  ICD=$WSI_ICD
+fi
+
+# --- source shared env profile (box64 knobs, PULSE_LATENCY, etc.) ---
+[ -f "$ENV_FILE" ] && . "$ENV_FILE"
+
+# --- Vulkan/audio/SDL env, per-process only ---
+export VK_DRIVER_FILES="$ICD"
+export VK_ICD_FILENAMES="$ICD"          # legacy loader var, for older loaders
+export PULSE_LATENCY_MSEC="${PULSE_LATENCY_MSEC:-60}"
+export SDL_VIDEODRIVER=wayland
+export WINEPREFIX="$PREFIX"
+export WINEDEBUG="${WINEDEBUG:--all}"
+export WINEESYNC="${WINEESYNC:-1}"
+# no Wine Mono/Gecko install dialog (it blocks outside the compositor)
+export WINEDLLOVERRIDES="${WINEDLLOVERRIDES:-mscoree,mshtml=d}"
+[ "$HUD" -eq 1 ] && export DXVK_HUD="fps,frametimes,version"
+
+# --- decide DXVK fork ---
+resolve_dxvk() {
+  case "$DXVK" in
+    sarek)    echo "$GAMING_ROOT/dxvk-sarek";;
+    stripped) echo "$GAMING_ROOT/dxvk-stripped";;
+    auto)     echo "$GAMING_ROOT/dxvk-stripped";;   # D3D11 default; -d sarek for legacy
+    *)        die "unknown --dxvk '$DXVK' (use sarek|stripped|auto)";;
+  esac
+}
+
+# --- create prefix on first use, install DXVK offline ---
+# prefix setup runs without the desktop display: no wine process bound to :0 survives into cage
+nodisp() { env -u DISPLAY -u WAYLAND_DISPLAY "$@"; }
+# wait for prefix setup wineserver to exit; SIGTERM if it lingers, never SIGKILL
+wineserver_settle() {
+  local ws="$WINE_DIR/bin/wineserver"
+  [ -x "$ws" ] || return 0
+  ( timeout 60 box64 "$ws" -w ) >/dev/null 2>&1 && return 0
+  ( box64 "$ws" -k15; timeout 15 box64 "$ws" -w ) >/dev/null 2>&1 \
+    || echo "h96-game-mode: wineserver of prefix setup still running after SIGTERM (continuing)"
+}
+init_prefix() {
+  mkdir -p "$PREFIX"
+  if [ ! -f "$PREFIX/system.reg" ]; then
+    echo "h96-game-mode: initializing wineprefix $PREFIX (first run)..."
+    # wine form only; subshell keeps a timeout kill message off the terminal
+    ( WINEDLLOVERRIDES="mscoree,mshtml=d" nodisp timeout 300 box64 "$WINE" wineboot -i ) >/dev/null 2>&1 || true
+    wineserver_settle  # registry files are written when wineserver exits
+    [ -f "$PREFIX/system.reg" ] || die "wineprefix init failed: $PREFIX (no system.reg)"
+    # Gamepad fix: winebus DisableHidraw=1, Enable SDL=1
+    nodisp box64 "$WINE" reg add 'HKLM\System\CurrentControlSet\Services\winebus' \
+      /v DisableHidraw /t REG_DWORD /d 1 /f >/dev/null 2>&1 || true
+    nodisp box64 "$WINE" reg add 'HKLM\System\CurrentControlSet\Services\winebus' \
+      /v "Enable SDL" /t REG_DWORD /d 1 /f >/dev/null 2>&1 || true
+  fi
+  if [ "$NO_DXVK" -eq 0 ]; then
+    local kind="stripped"; [ "$DXVK" = "sarek" ] && kind="sarek"
+    if command -v h96-dxvk-install >/dev/null 2>&1; then
+      nodisp h96-dxvk-install "$PREFIX" "$kind" || echo "h96-game-mode: DXVK install reported an error (continuing)"
+    elif [ -x "$WINE_ROOT/bin/h96-dxvk-install" ]; then
+      nodisp "$WINE_ROOT/bin/h96-dxvk-install" "$PREFIX" "$kind" || true
+    fi
+  fi
+  wineserver_settle
+}
+
+init_prefix
+
+# --- build inner command ---
+INNER=()
+if [ "$WINECFG" -eq 1 ]; then
+  INNER=(box64 "$WINE" winecfg)
+else
+  INNER=(box64 "$WINE" "${ARGS[@]}")
+fi
+
+echo "h96-game-mode: prefix=$PREFIX dxvk=$DXVK icd=$ICD compositor=$COMPOSITOR"
+echo "h96-game-mode: running: ${INNER[*]}"
+
+# --- launch inside nested Wayland compositor ---
+run_cage()      { exec cage -- "${INNER[@]}"; }
+run_gamescope() {
+  local g=(gamescope -f)
+  [ -n "$RES" ] && g=(gamescope -W "${RES%x*}" -H "${RES#*x}" -f)
+  exec "${g[@]}" -- "${INNER[@]}"
+}
+
+case "$COMPOSITOR" in
+  cage)
+    command -v cage >/dev/null 2>&1 || die "cage not installed"
+    run_cage;;
+  gamescope)
+    if command -v gamescope >/dev/null 2>&1; then run_gamescope
+    else echo "h96-game-mode: gamescope missing, falling back to cage"; run_cage; fi;;
+  *) die "unknown --compositor '$COMPOSITOR' (use cage|gamescope)";;
+esac

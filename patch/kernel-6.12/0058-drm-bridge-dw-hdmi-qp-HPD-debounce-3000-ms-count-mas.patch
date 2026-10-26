@@ -1,0 +1,53 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Scrumpper <190908034+Scrumpper@users.noreply.github.com>
+Date: Thu, 22 Oct 2026 10:35:26 -0700
+Subject: [PATCH 58/59] drm/bridge: dw-hdmi-qp: HPD debounce 3000 ms, count
+ masked drops
+
+Sony TV drops HPD for 1.2 to 1.8 s about 3 min into screen-off (its
+no-signal timer), twice 12 s apart; 1500 ms left too little margin.
+Default hpd_debounce_ms is now 3000.
+
+Masked drops left no trace. hpd_masked_drops (read-only module
+parameter) counts HPD lows that came back before the window ended, and
+a rate-limited info line gives each one's length as seen by detect
+(first low to first high detect saw).
+---
+ drivers/gpu/drm/bridge/synopsys/dw-hdmi-qp.c | 14 +++++++++++++-
+ 1 file changed, 13 insertions(+), 1 deletion(-)
+
+diff --git a/drivers/gpu/drm/bridge/synopsys/dw-hdmi-qp.c b/drivers/gpu/drm/bridge/synopsys/dw-hdmi-qp.c
+index fd3e6bdbc..910a4a98f 100644
+--- a/drivers/gpu/drm/bridge/synopsys/dw-hdmi-qp.c
++++ b/drivers/gpu/drm/bridge/synopsys/dw-hdmi-qp.c
+@@ -60,10 +60,15 @@ module_param(fmt_switch_mute_ms, uint, 0644);
+ MODULE_PARM_DESC(fmt_switch_mute_ms, "AVMUTE hold after an RGB/YCbCr output switch, ms (0 = off)");
+ 
+ /* sinks drop HPD briefly on power-state changes; a short low is not an unplug */
+-static uint hpd_debounce_ms = 1500;
++static uint hpd_debounce_ms = 3000;
+ module_param(hpd_debounce_ms, uint, 0644);
+ MODULE_PARM_DESC(hpd_debounce_ms, "Report HPD low as disconnect only after it lasts this long, ms (0 = off)");
+ 
++/* read-only count of HPD lows hidden by the debounce */
++static uint hpd_masked_drops;
++module_param(hpd_masked_drops, uint, 0444);
++MODULE_PARM_DESC(hpd_masked_drops, "HPD lows shorter than hpd_debounce_ms, reported as still connected (count)");
++
+ #define DDC_CI_ADDR		0x37
+ #define DDC_SEGMENT_ADDR	0x30
+ 
+@@ -3135,6 +3140,13 @@ dw_hdmi_qp_hpd_debounce(struct dw_hdmi_qp *hdmi, enum drm_connector_status raw)
+ 	unsigned long end;
+ 
+ 	if (raw == connector_status_connected || !ms || !hdmi->hpd_reported) {
++		if (raw == connector_status_connected && hdmi->hpd_low_since) {
++			/* duration from first low to first high seen by detect */
++			WRITE_ONCE(hpd_masked_drops, hpd_masked_drops + 1);
++			dev_info_ratelimited(hdmi->dev, "HPD low for about %u ms masked (debounce %u ms, %u masked)\n",
++					     jiffies_to_msecs(jiffies - hdmi->hpd_low_since), ms,
++					     hpd_masked_drops);
++		}
+ 		hdmi->hpd_low_since = 0;
+ 		hdmi->hpd_reported = raw == connector_status_connected;
+ 		return raw;

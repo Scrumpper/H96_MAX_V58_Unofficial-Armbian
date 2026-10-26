@@ -1,0 +1,38 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: H96 series reconstruction <builder@h96-build>
+Date: Tue, 20 Oct 2026 09:29:59 -0700
+Subject: [PATCH 47/59] kbuild: map the source tree path to . in debug info
+
+Owner decision 2026-10-20 (r17): path-independent build. Same-path
+rebuilds are byte-identical, but a build in another directory
+differed in the build-id notes of Image and modules: DWARF
+DW_AT_comp_dir carries the absolute build directory, and the build id
+hashes the debug sections.
+
+Add -ffile-prefix-map=$(abs_srctree)=. to KBUILD_CFLAGS and
+KBUILD_AFLAGS (covers debug, macro and profile paths; GCC leaves the
+option out of DW_AT_producer). Through the Makefile rather than
+KCFLAGS, so no absolute path appears in build records or package
+changelogs.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01P6itje71iKPFBX7YKkfvRo
+---
+ Makefile | 4 ++++
+ 1 file changed, 4 insertions(+)
+
+diff --git a/Makefile b/Makefile
+index a4035ce1a..2c1e9d4ff 100644
+--- a/Makefile
++++ b/Makefile
+@@ -1017,6 +1017,10 @@ KBUILD_CFLAGS += -fno-builtin-wcslen
+ # change __FILE__ to the relative path from the srctree
+ KBUILD_CPPFLAGS += $(call cc-option,-fmacro-prefix-map=$(srctree)/=)
+ 
++# debug info and __FILE__ independent of the build directory (reproducible across paths)
++KBUILD_CFLAGS += $(call cc-option,-ffile-prefix-map=$(abs_srctree)=.)
++KBUILD_AFLAGS += $(call cc-option,-ffile-prefix-map=$(abs_srctree)=.)
++
+ # include additional Makefiles when needed
+ include-y			:= scripts/Makefile.extrawarn
+ include-$(CONFIG_DEBUG_INFO)	+= scripts/Makefile.debug

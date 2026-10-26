@@ -1,0 +1,136 @@
+#!/bin/bash
+# h96-scale: set KDE Plasma global display scale (X11, Wayland) and apply it live
+#
+# Global Scale slider on X11 only affects newly-started processes; this writes the same
+# config (kdeglobals ScaleFactor + ScreenScaleFactors, kcmfonts forceFontDPI), sets live
+# X font DPI, and restarts Plasma shell so scale applies with no logout. Already-open apps
+# rescale on relaunch or at next login (autologin reduces that to one logout)
+#
+# Wayland session: KWin output scale through kscreen-doctor, live, checked after the change
+# runs from a desktop terminal or over SSH with sudo
+
+set -uo pipefail
+
+[ -r /usr/lib/h96/banner.sh ] && . /usr/lib/h96/banner.sh
+command -v h96_banner >/dev/null 2>&1 || h96_banner() { :; }
+
+die() { echo "h96-scale: $*" >&2; exit 1; }
+
+usage() {
+  cat <<'EOF'
+
+h96-scale: set KDE global display scale (X11 or Wayland), applied live
+
+  h96-scale <factor>   set scale: 1.0  1.25  1.5  1.75  2.0  2.25  2.5
+  h96-scale            show current scale
+  h96-scale --help
+
+A LOG OUT AND BACK IN IS REQUIRED for a scale change to reach all apps: on
+X11, scale only applies to newly-started apps. h96-scale restarts the Plasma
+shell so the panel and desktop update right away, but already-open apps and a
+consistent scale still need a log out/in. With autologin on, logging out
+returns to the scaled desktop with no password step. Plasma's own Global
+Scale slider needs the same log out/in (it does not say so).
+
+Plasma Wayland session: output scale set through kscreen-doctor, live for all
+apps, no log out; h96-scale reads it back and exits 1 when it did not change.
+
+Acts on the caller's own Plasma session; as root, on the active seat0 session.
+EOF
+}
+
+FACTOR="${1:-}"
+case "$FACTOR" in
+  -h|--help|help) usage; exit 0;;
+  ""|show) ;;
+  *[!0-9.]*|.|*.*.*) echo "h96-scale: unknown argument '$FACTOR' (try --help)" >&2; exit 2;;
+esac
+
+# caller's own plasmashell; root: user of the active seat0 session, else SUDO_USER
+plasma_pid() {
+  local uid s
+  if [ "$(id -u)" -ne 0 ]; then
+    uid=$(id -u)
+  else
+    s=$(loginctl show-seat seat0 -p ActiveSession --value 2>/dev/null)
+    [ -n "$s" ] && uid=$(loginctl show-session "$s" -p User --value 2>/dev/null)
+    [ -n "${uid:-}" ] && [ -n "$(pgrep -u "$uid" -x plasmashell 2>/dev/null)" ] || uid=$(id -u "${SUDO_USER:-}" 2>/dev/null)
+  fi
+  [ -n "${uid:-}" ] && [ "$uid" != 0 ] || return 0
+  pgrep -u "$uid" -x plasmashell 2>/dev/null | head -1
+}
+PID=$(plasma_pid)
+[ -n "${PID:-}" ] || die "no running Plasma session for this user found (start the desktop first)"
+SESS_USER=$(ps -o user= -p "$PID" 2>/dev/null | tr -d ' ')
+[ -n "$SESS_USER" ] || die "cannot identify the desktop user"
+getenv() { tr '\0' '\n' < "/proc/$PID/environ" 2>/dev/null | sed -n "s/^$1=//p" | head -1; }
+D=$(getenv DISPLAY); XA=$(getenv XAUTHORITY); WD=$(getenv WAYLAND_DISPLAY)
+DB=$(getenv DBUS_SESSION_BUS_ADDRESS); XR=$(getenv XDG_RUNTIME_DIR)
+[ -n "$D" ] || [ -n "$WD" ] || die "cannot read the desktop session environment (run as $SESS_USER, or with sudo)"
+
+as_user() {
+  local e=(DISPLAY="$D" XAUTHORITY="$XA" DBUS_SESSION_BUS_ADDRESS="$DB" XDG_RUNTIME_DIR="$XR")
+  [ -n "$WD" ] && e+=(WAYLAND_DISPLAY="$WD" QT_QPA_PLATFORM=wayland XDG_SESSION_TYPE=wayland)
+  if [ "$(id -un)" = "$SESS_USER" ]; then
+    env "${e[@]}" "$@"
+  else
+    sudo -u "$SESS_USER" env "${e[@]}" "$@"
+  fi
+}
+
+# Wayland: "name scale" per connected, enabled output (kscreen-doctor JSON)
+ks_scales() {
+  as_user kscreen-doctor -j 2>/dev/null | python3 -c 'import json, sys
+for o in json.load(sys.stdin).get("outputs", []):
+    if o.get("connected") and o.get("enabled"):
+        print(o["name"], o.get("scale", 1))' 2>/dev/null
+}
+
+show_current() {
+  local sf dpi
+  if [ -n "$WD" ]; then
+    echo "current scale: $(ks_scales | awk '{printf "%s%s %s", (NR > 1 ? ", " : ""), $1, $2}')   (Wayland output scale, user $SESS_USER)"
+    return
+  fi
+  sf=$(as_user kreadconfig6 --file kdeglobals --group KScreen --key ScaleFactor 2>/dev/null)
+  dpi=$(as_user xrdb -query 2>/dev/null | awk '/Xft.dpi/{print $NF}')
+  echo "current scale: ${sf:-1.0}   (font DPI ${dpi:-96}, user $SESS_USER)"
+}
+
+if [ -z "$FACTOR" ] || [ "$FACTOR" = "show" ]; then
+  show_current
+  [ "$FACTOR" = "show" ] && exit 0
+  usage; exit 0
+fi
+
+# validate: number in 0.5 .. 3.0 (FACTOR is digits and one dot, checked above)
+awk -v f="$FACTOR" 'BEGIN{exit !(f+0 >= 0.5 && f+0 <= 3.0)}' 2>/dev/null \
+  || die "scale must be a number between 0.5 and 3.0 (got '$FACTOR')"
+
+if [ -n "$WD" ]; then
+  command -v kscreen-doctor >/dev/null 2>&1 || die "Wayland session: kscreen-doctor not installed; scale not changed"
+  OUTS=$(ks_scales | awk '{print $1}')
+  [ -n "$OUTS" ] || die "Wayland session: kscreen-doctor lists no enabled output; scale not changed"
+  h96_banner "D I S P L A Y   S C A L E"
+  for o in $OUTS; do as_user kscreen-doctor "output.$o.scale.$FACTOR" >/dev/null 2>&1; done
+  BAD=$(ks_scales | awk -v f="$FACTOR" '{d = $2 - f; if (d < 0) d = -d; if (d > 0.01) printf "%s%s=%s", (n++ ? " " : ""), $1, $2}')
+  [ -z "$BAD" ] || die "Wayland session: kscreen-doctor did not apply scale $FACTOR (now $BAD)"
+  echo "h96-scale: scale $FACTOR on ${OUTS//$'\n'/, }, user $SESS_USER (Wayland, live, no log out needed)."
+  exit 0
+fi
+
+DPI=$(awk -v f="$FACTOR" 'BEGIN{printf "%d", 96*f + 0.5}')
+OUT=$(as_user xrandr 2>/dev/null | awk '/ connected primary/{print $1; exit}')
+[ -n "$OUT" ] || OUT=$(as_user xrandr 2>/dev/null | awk '/ connected/{print $1; exit}')
+[ -n "$OUT" ] || die "no connected display found"
+
+h96_banner "D I S P L A Y   S C A L E"
+echo "h96-scale: scale $FACTOR, font DPI $DPI, output $OUT, user $SESS_USER"
+as_user kwriteconfig6 --file kdeglobals --group KScreen --key ScaleFactor "$FACTOR"
+as_user kwriteconfig6 --file kdeglobals --group KScreen --key ScreenScaleFactors "$OUT=$FACTOR;"
+as_user kwriteconfig6 --file kcmfonts --group General --key forceFontDPI "$DPI"
+printf 'Xft.dpi: %s\n' "$DPI" | as_user xrdb -merge
+as_user systemctl --user restart plasma-plasmashell >/dev/null 2>&1 || true
+echo "h96-scale: applied to the shell now (panel + desktop rescaled)."
+echo "h96-scale: LOG OUT AND BACK IN for it to reach all open apps."
+echo "h96-scale: with autologin on, logout returns to the scaled desktop with no password."

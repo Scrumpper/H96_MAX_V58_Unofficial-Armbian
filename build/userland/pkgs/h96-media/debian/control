@@ -1,0 +1,17 @@
+Source: h96-media
+Section: video
+Priority: optional
+Maintainer: Scrumpper <190908034+Scrumpper@users.noreply.github.com>
+Rules-Requires-Root: no
+Standards-Version: 4.7.0
+
+Package: h96-media
+Architecture: arm64
+Multi-Arch: foreign
+Depends: h96-base (= 8.0.0~r39), libc6, libglib2.0-0t64 (>= 2.76), python3
+Recommends: mpv
+Description: H96 MAX V58 media: mpv configuration, video stack, NPU, CEC, casting
+ mpv configuration and scripts, sha-pinned video stack archive and setup unit,
+ NPU upscale and subtitle tools, encode, cast and transcode server, CEC daemon
+ (on by default, starts with /dev/cec0), browser hand-off to mpv, yt-dlp seed
+ and update timer.

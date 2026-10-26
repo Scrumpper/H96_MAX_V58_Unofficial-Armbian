@@ -1,0 +1,307 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: H96 build <builder@h96-build>
+Date: Fri, 16 Oct 2026 00:00:00 +0000
+Subject: [PATCH 04/59] drm/bridge: dw-hdmi-qp: CEC hardening and physical
+ address from sink EDID
+
+dw-hdmi-qp.c:
+- cec-enable with a missing CEC irq warns and leaves video and audio
+  up instead of failing the probe; only with CONFIG_DRM_DW_HDMI_CEC.
+- the CEC irq is masked across suspend and restored on resume; the
+  adapter is re-enabled on resume only if the CEC core has it enabled.
+- hotplug EDID read for CEC is read-only (drm_edid_read_ddc()), since
+  drm_get_edid() would update the connector property unlocked.
+- physical address comes from the sink's own EDID read over DDC and is
+  cached until the next HPD event; an override EDID carries another
+  PA. Module parameter cec_phys_addr overrides it (0 = from the sink).
+
+dw-hdmi-qp-cec.c:
+- the adapter is published to the bridge only after
+  cec_register_adapter(), and unpublished when the wake irq request
+  fails or the device is removed.
+- a resume re-enable keeps the claimed logical addresses.
+
+Gated by DT: active only with cec-enable on the HDMI node.
+
+H96 series: combination of 14f055b0a / d77c4ac14 (CEC hardening) and
+92d353fd2 (CEC PA from sink EDID). Kept as one commit: the state
+between both commits is not recoverable from the H96 source tree.
+
+6.12 port: dw_hdmi_qp_cec_enable() on 6.12 takes cec_lock and calls
+dw_hdmi_qp_cec_log_addr(INVALID) after unlock; the address restore is
+written inside the locked block and the trailing reset dropped.
+drm_edid_block_valid() is static on 6.12; replaced by a local header
+and checksum check of each block read.
+---
+ .../gpu/drm/bridge/synopsys/dw-hdmi-qp-cec.c  |  13 +-
+ drivers/gpu/drm/bridge/synopsys/dw-hdmi-qp.c  | 135 ++++++++++++++----
+ 2 files changed, 120 insertions(+), 28 deletions(-)
+
+diff --git a/drivers/gpu/drm/bridge/synopsys/dw-hdmi-qp-cec.c b/drivers/gpu/drm/bridge/synopsys/dw-hdmi-qp-cec.c
+index 567d8e01e..b723db337 100644
+--- a/drivers/gpu/drm/bridge/synopsys/dw-hdmi-qp-cec.c
++++ b/drivers/gpu/drm/bridge/synopsys/dw-hdmi-qp-cec.c
+@@ -330,12 +330,14 @@ static int dw_hdmi_qp_cec_enable(struct cec_adapter *adap, bool enable)
+ 		dw_hdmi_qp_write(cec, ~0, CEC_INT_CLEAR);
+ 		dw_hdmi_qp_write(cec, 1, CEC_LOCK_CONTROL);
+ 
++		/* keep claimed logical addresses across a resume re-enable */
++		dw_hdmi_qp_write(cec, cec->addresses, CEC_ADDR);
++
+ 		irqs = CEC_STAT_LINE_ERR | CEC_STAT_NACK | CEC_STAT_EOM |
+ 		       CEC_STAT_DONE;
+ 		dw_hdmi_qp_write(cec, ~0, CEC_INT_CLEAR);
+ 		dw_hdmi_qp_write(cec, irqs, CEC_INT_MASK_N);
+ 		spin_unlock_irqrestore(&cec->cec_lock, flags);
+-		dw_hdmi_qp_cec_log_addr(cec->adap, CEC_LOG_ADDR_INVALID);
+ 	}
+ 
+ 	return 0;
+@@ -538,8 +540,6 @@ static int dw_hdmi_qp_cec_probe(struct platform_device *pdev)
+ 		return PTR_ERR(cec->adap);
+ 	}
+ 
+-	dw_hdmi_qp_set_cec_adap(cec->hdmi, cec->adap);
+-
+ 	/* override the module pointer */
+ 	cec->adap->owner = THIS_MODULE;
+ 
+@@ -585,6 +585,9 @@ static int dw_hdmi_qp_cec_probe(struct platform_device *pdev)
+ 	 */
+ 	devm_remove_action(&pdev->dev, dw_hdmi_qp_cec_del, cec);
+ 
++	/* publish only a registered adapter: probe failure frees it */
++	dw_hdmi_qp_set_cec_adap(cec->hdmi, cec->adap);
++
+ 	if (cec->wake_irq > 0) {
+ 		ret = devm_request_threaded_irq(&pdev->dev, cec->wake_irq,
+ 						dw_hdmi_qp_cec_wake_irq,
+@@ -595,6 +598,9 @@ static int dw_hdmi_qp_cec_probe(struct platform_device *pdev)
+ 			dev_err(&pdev->dev,
+ 				"hdmi_cec request_irq failed (%d).\n",
+ 				ret);
++			dw_hdmi_qp_set_cec_adap(cec->hdmi, NULL);
++			cec_notifier_cec_adap_unregister(cec->notify, cec->adap);
++			cec_unregister_adapter(cec->adap);
+ 			return ret;
+ 		}
+ 		device_init_wakeup(&pdev->dev, 1);
+@@ -621,6 +627,7 @@ static void dw_hdmi_qp_cec_remove(struct platform_device *pdev)
+ {
+ 	struct dw_hdmi_qp_cec *cec = platform_get_drvdata(pdev);
+ 
++	dw_hdmi_qp_set_cec_adap(cec->hdmi, NULL);
+ 	cec_notifier_cec_adap_unregister(cec->notify, cec->adap);
+ 	cec_unregister_adapter(cec->adap);
+ 	if (cec->wake_irq > 0)
+diff --git a/drivers/gpu/drm/bridge/synopsys/dw-hdmi-qp.c b/drivers/gpu/drm/bridge/synopsys/dw-hdmi-qp.c
+index 4b5cf195a..070ad29cb 100644
+--- a/drivers/gpu/drm/bridge/synopsys/dw-hdmi-qp.c
++++ b/drivers/gpu/drm/bridge/synopsys/dw-hdmi-qp.c
+@@ -48,6 +48,11 @@
+ 
+ #include <media/cec-notifier.h>
+ 
++/* manual override; 0 = PA from the sink EDID read over DDC */
++static ushort cec_phys_addr;
++module_param(cec_phys_addr, ushort, 0644);
++MODULE_PARM_DESC(cec_phys_addr, "CEC physical address override, 0x1000 = 1.0.0.0 (0 = from the sink EDID)");
++
+ #define DDC_CI_ADDR		0x37
+ #define DDC_SEGMENT_ADDR	0x30
+ 
+@@ -389,8 +394,81 @@ struct dw_hdmi_qp {
+ 	struct work_struct flt_work;
+ 	struct workqueue_struct *workqueue;
+ 	struct notifier_block hdcp2_nb;
++
++	bool cec_sink_pa_read;		/* cec_sink_pa cached until the next HPD event */
++	u16 cec_sink_pa;
+ };
+ 
++/* drm_edid_block_valid() is static on 6.12: header (base block) and checksum */
++static bool dw_hdmi_qp_edid_block_ok(const u8 *block, int i)
++{
++	u8 sum = 0;
++	int n;
++
++	if (!i && drm_edid_header_is_valid(block) != 8)
++		return false;
++	for (n = 0; n < EDID_LENGTH; n++)
++		sum += block[n];
++	return sum == 0;
++}
++
++/* CEC PA is assigned by the sink: read its own EDID, an override EDID carries another PA */
++static u16 dw_hdmi_qp_sink_phys_addr(struct dw_hdmi_qp *hdmi)
++{
++	struct i2c_msg msgs[2] = {
++		{ .addr = DDC_ADDR, .len = 1 },
++		{ .addr = DDC_ADDR, .flags = I2C_M_RD, .len = EDID_LENGTH },
++	};
++	u16 pa = CEC_PHYS_ADDR_INVALID;
++	u8 *buf;
++	u8 off;
++	int i;
++
++	if (hdmi->cec_sink_pa_read)
++		return hdmi->cec_sink_pa;
++	if (!hdmi->ddc)
++		return pa;
++
++	buf = kmalloc(2 * EDID_LENGTH, GFP_KERNEL);
++	if (!buf)
++		return pa;
++
++	msgs[0].buf = &off;
++	for (i = 0; i < 2; i++) {
++		off = i * EDID_LENGTH;
++		msgs[1].buf = buf + off;
++		/* read failure: not cached, retried on the next call */
++		if (i2c_transfer(hdmi->ddc, msgs, 2) != 2 ||
++		    !dw_hdmi_qp_edid_block_ok(buf + off, i))
++			goto out;
++		if (!i && !buf[0x7e])
++			break;
++	}
++	if (i == 2)
++		pa = cec_get_edid_phys_addr(buf, 2 * EDID_LENGTH, NULL);
++	hdmi->cec_sink_pa = pa;
++	hdmi->cec_sink_pa_read = true;
++out:
++	kfree(buf);
++	return pa;
++}
++
++static void dw_hdmi_qp_cec_set_pa(struct dw_hdmi_qp *hdmi, const struct edid *edid)
++{
++	u16 pa;
++
++	if (cec_phys_addr) {
++		cec_notifier_set_phys_addr(hdmi->cec_notifier, cec_phys_addr);
++		return;
++	}
++
++	pa = dw_hdmi_qp_sink_phys_addr(hdmi);
++	if (pa != CEC_PHYS_ADDR_INVALID)
++		cec_notifier_set_phys_addr(hdmi->cec_notifier, pa);
++	else
++		cec_notifier_set_phys_addr_from_edid(hdmi->cec_notifier, edid);
++}
++
+ static inline void hdmi_writel(struct dw_hdmi_qp *hdmi, u32 val, int offset)
+ {
+ 	regmap_write(hdmi->regm, offset, val);
+@@ -3130,7 +3208,7 @@ static int dw_hdmi_connector_get_modes(struct drm_connector *connector)
+ 		hdmi->support_hdmi = drm_detect_hdmi_monitor(edid);
+ 		hdmi->sink_has_audio = drm_detect_monitor_audio(edid);
+ 		if (hdmi->cec_notifier)
+-			cec_notifier_set_phys_addr_from_edid(hdmi->cec_notifier, edid);
++			dw_hdmi_qp_cec_set_pa(hdmi, edid);
+ 		if (hdmi->plat_data->get_edid_hdmi21_info)
+ 			hdmi->plat_data->get_edid_hdmi21_info(data, edid, connector,
+ 							      ext_block_num);
+@@ -3167,8 +3245,7 @@ static int dw_hdmi_connector_get_modes(struct drm_connector *connector)
+ 			secondary->sink_is_hdmi = drm_detect_hdmi_monitor(edid);
+ 			secondary->sink_has_audio = drm_detect_monitor_audio(edid);
+ 			if (secondary->cec_notifier)
+-				cec_notifier_set_phys_addr_from_edid(secondary->cec_notifier,
+-								     edid);
++				dw_hdmi_qp_cec_set_pa(secondary, edid);
+ 			if (secondary->plat_data->get_edid_hdmi21_info)
+ 				secondary->plat_data->get_edid_hdmi21_info(secondary_data, edid,
+ 									   connector,
+@@ -4463,18 +4540,20 @@ void dw_hdmi_qp_cec_set_hpd(struct dw_hdmi_qp *hdmi, bool plug_in, bool change)
+ 	if (!hdmi->cec_notifier)
+ 		return;
+ 
++	/* new or no sink: re-read its PA */
++	hdmi->cec_sink_pa_read = false;
++
+ 	if (!plug_in)
+ 		cec_notifier_set_phys_addr(hdmi->cec_notifier,
+ 					   CEC_PHYS_ADDR_INVALID);
+-       else if (hdmi->ddc) {
+-               struct edid *edid = drm_get_edid(&hdmi->connector, hdmi->ddc);
+-               if (edid) {
+-                       if (hdmi->cec_notifier)
+-                               cec_notifier_set_phys_addr_from_edid(
+-                                       hdmi->cec_notifier, edid);
+-                       kfree(edid);
+-               }
+-       }
++	else if (hdmi->ddc) {
++		/* read only: drm_get_edid() would update the connector property unlocked */
++		const struct drm_edid *drm_edid = drm_edid_read_ddc(&hdmi->connector, hdmi->ddc);
++
++		if (drm_edid)
++			dw_hdmi_qp_cec_set_pa(hdmi, drm_edid_raw(drm_edid));
++		drm_edid_free(drm_edid);
++	}
+ 
+ 	if (hdmi->bridge.dev) {
+ #if IS_REACHABLE(CONFIG_DRM_DW_HDMI_CEC)
+@@ -5224,17 +5303,19 @@ static struct dw_hdmi_qp *dw_hdmi_qp_probe(struct platform_device *pdev,
+ 	if (ret)
+ 		goto err_ddc;
+ 
+-	if (of_property_read_bool(np, "cec-enable")) {
+-		hdmi->cec_enable = true;
++	if (IS_ENABLED(CONFIG_DRM_DW_HDMI_CEC) && of_property_read_bool(np, "cec-enable")) {
++		/* CEC is optional: a missing irq leaves video and audio up */
+ 		irq = platform_get_irq(pdev, 1);
+ 		if (irq < 0) {
+-			ret = irq;
+-			goto err_ddc;
++			dev_warn(dev, "cec irq missing (%d), CEC disabled\n", irq);
++		} else {
++			hdmi->cec_enable = true;
++			hdmi->cec_data.irq  = irq;
++			hdmi->cec_data.hdmi = hdmi;
++			hdmi->cec_data.ops = &dw_hdmi_qp_cec_ops;
+ 		}
+ 
+-		hdmi->cec_data.irq  = irq;
+-
+-		if (plat_data->cec_wakeup_supported) {
++		if (hdmi->cec_enable && plat_data->cec_wakeup_supported) {
+ 			irq = platform_get_irq_byname(pdev, "cec_wakeup");
+ 			if (irq < 0) {
+ 				ret = irq;
+@@ -5249,10 +5330,7 @@ static struct dw_hdmi_qp *dw_hdmi_qp_probe(struct platform_device *pdev,
+ 				goto err_ddc;
+ 			}
+ 		}
+-
+-		hdmi->cec_data.hdmi = hdmi;
+-		hdmi->cec_data.ops = &dw_hdmi_qp_cec_ops;
+-	};
++	}
+ 
+ 	irq = platform_get_irq(pdev, 2);
+ 	if (irq < 0) {
+@@ -5435,6 +5513,9 @@ void dw_hdmi_qp_suspend(struct device *dev, struct dw_hdmi_qp *hdmi)
+ 	if (hdmi->earc_irq)
+ 		disable_irq(hdmi->earc_irq);
+ 
++	if (hdmi->cec_adap)
++		disable_irq(hdmi->cec_data.irq);
++
+ 	pinctrl_pm_select_sleep_state(dev);
+ 	if (!hdmi->next_bridge)
+ 		drm_connector_update_edid_property(&hdmi->connector, NULL);
+@@ -5456,8 +5537,12 @@ void dw_hdmi_qp_resume(struct device *dev, struct dw_hdmi_qp *hdmi)
+ 
+ 	pinctrl_pm_select_default_state(dev);
+ 
+-	if (hdmi->cec_adap)
+-		hdmi->cec_adap->ops->adap_enable(hdmi->cec_adap, true);
++	/* restore CEC registers only if the core has the adapter enabled */
++	if (hdmi->cec_adap) {
++		if (hdmi->cec_adap->is_enabled)
++			hdmi->cec_adap->ops->adap_enable(hdmi->cec_adap, true);
++		enable_irq(hdmi->cec_data.irq);
++	}
+ 
+ 	mutex_lock(&hdmi->mutex);
+ 	if (hdmi->i2c)

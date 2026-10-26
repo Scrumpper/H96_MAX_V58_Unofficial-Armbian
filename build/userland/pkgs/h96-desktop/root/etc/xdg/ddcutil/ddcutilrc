@@ -1,0 +1,6 @@
+# H96 Max V58: rk3x-i2c controller buses carry no display; HDMI DDC is i2c-10 (i2c-ddc)
+[ddcutil]
+options: --ignore-bus 0 --ignore-bus 2 --ignore-bus 3 --ignore-bus 4 --ignore-bus 6
+
+[libddcutil]
+options: --ignore-bus 0 --ignore-bus 2 --ignore-bus 3 --ignore-bus 4 --ignore-bus 6

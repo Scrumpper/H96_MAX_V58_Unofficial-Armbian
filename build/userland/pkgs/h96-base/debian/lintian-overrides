@@ -1,0 +1,10 @@
+# Release apt policy: pins protect boot chain, offline repo and box64 versions; no other mechanism sets a pin.
+h96-base: package-installs-apt-preferences [etc/apt/preferences.d/01-h96-protect-mesa]
+h96-base: package-installs-apt-preferences [etc/apt/preferences.d/02-h96-offline-repo]
+# Release apt sources (offline repo, box64, box86); deb822 file is the only way to add a source.
+h96-base: package-installs-apt-sources [etc/apt/sources.list.d/h96-local.sources]
+# Script probes dpkg lock files with fuser to wait for a running package manager; database not read.
+h96-base: uses-dpkg-database-directly [usr/lib/h96/h96-online-extras.sh]
+h96-base: uses-dpkg-database-directly [usr/lib/h96/h96-pkgs-setup.sh]
+# Packages built with dpkg-deb, no debhelper maintscript file; helper is dpkg's own rm_conffile tool.
+h96-base: maintainer-script-should-not-use-dpkg-maintscript-helper "dpkg-maintscript-helper" [*]

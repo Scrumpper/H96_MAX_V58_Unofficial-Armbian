@@ -1,0 +1,8 @@
+# Script probes dpkg lock files with fuser to wait for a running package manager; database not read.
+h96-desktop: uses-dpkg-database-directly [usr/lib/h96/h96-ddc-setup.sh]
+h96-desktop: uses-dpkg-database-directly [usr/lib/h96/h96-desktop-fixup.sh]
+h96-desktop: uses-dpkg-database-directly [usr/lib/h96/h96-gnome-configure.sh]
+h96-desktop: uses-dpkg-database-directly [usr/lib/h96/h96-kde-configure.sh]
+h96-desktop: uses-dpkg-database-directly [usr/lib/h96/h96-lightdm-configure.sh]
+h96-desktop: uses-dpkg-database-directly [usr/sbin/h96-desktop-cleanup]
+h96-desktop: uses-dpkg-database-directly [usr/sbin/h96-dm-handoff]

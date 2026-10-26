@@ -1,0 +1,59 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Scrumpper <190908034+Scrumpper@users.noreply.github.com>
+Date: Mon, 19 Oct 2026 22:35:48 -0700
+Subject: [PATCH 25/59] PCI: rockchip: dw: no register access on a controller
+ left off by a failed resume
+
+ROCKCHIP_PCIE_PM_CTRL_RESET runs suspend then resume. When the link does
+not come back, rockchip_dw_pcie_resume() takes the unconfig_host path:
+phy off, clocks disabled, resets asserted, in_suspend stays true. The
+next RESET (bcmdhd retries dhd_open) starts with an APB read of
+INTR_MASK and, in suspend, dw_pcie_dbi_ro_wr_dis(): a DBI read of a
+block with gated clocks. The final ltssm dev_info() reads APB as well.
+
+The t3 run 2 and t4 freezes end at exactly that point: second dhd_open,
+second RESET never reaches link setup, both heartbeats stop in the same
+second, no lockup detector record. t5 removed the trigger (Wi-Fi power
+GPIO), the hazard stays for any later link failure.
+
+When in_suspend is set, run the cold resume path only and print a
+register-free message. A failed link then stays a bcmdhd open error
+instead of a stalled bus access. Clock, phy and reset calls stay
+balanced (config on resume, unconfig on its failure). 6.12 t6.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01P6itje71iKPFBX7YKkfvRo
+---
+ drivers/pci/controller/dwc/pcie-dw-rockchip.c | 12 ++++++++++--
+ 1 file changed, 10 insertions(+), 2 deletions(-)
+
+diff --git a/drivers/pci/controller/dwc/pcie-dw-rockchip.c b/drivers/pci/controller/dwc/pcie-dw-rockchip.c
+index 1257c3ae0..54c03f1a6 100644
+--- a/drivers/pci/controller/dwc/pcie-dw-rockchip.c
++++ b/drivers/pci/controller/dwc/pcie-dw-rockchip.c
+@@ -2368,6 +2368,11 @@ int rockchip_dw_pcie_pm_ctrl_for_user(struct pci_dev *dev, enum rockchip_pcie_pm
+ 
+ 	switch (flag) {
+ 	case ROCKCHIP_PCIE_PM_CTRL_RESET:
++		/* failed resume left clocks off and resets asserted: no DBI/APB access */
++		if (rk_pcie->in_suspend) {
++			rockchip_dw_pcie_resume(rk_pcie->pci->dev);
++			break;
++		}
+ 		/*
+ 		 * suspend and resume should be called in noirq context, masking and
+ 		 * unmasking local irq to prevent hunging for accessing died controller
+@@ -2387,8 +2392,11 @@ int rockchip_dw_pcie_pm_ctrl_for_user(struct pci_dev *dev, enum rockchip_pcie_pm
+ 		return -EINVAL;
+ 	}
+ 
+-	dev_info(rk_pcie->pci->dev, "%s ltssm=%x\n", __func__,
+-		 rk_pcie_readl_apb(rk_pcie, PCIE_CLIENT_LTSSM_STATUS));
++	if (rk_pcie->in_suspend)
++		dev_info(rk_pcie->pci->dev, "%s link down, controller off\n", __func__);
++	else
++		dev_info(rk_pcie->pci->dev, "%s ltssm=%x\n", __func__,
++			 rk_pcie_readl_apb(rk_pcie, PCIE_CLIENT_LTSSM_STATUS));
+ 
+ 	return 0;
+ }

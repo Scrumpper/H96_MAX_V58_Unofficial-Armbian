@@ -1,0 +1,17 @@
+[Unit]
+Documentation=file:/usr/share/doc/h96-base/COMMANDS.md
+Description=H96 Max V58 DHCP client for wlan0 (standalone WiFi path)
+# No hard dependency on the wlan0 device or on h96-wpa-supplicant-wlan0.service (see that unit for why); if wlan0/wpa_supplicant is not ready, dhcpcd fails to bind and Restart=on-failure retries.
+After=h96-wpa-supplicant-wlan0.service multi-user.target
+# StartLimitIntervalSec is a [Unit] key on this systemd (259); in [Service] it is silently ignored and the default rate limit applies instead of unlimited retries.
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+ExecStart=/usr/sbin/dhcpcd -B -q wlan0
+ExecStop=/usr/sbin/dhcpcd -x wlan0
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

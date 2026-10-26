@@ -1,0 +1,17 @@
+# H96 Max V58: freeze Mesa at the Panthor-compatible build.
+#
+# Open Panthor GPU stack on this box only works with the kisak Mesa build
+# (26.1.4~kisak1~r). Stock/newer Mesa does not drive Mali-G610 Panthor here,
+# and a broken GPU stack on a TV box means no picture, indistinguishable
+# from a dead box to anyone using it.
+#
+# h96-gaming-setup.sh force-installs these exact versions, but is Type=oneshot
+# guarded by /var/lib/h96-gaming-setup-done: it runs once, then never again.
+# With no hold and no pin, the next apt upgrade (or Discover) pulls a newer
+# Mesa and nothing puts it back.
+#
+# Priority >1000 is deliberate: it forces apt to keep this exact version even
+# when a newer one is available, which normal pinning (<=1000) would not do.
+Package: libgl1-mesa-dri mesa-vulkan-drivers libglx-mesa0 libegl-mesa0 libgbm1 mesa-libgallium libglapi-mesa mesa-va-drivers mesa-vdpau-drivers
+Pin: version 26.1.4~kisak1~r*
+Pin-Priority: 1001

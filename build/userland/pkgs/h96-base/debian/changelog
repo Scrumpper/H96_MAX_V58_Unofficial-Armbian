@@ -1,0 +1,313 @@
+h96-base (8.0.0~r39) resolute; urgency=medium
+
+  * COMMANDS.md: Steam ARM 3.1 (package in the image).
+
+ -- Scrumpper <190908034+Scrumpper@users.noreply.github.com>  Tue, 27 Oct 2026 00:00:00 +0000
+
+h96-base (8.0.0~r38) resolute; urgency=medium
+
+  * Static serial-getty@ttyFIQ0 link from base image removed once: 6.12
+    kernel creates no /dev/ttyFIQ0, systemd waited 90 s for it
+    (multi-user.target at 92 s, startup 2 min 16 s on Debian r6 box; 18 s
+    without the link). Serial getty still starts through
+    systemd-getty-generator when ttyFIQ0 is an active console.
+
+ -- Scrumpper <190908034+Scrumpper@users.noreply.github.com>  Mon, 26 Oct 2026 18:00:00 +0000
+
+h96-base (8.0.0~r37) resolute; urgency=medium
+
+  * First boot: getty@tty1 and ssh drop-ins of r36 removed (ordering cycle
+    with armbian-firstrun made systemd drop h96-firstboot, h96-gpu-setup
+    and h96-gaming-setup on boot 1); armbian-firstlogin waits for the
+    automatic first-boot reboot instead (at most 15 min, booted systems
+    only). COMMANDS.md row updated.
+
+ -- Scrumpper <190908034+Scrumpper@users.noreply.github.com>  Mon, 26 Oct 2026 12:00:00 +0000
+
+h96-base (8.0.0~r36) resolute; urgency=medium
+
+  * First boot: getty@tty1 and ssh ordered after
+    h96-firstboot-reboot.service (drop-ins), so the login prompt and SSH
+    appear after the automatic reboot; before, tty1 showed a prompt at 6 s
+    and the reboot at about 2 min cut a running first-login wizard.
+    COMMANDS.md row updated.
+
+ -- Scrumpper <190908034+Scrumpper@users.noreply.github.com>  Mon, 26 Oct 2026 06:00:00 +0000
+
+h96-base (8.0.0~r35) resolute; urgency=medium
+
+  * COMMANDS.md: EDID switch keeps kernel output on and X mode, TV may
+    blank about one second while it resyncs (owner eye test); hotplug
+    paragraph: X re-probe lists new modes, mode set only when current mode
+    is no longer offered.
+
+ -- Scrumpper <190908034+Scrumpper@users.noreply.github.com>  Mon, 26 Oct 2026 00:00:00 +0000
+
+h96-base (8.0.0~r34) resolute; urgency=medium
+
+  * Version bump with h96-media and h96-tools changes; files unchanged
+    apart from version.
+
+ -- Scrumpper <190908034+Scrumpper@users.noreply.github.com>  Sun, 25 Oct 2026 18:00:00 +0000
+
+h96-base (8.0.0~r33) resolute; urgency=medium
+
+  * COMMANDS.md: MPRIS plugin loaded by h96-mpris.lua only when session
+    bus exists.
+
+ -- Scrumpper <190908034+Scrumpper@users.noreply.github.com>  Sun, 25 Oct 2026 12:00:00 +0000
+
+h96-base (8.0.0~r32) resolute; urgency=medium
+
+  * COMMANDS.md: panthor job timeout note moves from h96-vulkan-wsi
+    section to Gaming and Plasma Wayland session paragraph (timeouts with
+    and without h96-vulkan-wsi; X11 no visible effect, Wayland KWin resets
+    GPU context): play Proton titles in Plasma X11 session.
+
+ -- Scrumpper <190908034+Scrumpper@users.noreply.github.com>  Sun, 25 Oct 2026 06:00:00 +0000
+
+h96-base (8.0.0~r31) resolute; urgency=medium
+
+  * COMMANDS.md after box sessions: CEC Fast Forward and Rewind seek about
+    8 s per press; Big Picture Back is Escape; EDID switch keeps picture
+    (X mode set only when current mode is no longer offered); h96-vrr
+    tested in Plasma X11 session, Wayland Adaptive Sync blanks;
+    h96-vulkan-wsi panthor job timeout caution.
+
+ -- Scrumpper <190908034+Scrumpper@users.noreply.github.com>  Sun, 25 Oct 2026 00:00:00 +0000
+
+h96-base (8.0.0~r30) resolute; urgency=medium
+
+  * Version bump with h96-audio change; files unchanged apart from
+    version.
+
+ -- Scrumpper <190908034+Scrumpper@users.noreply.github.com>  Sat, 24 Oct 2026 18:00:00 +0000
+
+h96-base (8.0.0~r29) resolute; urgency=medium
+
+  * COMMANDS.md: no internal round label in kernel switch module tree
+    paragraph; generation numbers reused after prune (lowest free);
+    h96-cec keys is live view ended with Ctrl+C; h96-vrr works in Plasma
+    X11 session, off by default, not in Wayland session.
+
+ -- Scrumpper <190908034+Scrumpper@users.noreply.github.com>  Sat, 24 Oct 2026 12:00:00 +0000
+
+h96-base (8.0.0~r28) resolute; urgency=medium
+
+  * COMMANDS.md: TV remote Play/Pause/Stop/seek control mpv and Chromium
+    through MPRIS; seek steps 5 s through KDE.
+
+ -- Scrumpper <190908034+Scrumpper@users.noreply.github.com>  Sat, 24 Oct 2026 06:00:00 +0000
+
+h96-base (8.0.0~r27) resolute; urgency=medium
+
+  * run-rpc_pipefs.mount no longer masked: r26 mask reverted. Boot failure
+    came from kernel build and module tree mismatch after same-release
+    kernel revert (h96-kernel-switch 8.0.0~r14 keeps module tree per
+    build), not from image. Upgrade from r26 removes mask once (marker
+    /var/lib/h96/rpc-pipefs-unmask-r27); fresh install never masks; later
+    admin mask kept.
+  * COMMANDS.md: modules-load note names module tree mismatch, rpc_pipefs
+    unmasked; h96-kernel-switch section: module tree per build,
+    snapshot-modules, repair-modules.
+
+ -- Scrumpper <190908034+Scrumpper@users.noreply.github.com>  Fri, 23 Oct 2026 20:00:00 +0000
+
+h96-base (8.0.0~r26) resolute; urgency=medium
+
+  * run-rpc_pipefs.mount masked (fresh install, and once on upgrade): it
+    failed at boot; NFS client stack stays unused, rpcbind masked as
+    before.
+  * COMMANDS.md: modules-load and rpc_pipefs notes, lxc-net masked by
+    h96-waydroid install.
+
+ -- Scrumpper <190908034+Scrumpper@users.noreply.github.com>  Fri, 23 Oct 2026 15:00:00 +0000
+
+h96-base (8.0.0~r25) resolute; urgency=medium
+
+  * COMMANDS.md: h96-vulkan-wsi section (package h96-vulkan-wsi),
+    h96-kernel-switch same release new content sentence, Plasma Wayland
+    session: RGB range control not available.
+
+ -- Scrumpper <190908034+Scrumpper@users.noreply.github.com>  Fri, 23 Oct 2026 09:00:00 +0000
+
+h96-base (8.0.0~r24) resolute; urgency=medium
+
+  * h96-xdisplay: h96_session_run runs a command as session user with
+    session display env.
+  * COMMANDS.md: Plasma Wayland session option (experimental) and per-tool
+    Wayland behaviour.
+
+ -- Scrumpper <190908034+Scrumpper@users.noreply.github.com>  Fri, 23 Oct 2026 03:00:00 +0000
+
+h96-base (8.0.0~r23) resolute; urgency=medium
+
+  * COMMANDS.md: merged EDID VRR blocks, h96-vrr switch scope, CEC media
+    keys and power standby flag.
+
+ -- Scrumpper <190908034+Scrumpper@users.noreply.github.com>  Thu, 22 Oct 2026 21:00:00 +0000
+
+h96-base (8.0.0~r22) resolute; urgency=medium
+
+  * COMMANDS.md: h96-wol address lines and cloned MAC, h96-waydroid status
+    as user, display wake wait, upgrade restarts.
+
+ -- Scrumpper <190908034+Scrumpper@users.noreply.github.com>  Thu, 22 Oct 2026 18:00:00 +0000
+
+h96-base (8.0.0~r21) resolute; urgency=medium
+
+  * COMMANDS.md merged with release documentation copy: h96-kernel-switch
+    section, X11 session note, Steam ARM 3.0 (was 2.3.1), first boot
+    reboots once.
+  * /etc/h96-release names default kernel 6.12.69-h96v58-8.0 (H96_KERNEL,
+    was 6.1.172-h96v58-8.0) and fallback kernel 6.1.172-h96v58-8.0
+    (H96_KERNEL_FALLBACK, new key).
+
+ -- Scrumpper <190908034+Scrumpper@users.noreply.github.com>  Thu, 22 Oct 2026 12:00:00 +0000
+
+h96-base (8.0.0~r20) resolute; urgency=medium
+
+  * 20-h96.preset: 'enable h96-cec.service' (was disable), so systemctl
+    preset-all agrees with default on.
+  * h96-pkgs-setup starts enabled h96-cec.service after v4l-utils install
+    (h96-cecd exits without cec-ctl, so first boot left remote dead until
+    reboot).
+  * COMMANDS.md: h96-cec on by default, TV input, turn off, key map, unit
+    rows.
+
+ -- Scrumpper <190908034+Scrumpper@users.noreply.github.com>  Thu, 22 Oct 2026 09:00:00 +0000
+
+h96-base (8.0.0~r19) resolute; urgency=medium
+
+  * COMMANDS.md: h96-vrr section and code line; hotplug section names mode
+    set again on X11.
+
+ -- Scrumpper <190908034+Scrumpper@users.noreply.github.com>  Thu, 22 Oct 2026 06:00:00 +0000
+
+h96-base (8.0.0~r18) resolute; urgency=medium
+
+  * Version bump with h96-media change; files unchanged apart from version
+    in manual pages.
+
+ -- Scrumpper <190908034+Scrumpper@users.noreply.github.com>  Thu, 22 Oct 2026 03:00:00 +0000
+
+h96-base (8.0.0~r17) resolute; urgency=medium
+
+  * COMMANDS.md: h96-hdmi-hotplug section, unit row, h96-display edid
+    paragraph.
+
+ -- Scrumpper <190908034+Scrumpper@users.noreply.github.com>  Wed, 21 Oct 2026 23:30:00 +0000
+
+h96-base (8.0.0~r16) resolute; urgency=medium
+
+  * h96-xdisplay in /usr/lib/h96: X display and auth of active seat0
+    session (X11 on any display number, Xwayland and Wayland socket in
+    Wayland session); display tools source or run it.
+  * COMMANDS.md: display lookup, h96-scale on Wayland, h96-display revert
+    on Wayland, h96-game-mode status, steam-arm-setup recommended by
+    h96-gaming, power profile table with CPU caps and DDR column.
+
+ -- Scrumpper <190908034+Scrumpper@users.noreply.github.com>  Wed, 21 Oct 2026 22:00:00 +0000
+
+h96-base (8.0.0~r15) resolute; urgency=medium
+
+  * Version bump with h96-audio, h96-boot, h96-media and h96-tools
+    changes; files unchanged apart from version in manual pages.
+
+ -- Scrumpper <190908034+Scrumpper@users.noreply.github.com>  Sun, 18 Oct 2026 23:45:00 +0000
+
+h96-base (8.0.0~r14) resolute; urgency=medium
+
+  * COMMANDS.md: h96-wol status line and boot unit start on eth0.
+  * Manual page DESCRIPTION holds whole COMMANDS.md paragraph (was cut at
+    first line).
+
+ -- Scrumpper <190908034+Scrumpper@users.noreply.github.com>  Sun, 18 Oct 2026 23:30:00 +0000
+
+h96-base (8.0.0~r13) resolute; urgency=medium
+
+  * Release files and console banner name v8.0 (were v8.0 beta);
+    os-release VARIANT and h96-backup source_version follow
+    /etc/h96-release.
+  * COMMANDS.md: h96-wol changes NetworkManager profile only when saved on
+    disk; h96-undervolt revert --force and kernel switch refusals;
+    h96-restore category wol.
+
+ -- Scrumpper <190908034+Scrumpper@users.noreply.github.com>  Sun, 18 Oct 2026 23:00:00 +0000
+
+h96-base (8.0.0~r12) resolute; urgency=medium
+
+  * COMMANDS.md silence source row states rank limits.
+
+ -- Scrumpper <190908034+Scrumpper@users.noreply.github.com>  Sun, 18 Oct 2026 22:00:00 +0000
+
+h96-base (8.0.0~r11) resolute; urgency=medium
+
+  * COMMANDS.md: silence source rank, boot-1 journal adoption by
+    h96-journal-orphans, python3-tk dependency of h96-backup-gui,
+    h96-mpv-kiosk without menu entry.
+  * Upgrade from 8.0.0~r9 keeps h96-issue files under
+    /var/lib/h96/seed-keep while dpkg unpacks.
+
+ -- Scrumpper <190908034+Scrumpper@users.noreply.github.com>  Sun, 18 Oct 2026 18:00:00 +0000
+
+h96-base (8.0.0~r10) resolute; urgency=medium
+
+  * /etc/h96-issue and /etc/h96-issue.net are seeds copied on every
+    configure, outside dpkg -V; h96-branding.sh keeps their Armbian
+    version token.
+  * h96-journal-orphans moves journal files of replaced machine-id (first
+    boot) into current machine directory as archived files, so journalctl
+    lists first boot.
+  * COMMANDS.md describes h96-restore path rewrite on 8.0.
+  * Files that turned into seeds keep their content on upgrade from
+    earlier rounds.
+
+ -- Scrumpper <190908034+Scrumpper@users.noreply.github.com>  Sun, 18 Oct 2026 12:00:00 +0000
+
+h96-base (8.0.0~r9) resolute; urgency=medium
+
+  * Release files name v8.0 beta and kernel 6.1.172-h96v58-8.0.
+  * Command reference moved to /usr/share/doc/h96-base/COMMANDS.md; unit
+    Documentation keys and manual pages point there; desktop skeleton copy
+    seeded from it. Helper scripts named with full paths.
+  * Fresh install warns about locally modified copies left in
+    /usr/local/bin or /usr/local/sbin; they precede packaged commands in
+    PATH.
+
+ -- Scrumpper <190908034+Scrumpper@users.noreply.github.com>  Sat, 17 Oct 2026 22:00:00 +0000
+
+h96-base (8.0.0~r8) resolute; urgency=medium
+
+  * Packaged files moved out of /usr/local and /opt: commands to /usr/bin
+    and /usr/sbin, helpers and payloads to /usr/lib/h96, data to
+    /usr/share/h96, units to /usr/lib/systemd/system, udev rules to
+    /usr/lib/udev/rules.d; every reference rewritten. Fresh install over
+    an image that holds the old copies moves exact old copies aside and
+    deletes them at configure; a failed install restores them.
+  * Manual pages for each command; Documentation key on each unit.
+  * h96-gpu-setup: Mesa panthor (OpenGL) and panvk (Vulkan) only. Vendor
+    libmali blob, mali.json Vulkan ICD, ld.so.conf and LD_LIBRARY_PATH
+    wiring removed. OpenCL is not available: libmali provided it and no
+    Mesa OpenCL driver is installed.
+  * Skeleton files seeded into /etc/skel on fresh install.
+  * rpcbind units masked only; placeholder unit diversion dropped.
+
+ -- Scrumpper <190908034+Scrumpper@users.noreply.github.com>  Sat, 17 Oct 2026 18:00:00 +0000
+
+h96-base (8.0.0~alpha2) resolute; urgency=medium
+
+  * h96-gpu-setup skips libmali Vulkan blob and mali.json and deletes
+    /etc/environment VK_ICD_FILENAMES mali and GSK_RENDERER=cairo lines
+    while panthor driver is bound or armbianEnv names Panthor DTB.
+
+ -- H96 MAX V58 Unofficial Armbian <h96-max-v58@noreply.invalid>  Sat, 17 Oct 2026 12:00:00 +0000
+
+h96-base (8.0.0~alpha1) resolute; urgency=medium
+
+  * Initial packaging of v7.2 h96 userland; files kept at v7.2 paths,
+    /usr/local kept; enablement as on v7.2.
+  * rpcbind units masked as on v7.2; first-boot drop-in seeded, first-boot
+    link created on fresh install.
+
+ -- H96 MAX V58 Unofficial Armbian <h96-max-v58@noreply.invalid>  Fri, 16 Oct 2026 12:00:00 +0000

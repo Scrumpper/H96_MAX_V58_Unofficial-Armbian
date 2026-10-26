@@ -1,0 +1,709 @@
+#!/bin/bash
+# h96-display: HDMI display detection and forced boot mode for H96 Max V58
+#
+# detect: display EDID read over i2c-ddc (HDMI controller DDC is defective), display
+# modes + sink audio loaded as kernel EDID (h96-audio-passthrough detect does the work)
+# <mode>: boot/console mode forced at kernel level via video=HDMI-A-1:<mode> in
+# /boot/armbianEnv.txt, one-boot trial with guard revert (h96-display-guard.sh, same API)
+
+# shared block-letter header; stub avoids command-not-found when banner.sh is missing
+[ -r /usr/lib/h96/banner.sh ] && . /usr/lib/h96/banner.sh
+command -v h96_banner >/dev/null 2>&1 || h96_banner() { :; }
+
+set -e
+
+H96_DISPLAY_API=2   # guard must carry GUARD_API >= this for a trial without video=
+AP="${H96_AP:-/usr/bin/h96-audio-passthrough}"
+ETC="${H96_ETC:-/etc/h96}"                  # H96_*: host test overrides
+ENV="${H96_BOOT_ENV:-/boot/armbianEnv.txt}"
+BOOT="$(dirname "$ENV")"                    # trial, trial.seen, lastgood live beside armbianEnv.txt
+ENV_LOCK="${H96_ENV_LOCK:-/run/lock/h96-armbianenv.lock}"   # shared armbianEnv writer lock
+GUARD="${H96_GUARD:-/usr/lib/h96/h96-display-guard.sh}"
+DVI_PROFILE=$ETC/display-dvi-profile        # boot args removed for DVI display (detect)
+FORCED_MODE=$ETC/display-forced-mode        # video= token confirmed with keep
+BOOTARGS_ON=$ETC/display-bootargs-sync.on   # DVI boot-arg sync gate
+COLOR_FLAG=$ETC/display-color       # legacy global colour, migrated to display entry
+RANGE_FLAG=$ETC/display-range       # legacy global range, migrated to display entry
+DDIR=$ETC/display                   # per display: <key>.conf, color= range= (no file = rgb/full)
+SINK_JSON=$ETC/hdmi-sink.json
+hdmi_status() {  # dw-hdmi-qp debugfs status file: rkr5.1 path, then rkr7.2 path
+  local p
+  for p in ${H96_HDMI_STATUS:-} /sys/kernel/debug/dw-hdmi0/status /sys/kernel/debug/dri/0/hdmi0/status; do
+    [ -e "$p" ] && { echo "$p"; return 0; }
+  done
+  return 1
+}
+
+sink_get() {  # $1 field of connected sink (detect state)
+  python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get(sys.argv[2]) or "")' \
+    "$SINK_JSON" "$1" 2>/dev/null || true
+}
+display_key() { sink_get display_key; }
+
+setting() {  # $1 name, $2 default, $3.. allowed: display entry, else legacy flag, else default
+  local n="$1" d="$2" k v=""; shift 2
+  k="$(display_key)"
+  [ -n "$k" ] && v="$(sed -n "s/^$n=//p" "$DDIR/$k.conf" 2>/dev/null | head -1)"
+  [ -n "$v" ] || v="$(cut -d' ' -f1 "$ETC/display-$n" 2>/dev/null || true)"
+  for a in "$@"; do [ "$v" = "$a" ] && { echo "$v"; return; }; done
+  echo "$d"
+}
+color_setting() { setting color rgb rgb ycbcr auto; }
+range_setting() { setting range full full limited auto; }
+
+entry_set() {  # $1 color|range $2 value: connected display entry; rgb+full = no file
+  local k f c r
+  k="$(display_key)"; [ -n "$k" ] || return 1
+  c="$(color_setting)"; r="$(range_setting)"
+  [ "$1" = color ] && c="$2"
+  [ "$1" = range ] && r="$2"
+  mkdir -p "$DDIR"; f="$DDIR/$k.conf"
+  if [ "$c" = rgb ] && [ "$r" = full ]; then rm -f "$f"
+  else printf 'color=%s\nrange=%s\n' "$c" "$r" > "$f.new" && mv -f "$f.new" "$f"; fi
+}
+
+migrate_legacy() {  # legacy global colour/range -> connected display entry, once (root)
+  [ -e "$COLOR_FLAG" ] || [ -e "$RANGE_FLAG" ] || return 0
+  [ -n "$(display_key)" ] && [ -w "$ETC" ] || return 0
+  local c r; c="$(color_setting)"; r="$(range_setting)"
+  [ -e "$DDIR/$(display_key).conf" ] || entry_set color "$c"
+  rm -f "$COLOR_FLAG" "$RANGE_FLAG"
+  logger -t h96-display "legacy colour $c / range $r moved to display $(display_key)" 2>/dev/null || true
+}
+color_prop() { case "$1" in ycbcr) echo ycbcr444 ;; auto) echo ycbcr_high_subsampling ;; *) echo rgb ;; esac; }
+range_prop() { case "$1" in limited) echo limit ;; auto) echo default ;; *) echo full ;; esac; }
+# YCbCr: quant_range default (VOP has no full-range YUV overlay: full = wrong matrix)
+quant_for() { if [ "$1" = rgb ]; then range_prop "$2"; else echo default; fi; }
+
+SUMMARY="${H96_SUMMARY:-/sys/kernel/debug/dri/0/summary}"
+layers() {  # HDMI VP RGB windows' r2y vs output format (debugfs, root): ok | mismatch | ""
+  [ -r "$SUMMARY" ] || return 0
+  awk '/^Video Port/{a=($0 ~ /ACTIVE/); h=0; next}
+    a && /HDMI-A-1/{h=1}
+    a && h && /bus_format\[/{want = ($0 ~ /RGB/) ? 0 : 1}
+    a && h && $1 == "format:"{rgbwin = ($2 !~ /^(NV|YU|YV|P0|Y2)/)}
+    a && h && /csc: / && rgbwin {n++; if (match($0, /r2y\[[0-9]\]/) && substr($0, RSTART+4, 1) + 0 != want) bad++}
+    END{if (n) print (bad ? "mismatch" : "ok")}' "$SUMMARY" 2>/dev/null || true
+}
+
+# active session X display and auth (h96-xdisplay); :0 and LightDM :0 auth when none found
+XD=":0"; XD_AUTH="/var/run/lightdm/root/:0"; XD_TYPE=""
+xd_lookup() {
+  [ -r /usr/lib/h96/h96-xdisplay ] || return 0
+  . /usr/lib/h96/h96-xdisplay
+  h96_xdisplay || return 0
+  XD_TYPE="$H96_XD_TYPE"
+  [ -n "$H96_XD_DISPLAY" ] && XD="$H96_XD_DISPLAY"
+  [ -n "$H96_XD_XAUTH" ] && XD_AUTH="$H96_XD_XAUTH"
+  return 0
+}
+
+plane_refresh() {  # $1 xauth: layers not converted (v6.1 kernel) or unknown (no root): DPMS off/on
+  local off=0 try
+  for try in 1 2 3 4 5 6; do                # kernel re-latched plane CSC itself: no blank
+    sleep 0.5
+    [ "$(layers)" = ok ] && return 0
+  done
+  DISPLAY="$XD" XAUTHORITY="$1" xset q 2>/dev/null | grep -q "DPMS is Disabled" && off=1
+  for try in 1 2; do
+    [ "$off" = 1 ] && DISPLAY="$XD" XAUTHORITY="$1" xset +dpms
+    DISPLAY="$XD" XAUTHORITY="$1" xset dpms force off; sleep 1.5
+    DISPLAY="$XD" XAUTHORITY="$1" xset dpms force on
+    [ "$off" = 1 ] && DISPLAY="$XD" XAUTHORITY="$1" xset -dpms
+    sleep 0.5
+    [ "$(layers)" = mismatch ] || return 0
+  done
+  echo "h96-display: warning: display layers not converted to output colour format" \
+       "(xset dpms force off, then on)" >&2
+}
+
+x_apply() {  # $1 color_format or "", $2 quant_range or "": set on X output + plane refresh; 1 = no X
+  local auth out args=()
+  [ -n "$1" ] && args+=(--set color_format "$1")
+  [ -n "$2" ] && args+=(--set quant_range "$2")
+  [ ${#args[@]} -gt 0 ] || return 0
+  command -v xrandr >/dev/null 2>&1 || return 1
+  xd_lookup
+  if [ "$XD_TYPE" = wayland ]; then           # Wayland: colour format through kernel EDID (detect); no RGB range control
+    [ -n "$2" ] || return 0
+    return 1
+  fi
+  for auth in "${XAUTHORITY:-}" "$HOME/.Xauthority" "$XD_AUTH"; do
+    [ -n "$auth" ] && [ -r "$auth" ] || continue
+    out="$(DISPLAY="$XD" XAUTHORITY="$auth" xrandr -q 2>/dev/null | awk '/ connected/{print $1; exit}')"
+    [ -n "$out" ] || continue
+    if DISPLAY="$XD" XAUTHORITY="$auth" xrandr --output "$out" "${args[@]}" 2>/dev/null; then
+      plane_refresh "$auth"
+      return 0
+    fi
+  done
+  return 1
+}
+
+vp_hdmi_bus() {  # bus format of active VOP2 port driving HDMI-A-1 (debugfs summary), "" when none
+  [ -r "$SUMMARY" ] || return 0
+  awk 'function out() { if (a && h && bus != "") { print bus; done = 1; exit } }
+    /^Video Port/ { out(); a = ($0 ~ /ACTIVE/); h = 0; bus = "" }
+    a && /HDMI-A-1/ { h = 1 }
+    a && match($0, /bus_format\[[0-9A-Fa-f]+\]: *[A-Z0-9_]+/) { s = substr($0, RSTART, RLENGTH); sub(/.*: */, "", s); bus = s }
+    END { if (!done) out() }' "$SUMMARY" 2>/dev/null || true
+}
+
+wire() {  # format + range on the HDMI wire (debugfs, root)
+  local st fmt dep rng p bus note rs
+  [ -n "${H96_HDMI_STATUS:-}" ] || [ "$(id -u)" = 0 ] || { echo "unknown (needs root)"; return; }
+  p="$(hdmi_status)" || { echo "unknown (no dw-hdmi debugfs)"; return; }
+  st="$(cat "$p" 2>/dev/null || true)"
+  case "$st" in
+    "") echo "output off"; return ;;
+    *"PHY: disabled"*)
+      # DVI branch of dw_hdmi_qp_setup keeps 'disabled' set (DV-RC-2): VOP2 shows the live link
+      bus="$(vp_hdmi_bus)"
+      case "$bus" in
+        "") echo "output off" ;;
+        RGB888*) if [ "$(sink_get dvi)" = True ]; then echo "DVI, RGB 8-bit, full range"
+                 else echo "RGB 8-bit (VOP2 $bus; dw-hdmi status: PHY disabled)"; fi ;;
+        *) echo "on (VOP2 $bus; dw-hdmi status: PHY disabled)" ;;
+      esac
+      return ;;
+  esac
+  fmt="$(printf '%s\n' "$st" | sed -n 's/^Color Format: \([A-Z0-9]*\).*/\1/p')"
+  dep="$(printf '%s\n' "$st" | sed -n 's/.*Color Depth: \([0-9]*\) bit.*/\1/p')"
+  # quantization range sent to display (dw-hdmi status), VOP2 field when status has none
+  rng="$(printf '%s\n' "$st" | sed -n 's/.*Color Range: \([A-Z]*\)_RANGE.*/\1/p' | tr 'A-Z' 'a-z')"
+  [ -n "$rng" ] || rng="$(awk '/^Video Port/{a=($0 ~ /ACTIVE/); h=0} a && /HDMI-A-1/{h=1}
+    a && h && match($0, /color-range\[[A-Za-z]+\]/){print tolower(substr($0, RSTART+12, RLENGTH-13)); exit}' \
+    "$SUMMARY" 2>/dev/null || true)"
+  note=""
+  # 6.12 driver: RGB range setting applies only when kernel EDID lists RGB range select
+  rs="$(range_setting)"
+  if [ "$fmt" = RGB ] && [ "$rs" != auto ] && [ -n "$rng" ] && [ "$rng" != "$rs" ] && [ "$(rgb_qs)" = no ]; then
+    note=" (kernel EDID lists no RGB range select; driver sends display default, setting $rs not applied)"
+  fi
+  case "$fmt" in YUV444) fmt="YCbCr 4:4:4" ;; YUV422) fmt="YCbCr 4:2:2" ;; YUV420) fmt="YCbCr 4:2:0" ;; esac
+  echo "${fmt:-unknown} ${dep:-?}-bit, ${rng:-unknown} range$note"
+}
+
+rgb_qs() {  # yes|no: kernel EDID video capability block RGB range select bit; "" when unreadable
+  local e q
+  for e in ${H96_CONN_EDID:-/sys/class/drm/card*-HDMI-A-1/edid}; do
+    [ -r "$e" ] || continue
+    # sysfs edid reports size 0 although readable: content length decides, not -s
+    q="$(python3 -c 'import sys
+d = open(sys.argv[1], "rb").read()
+if len(d) < 128:
+    sys.exit(0)
+qs = "no"
+for b in range(1, len(d) // 128):
+    c = d[b * 128:(b + 1) * 128]
+    if c[0] != 2 or c[2] < 4:
+        continue
+    i = 4
+    while i < c[2]:
+        tag, n = c[i] >> 5, c[i] & 31
+        if tag == 7 and n >= 2 and c[i + 1] == 0 and c[i + 2] & 0x40:
+            qs = "yes"
+        i += n + 1
+print(qs)' "$e" 2>/dev/null)" || q=""
+    [ -n "$q" ] || continue
+    echo "$q"
+    return
+  done
+}
+
+# ---- confirm-or-revert switches: color, range, frl, hdmi20
+MERGE="${H96_MERGE:-/usr/lib/h96/edid_merge.py}"
+CONFIRM_S="${H96_CONFIRM_S:-15}"
+
+cur_setting() {  # $1 key -> value in effect (flag files)
+  case "$1" in
+    color) color_setting ;;
+    range) range_setting ;;
+    frl) [ -e $ETC/display-frl.off ] && echo off || echo on ;;
+    hdmi20) [ -e $ETC/display-hdmi20.off ] && echo off || echo on ;;
+  esac
+}
+
+persist() {  # $1 key $2 value: flag file (defaults = no file)
+  mkdir -p "$ETC"
+  case "$1" in
+    color|range) entry_set "$1" "$2" ;;
+    frl) if [ "$2" = on ]; then rm -f $ETC/display-frl.off; else touch $ETC/display-frl.off; fi ;;
+    hdmi20) if [ "$2" = on ]; then rm -f $ETC/display-hdmi20.off; else touch $ETC/display-hdmi20.off; fi ;;
+  esac
+}
+
+trial_env() {  # $1 key $2 value -> env assignment for detect (flag file untouched)
+  case "$1" in
+    color) echo "H96_DISPLAY_COLOR=$2" ;;
+    frl) echo "H96_DISPLAY_FRL=$2" ;;
+    hdmi20) echo "H96_DISPLAY_HDMI20=$2" ;;
+  esac
+}
+
+kernel_md5() {
+  python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("kernel_edid_md5") or "")' \
+    "$SINK_JSON" 2>/dev/null || true
+}
+
+planned_md5() {  # $1 key $2 value -> kernel EDID md5 detect would load
+  env $(trial_env "$1" "$2") "$AP" detect --dry-run --quiet 2>/dev/null \
+    | sed -n 's/^ *kernel EDID md5: *//p' | head -1
+}
+
+apply_value() {  # $1 key $2 value: live (detect with trial env, X properties, service)
+  case "$1" in
+    range) x_apply "" "$(quant_for "$(color_setting)" "$2")" ;;
+    color) env "$(trial_env color "$2")" "$AP" detect --quiet
+           x_apply "$(color_prop "$2")" "$(quant_for "$2" "$(range_setting)")" ;;
+    frl) env "$(trial_env frl "$2")" "$AP" detect --quiet ;;
+    hdmi20)
+      if [ "$2" = on ]; then rm -f $ETC/display-nolock; systemctl start h96-scdc.service 2>/dev/null
+      else systemctl stop h96-scdc.service 2>/dev/null; fi
+      env "$(trial_env hdmi20 "$2")" "$AP" detect --quiet ;;
+  esac
+}
+
+ask_keep() {  # countdown on /dev/tty; 0 only for key y/Y
+  local n ch rc
+  for n in $(seq "$CONFIRM_S" -1 1); do
+    printf '\rKeep this %s? Reverting in %2d s [y/N] ' "$WHAT" "$n" >/dev/tty 2>/dev/null || return 1
+    ch=""; read -r -s -n 1 -t 1 ch </dev/tty 2>/dev/null; rc=$?
+    if [ "$rc" -eq 0 ]; then
+      case "$ch" in y|Y) printf 'y\n' >/dev/tty 2>/dev/null; return 0 ;; *) printf 'n\n' >/dev/tty 2>/dev/null; return 1 ;; esac
+    fi
+    [ "$rc" -gt 128 ] || return 1              # EOF / terminal gone
+  done
+  printf '\n' >/dev/tty 2>/dev/null
+  return 1
+}
+
+trial_revert() {  # back to previous value; old KDE identity files untouched
+  trap - INT TERM HUP EXIT
+  [ "$TRIAL_KEPT" = 1 ] && return 0
+  apply_value "$TRIAL_KEY" "$TRIAL_OLD" >/dev/null 2>&1
+  echo "$TRIAL_KEY: reverted to $TRIAL_OLD." 2>/dev/null
+  logger -t h96-display "$TRIAL_KEY $TRIAL_NEW not kept: reverted to $TRIAL_OLD" 2>/dev/null
+  TRIAL_KEPT=1
+}
+
+switch() {  # $1 key $2 new value $3 yes(0/1) $4 dry(0/1)
+  local k="$1" v="$2" yes="$3" dry="$4" old om nm edid=1
+  if [ "$k" = color ] || [ "$k" = range ]; then
+    [ -n "$(display_key)" ] || { echo "h96-display: no display detected: $k not changed" >&2; return 1; }
+    [ "$dry" = 1 ] || migrate_legacy
+  fi
+  old="$(cur_setting "$k")"
+  [ "$k" = range ] && edid=0
+  if [ "$v" = "$old" ]; then echo "$k: already $v."; return 0; fi
+  if [ "$k" = range ] && [ "$(color_setting)" != rgb ] && [ "$dry" != 1 ]; then
+    persist range "$v"
+    echo "range: $v saved; applies to RGB only (colour $(color_setting): YCbCr is always limited)."
+    return 0
+  fi
+  om="" nm=""
+  if [ "$edid" = 1 ]; then om="$(kernel_md5)"; nm="$(planned_md5 "$k" "$v")"; fi
+  if [ "$dry" = 1 ]; then
+    echo "$k: $old -> $v (dry run, nothing changed)"
+    if [ "$edid" = 1 ]; then
+      echo "kernel EDID md5: ${om:-unknown} -> ${nm:-unknown}"
+      for h in /home/*/.local/share/kscreen/outputs/"$om" /root/.local/share/kscreen/outputs/"$om"; do
+        [ -n "$om" ] && [ "$om" != "$nm" ] && [ -f "$h" ] && echo "KDE config to carry: $h"
+      done
+    fi
+    return 0
+  fi
+  # frl/hdmi20 without live mode-list change: just saved
+  if [ "$edid" = 1 ] && [ "$k" != color ] && [ -n "$om" ] && [ "$om" = "$nm" ]; then
+    persist "$k" "$v"
+    [ "$k" = hdmi20 ] && apply_value hdmi20 "$v" >/dev/null 2>&1
+    echo "$k: $v (connected display: mode list unchanged)."
+    return 0
+  fi
+  if [ "$yes" != 1 ] && ! { : </dev/tty; } 2>/dev/null; then
+    echo "h96-display: no terminal to confirm on: nothing changed (add --yes to keep without asking)" >&2
+    return 1
+  fi
+  if [ "$edid" = 1 ] && [ -n "$om" ] && [ -n "$nm" ] && [ "$om" != "$nm" ]; then
+    python3 "$MERGE" kscreen-carry "$om" "$nm" ${H96_KS_HOMES:-} | sed 's/^/KDE config carried: /'
+  fi
+  TRIAL_KEY="$k" TRIAL_OLD="$old" TRIAL_NEW="$v" TRIAL_KEPT=0
+  set +e
+  trap 'trial_revert; exit 130' INT TERM HUP
+  trap 'trial_revert' EXIT
+  apply_value "$k" "$v"
+  sleep 1
+  echo "$k: $v applied. wire: $(wire)"
+  if [ "$yes" = 1 ] || ask_keep; then
+    TRIAL_KEPT=1
+    trap - INT TERM HUP EXIT
+    persist "$k" "$v"
+    echo "$k: $v kept (saved, applied at every boot and login)."
+    [ "$k" = frl ] && [ "$v" = on ] && echo "FRL-tier modes are experimental, untested on hardware."
+    return 0
+  fi
+  trial_revert
+  return 3
+}
+
+# detect: own banner and --quiet handling
+if [ "${1:-}" = detect ]; then shift; exec "$AP" detect "$@"; fi
+# session-apply: login autostart, re-applies colour/range X properties; defaults = no-op
+if [ "${1:-}" = session-apply ]; then
+  migrate_legacy
+  c="$(color_setting)"; r="$(range_setting)"
+  [ "$c" = rgb ] && [ "$r" = full ] && exit 0
+  if [ "$c" = rgb ]; then x_apply "" "$(range_prop "$r")" || true
+  else x_apply "$(color_prop "$c")" default || true; fi
+  exit 0
+fi
+# console-apply: boot unit; console kept bootloader's YCbCr output -> one blank cycle, kernel picks RGB
+if [ "${1:-}" = console-apply ]; then
+  p="$(hdmi_status)" || exit 0
+  grep -qs '^Color Format: YUV' "$p" || exit 0
+  fb=/sys/class/graphics/fb0/blank
+  [ -w "$fb" ] || exit 0
+  echo 4 > "$fb"; sleep 2; echo 0 > "$fb"
+  logger -t h96-display "console: bootloader YCbCr output reset to RGB" 2>/dev/null || true
+  exit 0
+fi
+
+h96_banner "D I S P L A Y   M O D E"
+
+CONN=HDMI-A-1
+
+replace_env() {  # $1 tmp $2 dst: fsync tmp, rename, fsync directory
+  python3 -c 'import os, sys
+t, d = sys.argv[1:3]
+os.chmod(t, os.stat(d).st_mode & 0o7777)
+fd = os.open(t, os.O_RDONLY); os.fsync(fd); os.close(fd)
+os.replace(t, d)
+fd = os.open(os.path.dirname(os.path.abspath(d)), os.O_RDONLY); os.fsync(fd); os.close(fd)' "$1" "$2"
+}
+
+bootargs_status() {  # DVI profile state for show / status
+  local s="no DVI profile"
+  [ -e "$DVI_PROFILE" ] && s="DVI profile (removed: $(grep -v '^#' "$DVI_PROFILE" | tr '\n' ' ' | sed 's/ $//'))"
+  echo "$s; DVI boot-arg sync $([ -e "$BOOTARGS_ON" ] && echo on || echo off)"
+}
+
+usage() {
+  cat <<EOF
+Usage: h96-display <command | mode>
+
+Display detection (default on, boot + HDMI plug-in):
+  detect [OPTS]   read connected display EDID over DDC, list its modes in KDE
+                  (System Settings > Display) and its audio in System Settings > Sound;
+                  RGB 8-bit (see color), progressive only, modes up to 600 MHz TMDS
+                  plus FRL tier (see frl); no mode is set: KDE applies display
+                  preferred mode (detect --help for options)
+  keep            confirm forced-mode trial; its video= token stays at every boot
+                  (DVI boot-arg sync leaves it in place)
+  revert          connected display: switch to 1920x1080@60 (KDE remembers it)
+  native          connected display: switch to its preferred mode (KDE remembers it)
+  status          detected display, KDE config, switches, tier, colour, SCDC, boot args
+  edid merged|real|status    merged (default): kernel EDID built from display EDID (RGB,
+                  mode ceiling, sink audio); real: display EDID unchanged (own modes,
+                  colour formats, VRR range, audio); needs kernel DDC (6.12)
+  autodetect on|off|status   off: forced 1920x1080 EDID video, sink audio only;
+                  also puts back boot args removed for a DVI display
+  hdmi20 on|off|status       default on: modes 340-600 MHz (1440p120/144, 4K60) with
+                  scrambling (kernel over i2c-ddc; h96-scdc.service verifies, reverts a
+                  mode without sink lock); off: 340 MHz ceiling, service stopped
+  frl on|off|status          default on (needs hdmi20): display with HDMI 2.1 FRL rate:
+                  modes above 600 MHz (4K120, 8K60 up to 2376 MHz, 7680 wide) that fit
+                  its FRL rate; 4:2:0 only where RGB does not fit. EXPERIMENTAL,
+                  untested on hardware; failed link training -> h96-scdc reverts
+  color rgb|ycbcr|auto|status  HDMI colour format (status: any user)
+                  rgb    default: RGB (YCbCr removed from kernel EDID)
+                  ycbcr  YCbCr 4:4:4 when display lists it, else RGB
+                  auto   driver picks: 4:4:4, then 4:2:2, then RGB, as display lists them
+                  Kernel EDID + driver property color_format; 4:2:0 only for FRL modes
+                  that need it. Saved per display (see below)
+                  YCbCr is always limited range (16-235)
+  range full|limited|auto|status  HDMI quantization range, RGB only (status: any user)
+                  full   default (0-255)   limited  16-235   auto  driver default
+                  Driver property quant_range
+  color and range are saved per display in /etc/h96/display/<MFG-product-serial>.conf
+  (display without entry: rgb, full); frl and hdmi20 apply to every display
+  Colour or range change: screen may blank ~2 s (DPMS off/on when display layers keep old
+  colour conversion; not needed on kernels that convert them)
+  Changing color, range, frl or hdmi20 (root): new value applied live, then
+    "Keep this ...? Reverting in 15 s [y/N]". Only key y keeps and saves it (applied at
+    every boot and login); n, Enter, timeout, Ctrl-C, closed terminal revert.
+    KDE display settings (mode, scale, position) carried to new kernel EDID identity.
+    --yes    keep without asking (needed without a terminal)
+    --dry-run  show old/new kernel EDID md5 and KDE config to carry, change nothing
+    Exit: 0 kept / unchanged / dry run, 1 usage / not root / no terminal, 3 reverted
+  Status lines 'color: X' / 'range: X' = setting; 'wire: FORMAT N-bit, R range' =
+  signal on HDMI now, R = quantization range sent to display (root; 'unknown (needs
+  root)' otherwise, 'output off' when off, 'DVI, RGB 8-bit, full range' for a DVI
+  display); note follows when kernel EDID lists no RGB range select
+
+DVI display boot args (detect, gate file /etc/h96/display-bootargs-sync.on):
+  DVI display read over DDC: image-default drm.edid_firmware and video=HDMI-A-1:1920x1080@60
+  removed from /boot/armbianEnv.txt, so kernel reads display EDID at boot and console
+  starts in display's own mode. Removed tokens listed in /etc/h96/display-dvi-profile;
+  HDMI display, autodetect off or gate removed: those tokens put back. Skipped while a
+  forced-mode trial is pending. Gate absent: nothing removed.
+
+Forced boot mode (kernel video=: console + first mode before KDE applies its own):
+  <WxH[@HZ]>   any resolution, e.g.  1440x900   1920x1080@60   2560x1440   3840x2160@30
+  safe         1280x720@60   (HDMI-mandatory; works on almost any display)
+  1080p        1920x1080@60  (image default)
+  1440p        2560x1440@60
+  4k           3840x2160@30
+  4k60         3840x2160@60  (594 MHz: scrambling, see hdmi20)
+  8k           7680x4320@30  (unproven: needs HDMI 2.1 FRL output, display, and cable;
+               trial mechanism reverts it on power-cycle if nothing shows)
+  auto         read display EDID over DDC, pick best supported mode, set it as trial;
+               on any read/parse failure current mode is kept
+  wake         re-drive HDMI output now if blanked and stuck off
+               (a daemon does this automatically on any keypress)
+  show         print current forced mode
+
+Forced mode applies on next boot.  After setting, run:  reboot
+Then, once you can SEE the new mode, run:  h96-display keep
+Not confirmed: power-cycle; next boot puts back previous video= token (or removes it
+when trial started without one) and reboots. Recovery by hand: /boot/h96-display-README.txt
+
+Modes: KDE System Settings > Display lists all drivable modes and remembers the choice
+per display (KDE asks to keep a new mode). Scrambled mode without sink lock or failed
+FRL link training: h96-scdc switches back to last working mode.
+EOF
+}
+
+[ $# -ge 1 ] || { usage; exit 1; }
+case "$1" in
+  -h|--help) usage; exit 0 ;;
+  show)
+    if grep -o 'video=[^ ]*' "$ENV" 2>/dev/null; then :
+    elif [ -e "$DVI_PROFILE" ]; then echo "(no forced mode set: DVI display, kernel reads display EDID at boot)"
+    else echo "(no forced mode set)"; fi
+    exit 0 ;;
+  wake)
+    # manual trigger for display-wake path; daemon (h96-display-wake.service)
+    # runs same script on keypress
+    [ "$(id -u)" = 0 ] || { echo "h96-display: wake needs root" >&2; exit 1; }
+    W=/usr/lib/h96/h96-display-wake.sh
+    [ -x "$W" ] || { echo "h96-display: $W missing" >&2; exit 1; }
+    if [ "$(cat /sys/class/drm/card0-HDMI-A-1/enabled 2>/dev/null)" = enabled ]; then
+      echo "HDMI output is already enabled; nothing to do."
+      exit 0
+    fi
+    "$W"
+    exit $? ;;
+  ok|keep|confirm)
+    rm -f "$BOOT/h96-display.trial" "$BOOT/h96-display.trial.seen"
+    if [ -w "$ETC" ] || [ "$(id -u)" = 0 ]; then
+      # kept video= token: DVI boot-arg sync never drops it
+      kept="$(grep -o 'video=HDMI-A-1:[^ ]*' "$ENV" 2>/dev/null | head -1 || true)"
+      mkdir -p "$ETC"
+      if [ -n "$kept" ]; then printf '%s\n' "$kept" > "$FORCED_MODE.new" && mv -f "$FORCED_MODE.new" "$FORCED_MODE"
+      else rm -f "$FORCED_MODE"; fi
+    fi
+    [ -x "$AP" ] && [ "$(id -u)" = 0 ] && "$AP" display keep
+    echo "Display mode confirmed (kept); auto-revert cancelled."
+    [ -n "${kept:-}" ] && echo "Forced mode $kept kept at every boot."
+    exit 0 ;;
+  revert|native) exec "$AP" display "$1" ;;
+  status)
+    "$AP" display status || true
+    FRLT="on"; [ -e $ETC/display-hdmi20.off ] && FRLT="off (hdmi20 off)"
+    [ -e $ETC/display-frl.off ] && FRLT="off"
+    echo "tier:        $([ -e $ETC/display-hdmi20.off ] && echo "340 MHz (hdmi20 off)" || echo "600 MHz TMDS"), FRL tier $FRLT"
+    [ "${FRLT}" = on ] && echo "             FRL-tier modes (above 600 MHz: 4K120, 8K) are EXPERIMENTAL, untested on hardware"
+    echo "display key: $(display_key) (colour + range saved per display)"
+    echo "color:       $(color_setting)"
+    echo "range:       $(range_setting)$([ "$(color_setting)" = rgb ] || echo " (RGB only; YCbCr limited)")"
+    echo "wire:        $(wire)"
+    case "$(layers)" in ok) echo "layers:      converted" ;; mismatch) echo "layers:      not converted (xset dpms force off, then on)" ;; esac
+    echo "boot args:   $(bootargs_status)"
+    xd_lookup
+    if [ "$XD_TYPE" = wayland ]; then
+      echo "session:     Plasma Wayland (experimental): colour format through kernel EDID; range control not available in Plasma Wayland session (KWin exposes no RGB range on HDMI-A-1 under kernel 6.12)"
+      echo "kernel edid: $([ -e /etc/h96/display-edid-real ] && echo real || echo merged) (h96-display edid)"
+    fi
+    exit 0 ;;
+  color|colour|range|frl|hdmi20)
+    # confirm-or-revert: live trial, flag file written only on keep
+    k="$1"; [ "$k" = colour ] && k=color
+    case "$k" in
+      color) vals="rgb ycbcr auto"; WHAT="colour format" ;;
+      range) vals="full limited auto"; WHAT="range" ;;
+      frl) vals="on off"; WHAT="mode list (FRL tier)" ;;
+      hdmi20) vals="on off"; WHAT="mode list (hdmi20)" ;;
+    esac
+    v="${2:-status}"; shift; [ $# -gt 0 ] && shift
+    yes=0; dry=0
+    for a in "$@"; do
+      case "$a" in --yes|-y) yes=1 ;; --dry-run|-n) dry=1 ;;
+        *) echo "h96-display: $k: unknown option $a" >&2; exit 1 ;; esac
+    done
+    case "$v" in enable) v=on ;; disable) v=off ;; esac
+    if [ "$k" = range ]; then
+      xd_lookup
+      if [ "$XD_TYPE" = wayland ]; then
+        if [ "$v" = status ]; then echo "range: $(cur_setting range) (range control not available in Plasma Wayland session (KWin exposes no RGB range on HDMI-A-1 under kernel 6.12))"; exit 0; fi
+        echo "h96-display: range control not available in Plasma Wayland session (KWin exposes no RGB range on HDMI-A-1 under kernel 6.12); range setting unchanged; Plasma X11 session applies it" >&2
+        exit 1
+      fi
+    fi
+    if [ "$v" = status ]; then
+      [ "$k" = color ] || [ "$k" = range ] && echo "display: $(sink_get sink) ($(display_key))"
+      echo "$k: $(cur_setting "$k")"
+      case "$k" in
+        color|range) echo "wire: $(wire)"
+          [ "$k" = range ] && [ "$(color_setting)" != rgb ] && echo "range applies to RGB only; YCbCr is always limited."
+          case "$(layers)" in ok) echo "layers: converted" ;; mismatch) echo "layers: not converted" ;; esac ;;
+        frl) echo "FRL-tier modes (above 600 MHz: 4K120, 8K) are experimental, untested on hardware." ;;
+      esac
+      exit 0
+    fi
+    case " $vals " in *" $v "*) : ;; *) echo "h96-display: $k takes ${vals// / | } | status" >&2; exit 1 ;; esac
+    [ "$dry" = 1 ] || [ "$(id -u)" = 0 ] || { echo "h96-display: $k $v needs root (sudo h96-display $k $v)" >&2; exit 1; }
+    switch "$k" "$v" "$yes" "$dry"
+    exit $? ;;
+  edid)
+    # kernel EDID source: merged (default, no flag) or display EDID unchanged (flag file)
+    FLAG=/etc/h96/display-edid-real
+    case "${2:-status}" in
+      merged|real)
+        [ "$(id -u)" = 0 ] || { echo "h96-display: $1 $2 needs root" >&2; exit 1; }
+        mkdir -p /etc/h96
+        if [ "$2" = real ]; then touch "$FLAG"; else rm -f "$FLAG"; fi
+        "$AP" detect --quiet
+        echo "$1: $2. Detect re-run; KDE lists new mode set." ;;
+      status|"")
+        if [ -e "$FLAG" ]; then echo "$1: real"; else echo "$1: merged"; fi ;;
+      *) echo "h96-display: $1 takes merged | real | status" >&2; exit 1 ;;
+    esac
+    exit 0 ;;
+  autodetect)
+    # default on; off = flag file (forced 1080p video, sink audio only)
+    FLAG=/etc/h96/display-autodetect.off
+    case "${2:-status}" in
+      on|enable|off|disable)
+        [ "$(id -u)" = 0 ] || { echo "h96-display: $1 $2 needs root" >&2; exit 1; }
+        mkdir -p /etc/h96
+        case "$2" in on|enable) rm -f "$FLAG" ;; *) touch "$FLAG" ;; esac
+        "$AP" detect --quiet
+        echo "$1: $2. Detect re-run; KDE lists new mode set." ;;
+      status|"")
+        if [ -e "$FLAG" ]; then echo "$1: off"; else echo "$1: on"; fi ;;
+      *) echo "h96-display: $1 takes on | off | status" >&2; exit 1 ;;
+    esac
+    exit 0 ;;
+  safe)  MODE=1280x720@60 ;;
+  1080p) MODE=1920x1080@60 ;;
+  1440p) MODE=2560x1440@60 ;;
+  4k|4K) MODE=3840x2160@30 ;;
+  4k60|4K60) MODE=3840x2160@60 ;;
+  8k|8K)
+    # unproven: RK3588 decodes 8K and datasheet lists HDMI 2.1 FRL output, but this
+    # kernel's HDMI driver has only been observed in TMDS mode (ceiling 4K60); needs
+    # FRL, an 8K display, certified HDMI 2.1 cable. one-boot trial reverts if nothing shows
+    MODE=7680x4320@30 ;;
+  auto)
+    # bit-bang TV's EDID over DDC pins as plain GPIO; SoC's DDC i2c controller never
+    # completes a transaction on this kernel, but wires are fine (Android reads EDID
+    # over them). character-device GPIO uAPI only, never /dev/mem near HDMI blocks
+    # (hard-hangs the SoC)
+    #   SCL = GPIO4_B7 = /dev/gpiochip4 line 15
+    #   SDA = GPIO4_C0 = /dev/gpiochip4 line 16
+    reader=/usr/lib/h96/ddc-edid-read
+    parser=/usr/lib/h96/edid_modes.py
+    [ "$(id -u)" = 0 ] || { echo "h96-display: auto needs root (GPIO access)" >&2; exit 1; }
+    for f in "$reader" "$parser"; do
+      [ -e "$f" ] || { echo "h96-display: $f missing: current mode left untouched" >&2; exit 1; }
+    done
+    raw="$(mktemp)"; perr="$(mktemp)"
+    # h96-ddc-i2c-gpio overlay gives kernel ownership of DDC pins (i2c bus i2c-ddc,
+    # used for DDC/CI brightness); when present raw-GPIO reader gets EBUSY, so EDID
+    # reads via kernel bus instead: EEPROM at 0x50, extension count at byte 126,
+    # E-DDC segment pointer at 0x30 for blocks >= 2, repeated-start via i2ctransfer.
+    # raw-GPIO reader is fallback when overlay is absent
+    ddcbus=""
+    for _d in /sys/class/i2c-dev/i2c-*; do
+      [ "$(cat "$_d/name" 2>/dev/null)" = "i2c-ddc" ] && { ddcbus="${_d##*i2c-}"; break; }
+    done
+    if [ -n "$ddcbus" ] && command -v i2ctransfer >/dev/null 2>&1; then
+      if ! b0=$(i2ctransfer -y "$ddcbus" w1@0x50 0x00 r128@0x50 2>"$perr"); then
+        echo "h96-display: DDC/EDID read failed (kernel bus i2c-$ddcbus): current mode left untouched:" >&2
+        sed "s/^/  /" "$perr" >&2
+        rm -f "$raw" "$perr"; exit 1
+      fi
+      ext=$(python3 -c "import sys;b=[int(x,16) for x in sys.argv[1:]];print(min(b[126],7))" $b0 2>/dev/null)
+      blocks="$b0"
+      i=1
+      while [ "${ext:-0}" -ge "$i" ]; do
+        seg=$((i / 2)); off=$(( (i % 2) * 128 ))
+        if [ "$seg" -eq 0 ]; then
+          bn=$(i2ctransfer -y "$ddcbus" w1@0x50 $off r128@0x50 2>/dev/null) || break
+        else
+          bn=$(i2ctransfer -y "$ddcbus" w1@0x30 $seg w1@0x50 $off r128@0x50 2>/dev/null) || break
+        fi
+        blocks="$blocks $bn"
+        i=$((i + 1))
+      done
+      python3 -c "import sys;sys.stdout.buffer.write(bytes(int(x,16) for x in sys.argv[1:]))" $blocks > "$raw"
+    elif ! "$reader" /dev/gpiochip4 15 16 --label gpio4 >"$raw" 2>"$perr"; then
+      echo "h96-display: DDC/EDID read failed: current mode left untouched:" >&2
+      sed "s/^/  /" "$perr" >&2
+      rm -f "$raw" "$perr"; exit 1
+    fi
+    if ! MODE="$(python3 "$parser" "$raw" 2>"$perr")"; then
+      echo "h96-display: EDID rejected: current mode left untouched:" >&2
+      sed "s/^/  /" "$perr" >&2
+      rm -f "$raw" "$perr"; exit 1
+    fi
+    sed "s/^/  /" "$perr" >&2
+    rm -f "$raw" "$perr"
+    echo "auto-detected mode: $MODE"
+    ;;
+  *)     MODE="$1" ;;
+esac
+
+# accept WxH or WxH@HZ, default to @60 when no refresh given
+case "$MODE" in
+  *x*@*) : ;;
+  *x*)   MODE="${MODE}@60" ;;
+  *) echo "h96-display: unrecognized mode '$MODE'" >&2; usage; exit 1 ;;
+esac
+
+VID="video=${CONN}:${MODE}"
+[ -w "$ENV" ] || { echo "h96-display: $ENV not writable (run as root)" >&2; exit 1; }
+mkdir -p "$(dirname "$ENV_LOCK")"
+exec 8>"$ENV_LOCK"
+flock -w 30 8 || { echo "h96-display: $ENV busy (lock $ENV_LOCK): nothing changed" >&2; exit 1; }
+
+# capture current working mode as last-good before changing it, arm boot-once
+# trial so a bad mode self-heals (see h96-display-guard); no video= now: no lastgood,
+# guard then removes the token
+cur="$(grep -o 'video=HDMI-A-1:[^ ]*' "$ENV" | head -1 || true)"
+if [ -z "$cur" ] && ! grep -qs "^GUARD_API=[$H96_DISPLAY_API-9]" "$GUARD"; then
+  echo "h96-display: $GUARD cannot revert a trial without previous video= (older version): nothing changed" >&2
+  exit 1
+fi
+if [ -n "$cur" ]; then printf '%s\n' "$cur" > "$BOOT/h96-display.lastgood"
+else rm -f "$BOOT/h96-display.lastgood"; fi
+: > "$BOOT/h96-display.trial"
+rm -f "$BOOT/h96-display.trial.seen"
+
+# drop existing video=HDMI-A-1:... token from extraargs, append ours
+tmp="$ENV.h96display"
+awk -v vid="$VID" '
+  /^extraargs=/ { gsub(/ *video=HDMI-A-1:[^ ]*/, ""); print $0 " " vid; next }
+  { print }
+' "$ENV" > "$tmp"
+# add extraargs line if missing
+grep -q '^extraargs=' "$tmp" || echo "extraargs=rw rootwait $VID" >> "$tmp"
+replace_env "$tmp" "$ENV" || { rm -f "$tmp"; echo "h96-display: writing $ENV failed" >&2; exit 1; }
+flock -u 8
+
+echo "Set forced HDMI mode: $VID  (trial)"
+echo
+echo "Reboot now.  After it comes back up:"
+echo "  - if you can SEE the screen ->  run:  h96-display keep"
+echo "  - if the screen is BLACK     ->  power-cycle; next boot reverts to"
+echo "       ${cur:-no forced mode (display EDID)} and reboots."

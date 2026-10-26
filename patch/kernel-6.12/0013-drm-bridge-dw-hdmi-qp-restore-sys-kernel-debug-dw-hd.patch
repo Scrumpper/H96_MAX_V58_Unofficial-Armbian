@@ -1,0 +1,73 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: H96 build <builder@h96-build>
+Date: Fri, 16 Oct 2026 00:00:00 +0000
+Subject: [PATCH 13/59] drm/bridge: dw-hdmi-qp: restore
+ /sys/kernel/debug/dw-hdmi%d
+
+rkr7.2 moved the dw-hdmi-qp debugfs files under dri/<minor>/hdmi<id>.
+Published userspace tools read the rkr5.1 path dw-hdmi<id>; create a
+debugfs symlink dw-hdmi<id> -> dri/<minor>/hdmi<id> once and remove it
+with the bridge.
+
+H96 series: 6568a0fab.
+
+6.12 port: dw_hdmi_qp_register_debugfs() returns the hdmi%d dentry on
+6.12; the symlink is created before that return instead of an early
+return.
+---
+ drivers/gpu/drm/bridge/synopsys/dw-hdmi-qp.c | 14 ++++++++++++++
+ 1 file changed, 14 insertions(+)
+
+diff --git a/drivers/gpu/drm/bridge/synopsys/dw-hdmi-qp.c b/drivers/gpu/drm/bridge/synopsys/dw-hdmi-qp.c
+index b25aad82a..d2f2c566a 100644
+--- a/drivers/gpu/drm/bridge/synopsys/dw-hdmi-qp.c
++++ b/drivers/gpu/drm/bridge/synopsys/dw-hdmi-qp.c
+@@ -6,6 +6,7 @@
+  */
+ #include <linux/bitfield.h>
+ #include <linux/clk.h>
++#include <linux/debugfs.h>
+ #include <linux/delay.h>
+ #include <linux/dma-mapping.h>
+ #include <linux/dw_hdcp_notify.h>
+@@ -406,6 +407,8 @@ struct dw_hdmi_qp {
+ 
+ 	bool cec_sink_pa_read;		/* cec_sink_pa cached until the next HPD event */
+ 	u16 cec_sink_pa;
++
++	struct dentry *debugfs_compat;	/* /sys/kernel/debug/dw-hdmi%d symlink */
+ };
+ 
+ /* drm_edid_block_valid() is static on 6.12: header (base block) and checksum */
+@@ -4986,6 +4989,7 @@ static const struct file_operations dw_hdmi_status_fops = {
+ struct dentry *dw_hdmi_qp_register_debugfs(struct dw_hdmi_qp *hdmi)
+ {
+ 	u8 buf[11];
++	char link[16], target[32];
+ 	struct dentry *debugfs_dir;
+ 
+ 	snprintf(buf, sizeof(buf), "hdmi%d", hdmi->plat_data->id);
+@@ -4998,6 +5002,14 @@ struct dentry *dw_hdmi_qp_register_debugfs(struct dw_hdmi_qp *hdmi)
+ 	debugfs_create_file("status", 0400, debugfs_dir, hdmi, &dw_hdmi_status_fops);
+ 	debugfs_create_file("ctrl", 0600, debugfs_dir, hdmi, &dw_hdmi_ctrl_fops);
+ 
++	/* rkr5.1 path dw-hdmi%d, read by published userspace tools */
++	if (IS_ERR_OR_NULL(hdmi->debugfs_compat)) {
++		snprintf(link, sizeof(link), "dw-hdmi%d", hdmi->plat_data->id);
++		snprintf(target, sizeof(target), "dri/%d/hdmi%d",
++			 hdmi->bridge.dev->primary->index, hdmi->plat_data->id);
++		hdmi->debugfs_compat = debugfs_create_symlink(link, NULL, target);
++	}
++
+ 	return debugfs_dir;
+ }
+ EXPORT_SYMBOL_GPL(dw_hdmi_qp_register_debugfs);
+@@ -5476,6 +5488,8 @@ static struct dw_hdmi_qp *dw_hdmi_qp_probe(struct platform_device *pdev,
+ 
+ static void dw_hdmi_qp_remove(struct dw_hdmi_qp *hdmi)
+ {
++	debugfs_remove(hdmi->debugfs_compat);
++	hdmi->debugfs_compat = NULL;
+ 	cancel_delayed_work_sync(&hdmi->unmute_work);
+ 	cancel_work_sync(&hdmi->flt_work);
+ 	flush_workqueue(hdmi->workqueue);

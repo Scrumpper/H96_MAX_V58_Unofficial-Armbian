@@ -1,0 +1,16 @@
+Source: h96-audio
+Section: sound
+Priority: optional
+Maintainer: Scrumpper <190908034+Scrumpper@users.noreply.github.com>
+Rules-Requires-Root: no
+Standards-Version: 4.7.0
+
+Package: h96-audio
+Architecture: all
+Multi-Arch: foreign
+Depends: h96-base (= 8.0.0~r39), rfkill, python3
+Recommends: pipewire, wireplumber, bluez
+Description: H96 MAX V58 audio: PipeWire, WirePlumber, HDMI audio, Bluetooth
+ ALSA and card profile files, PipeWire and WirePlumber drop-ins, EQ presets,
+ HDMI audio detection and route sync, passthrough tool (EXPERIMENTAL),
+ Bluetooth attach, SCO, policy and speaker tools.

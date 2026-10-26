@@ -1,0 +1,83 @@
+#!/bin/bash
+# h96-wifi-diag: one-shot wifi evidence collector for H96 Max V58
+# wlan0 uses standalone h96-wpa-supplicant-wlan0.service, not NetworkManager
+# (see /etc/NetworkManager/conf.d/99-h96-wlan0-unmanaged.conf); targets wpa_cli accordingly
+
+# shared block-letter header; stub avoids command-not-found when banner.sh is missing
+[ -r /usr/lib/h96/banner.sh ] && . /usr/lib/h96/banner.sh
+command -v h96_banner >/dev/null 2>&1 || h96_banner() { :; }
+
+set -u
+
+case "${1:-}" in
+  -h|--help) echo "usage: h96-wifi-diag   read-only Wi-Fi report (driver, supplicant, link, logs); run with sudo for full output"; exit 0 ;;
+esac
+
+h96_banner "W I F I   D I A G N O S T I C S"
+
+IFACE="${H96_WIFI_IFACE:-wlan0}"
+WPACLI="wpa_cli -i $IFACE"
+sec() { printf '\n===== %s =====\n' "$1"; }
+
+sec "image"
+cat /etc/armbian-release 2>/dev/null | grep -E "^(VERSION|BOARD_NAME)="
+uname -a
+
+sec "driver / module"
+lsmod | grep -Ei "bcmdhd|brcmfmac|dhd" || echo "(no bcmdhd/brcmfmac module loaded)"
+modinfo bcmdhd 2>/dev/null | grep -E "^(filename|version|vermagic):"
+cat /etc/modprobe.d/h96-wifi.conf 2>/dev/null
+
+sec "who is driving wlan0"
+systemctl is-active h96-wpa-supplicant-wlan0.service h96-dhcpcd-wlan0.service 2>&1
+nmcli -f DEVICE,STATE dev 2>/dev/null | grep -E "$IFACE|DEVICE"
+
+sec "interface"
+ip -br a show "$IFACE" 2>&1
+iw dev "$IFACE" info 2>&1
+iw dev "$IFACE" link 2>&1
+
+sec "driver capabilities (AKM suites the driver admits to)"
+iw list 2>/dev/null | grep -iE "Supported Ciphers|WPA|SAE|Device supports|management frame protection|MFP" | sed 's/^\s*/  /'
+
+sec "regulatory domain"
+iw reg get 2>&1 | head -12
+
+sec "access points in range (RSN/AKM is what matters)"
+$WPACLI scan >/dev/null 2>&1; sleep 3
+$WPACLI scan_results 2>&1
+
+sec "known networks"
+$WPACLI list_networks 2>&1
+
+sec "wpa_supplicant status"
+$WPACLI status 2>&1
+
+sec "wpa_supplicant log (last 120 lines)"
+journalctl -u h96-wpa-supplicant-wlan0.service --no-pager -n 120 2>&1 | tail -120
+
+sec "dhcpcd log (last 60 lines)"
+journalctl -u h96-dhcpcd-wlan0.service --no-pager -n 60 2>&1 | tail -60
+
+sec "kernel wifi messages"
+dmesg 2>/dev/null | grep -iE "dhd|bcmdhd|wlan|brcm|cfg80211" | tail -60
+
+sec "reading the result"
+cat <<'NOTE'
+  Use h96-wifi-connect (or the WiFi tray icon) to (re)join a network — it
+  forces the specific combination proven to associate on this driver: plain
+  single-AKM WPA-PSK with PMF off.
+
+  reason=23 / "4-Way Handshake failed - pre-shared key may be incorrect"
+  IMMEDIATELY after association, with a password verified correct
+      -> this is the exact bug h96-wifi-connect works around (NetworkManager's
+         own D-Bus-driven wpa_supplicant control never completes a handshake
+         on this driver; a directly-invoked wpa_supplicant does). If you're
+         seeing this via any path OTHER than h96-wifi-connect / the tray icon,
+         switch to that.
+  CTRL-EVENT-ASSOC-REJECT status_code=1 ("unspecified failure")
+      -> seen on WPA2/WPA3-transition-mode (dual-AKM, PSK+SAE) access points.
+         h96-wifi-connect's forced single-AKM WPA-PSK avoids this; if it still
+         happens through that path, it's a new access point type worth
+         reporting.
+NOTE

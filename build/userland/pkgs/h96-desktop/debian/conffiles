@@ -1,0 +1,9 @@
+/etc/apt/apt.conf.d/99-h96-desktop-cleanup
+/etc/lightdm/lightdm.conf.d/60-h96-greeter.conf
+/etc/systemd/system/gdm.service.d/zz-h96-handoff.conf
+/etc/systemd/system/h96-power-profiles.service.d/zz-h96-after-hwopt.conf
+/etc/systemd/system/sddm.service.d/zz-h96-handoff.conf
+/etc/systemd/user/psd-resync.service.d/10-h96-not-root.conf
+/etc/systemd/user/psd.service.d/10-h96-not-root.conf
+/etc/xdg/autostart/h96-display-session.desktop
+/etc/xdg/ddcutil/ddcutilrc

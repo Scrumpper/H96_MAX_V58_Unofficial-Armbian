@@ -1,0 +1,17 @@
+[Unit]
+Documentation=file:/usr/share/doc/h96-base/COMMANDS.md
+Description=H96 Max V58 GNOME auto-configure (runs once after gdm3 install)
+ConditionPathExists=!/var/lib/h96-gnome-configure-done
+# Guards on /usr/sbin/gdm3 so a headless first boot cannot pull in gnome-shell/gdm3 through h96-desktop-fixup.sh --gnome; mirrors the KDE guard on /usr/bin/plasmashell. systemd ANDs conditions, so the done-flag check above still applies.
+ConditionPathExists=/usr/sbin/gdm3
+
+[Service]
+Type=oneshot
+ExecStart=/usr/lib/h96/h96-gnome-configure.sh
+ExecStartPost=-/usr/bin/systemctl stop h96-gnome-configure.path
+RemainAfterExit=yes
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

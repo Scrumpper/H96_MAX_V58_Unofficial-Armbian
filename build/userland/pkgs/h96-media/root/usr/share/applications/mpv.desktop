@@ -1,0 +1,8 @@
+# H96: hides Ubuntu mpv package menu entry; "Play in mpv (hardware video)" (mpv-hwvideo.desktop) runs same /usr/bin/mpv
+[Desktop Entry]
+Type=Application
+Name=mpv Media Player
+TryExec=mpv
+Exec=play-with-mpv --player-operation-mode=pseudo-gui -- %U
+Terminal=false
+NoDisplay=true

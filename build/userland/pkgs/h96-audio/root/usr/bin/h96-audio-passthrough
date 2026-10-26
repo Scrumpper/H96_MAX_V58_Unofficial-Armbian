@@ -1,0 +1,1602 @@
+#!/usr/bin/env bash
+# h96-audio-passthrough -- multichannel LPCM and AC-3 passthrough over HDMI
+# for the H96 Max V58 (RK3588, dw-hdmi-qp HDMI-TX audio).
+#
+# WHAT THIS DOES
+#   Routes mpv audio out over the HDMI-TX port to a TV / AVR / soundbar.
+#     lpcm       Multichannel uncompressed PCM 5.1 / 7.1. mpv decodes on-box
+#                and sends discrete channels over HDMI. (--audio-channels)
+#     bitstream  AC-3 (IEC61937) through PipeWire, off by default. Needs a kernel
+#                with the IEC958 channel-status fix (symbol dw_hdmi_qp_i2s_prepare)
+#                and `codecs on`. DTS / E-AC-3 / TrueHD not offered.
+#
+# HOW IT WORKS
+#   mpv config is kept in a managed marker block in /etc/mpv/mpv.conf that just
+#   `include`s /etc/mpv/passthrough.conf. This tool regenerates that fragment
+#   per mode + device and adds/removes the include block. `off` reverts mpv to
+#   its base (stereo / PipeWire) config.
+#
+# SUBCOMMANDS
+#   status              (default) detected HDMI device, mode, mpv + PW state
+#   devices             list ALSA HDMI/IEC958 PCMs and PipeWire HDMI sinks
+#   bitstream [DEV]     AC-3 passthrough through PipeWire (kernel fix + codecs on; never hw:)
+#   lpcm [DEV] [CH]     enable multichannel LPCM (CH default = best detected layout)
+#   off                 disable passthrough, revert mpv to base config
+#   set-device DEV      persist the HDMI ALSA device to use
+#   codecs on|off       advertise AC3 on PipeWire HDMI node (on refused without kernel fix)
+#   test                silent probe: mpv spdif, hw_params per layout, PW node
+#   detect [OPTS]       read display EDID over DDC: kernel modes + audio it supports
+#   display ACT         revert | native | status (mode through KDE)
+#   route-sync          HDMI route codecs = advertised list (saved route matches node; user unit at WirePlumber start)
+#
+# DETECT (= h96-display detect; unified video + audio detection)
+#   Kernel sees only forced EDID (drm.edid_firmware), so display / receiver EDID
+#   is read over DDC (adapter 'i2c-ddc') by /usr/lib/h96/edid_audio.py +
+#   edid_merge.py. detect then:
+#     1. builds display block 0 + CTA block rewritten for RGB 8-bit, modes <= 600 MHz,
+#        progressive only, with sink Audio + Speaker Allocation blocks; test-loads it
+#        into DRM under a throwaway name first (drm.edid_firmware + edid_override reset
+#        + connector re-detect) and only on a verified reload renames it onto
+#        /lib/firmware/edid/h96-sink-audio.bin (atomic, same directory) -- a kernel-
+#        rejected merge never reaches that file. Makes X re-probe. No modeset, no
+#        'force': KDE applies its own mode choice.
+#     2. sets dw_hdmi_qp cec_phys_addr to sink HDMI VSDB physical address.
+#     3. writes ACP profile set /etc/alsa-card-profile/mixer/profile-sets/
+#        h96-hdmi.conf: Digital Stereo / Surround 5.1 / Surround 7.1 (HDMI),
+#        only layouts sink supports (KDE tray + System Settings Profile list).
+#     4. writes 51-h96-iec958.conf: iec958.codecs = PCM; PCM AC3 when codecs on, kernel
+#        has the IEC958 fix and sink lists AC-3.
+#     5. restarts WirePlumber for logged-in users only when audio changed,
+#        keeping default sink and HDMI volume.
+#     6. boot args (DVI profile, gate file display-bootargs-sync.on): DVI display read
+#        over DDC -> image-default drm.edid_firmware + video= dropped from armbianEnv.txt
+#        (kernel reads display EDID at boot); HDMI display puts back only those tokens.
+#   KDE remembers modes per display (kernel EDID is byte-stable per display and tier).
+#   DVI sink (no CTA block) -> its own block 0 (DVI signal), no HDMI audio.
+#   EDID unreadable -> forced 1080p EDID, stereo, no passthrough. Runs at boot
+#   (h96-hdmi-audio-detect.service) and on HDMI hotplug for a new display (h96-hdmi-hotplug).
+#
+# DEV is an ALSA PCM name such as  hdmi:CARD=rockchiphdmi0,DEV=0  (see `devices`).
+# If omitted, the persisted device (set-device) or an auto-detected HDMI PCM
+# is used.
+#
+# Deployed to /usr/bin/h96-audio-passthrough.
+
+set -uo pipefail
+
+[ -r /usr/lib/h96/banner.sh ] && . /usr/lib/h96/banner.sh
+command -v h96_banner >/dev/null 2>&1 || h96_banner() { :; }
+
+MPV_CONF="${H96_MPV_CONF:-/etc/mpv/mpv.conf}"
+FRAG="${H96_PT_FRAG:-/etc/mpv/passthrough.conf}"
+STATE="${H96_PT_STATE:-/etc/h96/audio-passthrough.state}"
+WP_CONF="/etc/wireplumber/wireplumber.conf.d/51-h96-iec958.conf"
+
+BEGIN='# >>> h96-audio-passthrough >>>'
+END='# <<< h96-audio-passthrough <<<'
+
+# detect
+EDID_LIB="${H96_EDID_LIB:-/usr/lib/h96/edid_audio.py}"
+HDMI_CARD="rockchiphdmi0"
+HDMI_HW="hw:CARD=$HDMI_CARD,DEV=0"
+FORCED_EDID="${H96_FORCED_EDID:-/lib/firmware/edid/h96-1080p-audio.bin}"  # cmdline drm.edid_firmware, stereo
+SINK_EDID_REL="${H96_SINK_EDID_REL:-edid/h96-sink-audio.bin}"
+SINK_EDID="${H96_SINK_EDID:-/lib/firmware/$SINK_EDID_REL}"
+PROFILE_SET="/etc/alsa-card-profile/mixer/profile-sets/h96-hdmi.conf"
+SINK_JSON="${H96_SINK_JSON:-/etc/h96/hdmi-sink.json}"
+CODECS_OFF_FLAG="${H96_CODECS_OFF_FLAG:-/etc/h96/audio-passthrough.codecs-off}"  # v7.0 legacy: no effect
+CODECS_ON_FLAG="${H96_CODECS_ON_FLAG:-/etc/h96/audio-passthrough.codecs-on}"     # opt-in (empty file)
+PT_SYM="dw_hdmi_qp_i2s_prepare"   # kernel IEC958 channel-status fix (v7.1 patch 0001)
+DRM_CONN="${H96_DRM_CONN:-/sys/class/drm/card0-HDMI-A-1}"
+DRM_PARAM="${H96_DRM_PARAM:-/sys/module/drm/parameters/edid_firmware}"
+DRM_OVERRIDE="${H96_DRM_OVERRIDE:-/sys/kernel/debug/dri/0/HDMI-A-1/edid_override}"
+CEC_PHYS_PARAM="${H96_CEC_PHYS_PARAM:-/sys/module/dw_hdmi_qp/parameters/cec_phys_addr}"
+DW_STATUS="${H96_DW_STATUS:-/sys/kernel/debug/dw-hdmi0/status}"  # "Mode: HDMI|DVI" = live link
+FB_BLANK="${H96_FB_BLANK:-/sys/class/graphics/fb0/blank}"
+PGREP="${H96_PGREP:-pgrep}"
+X_AUTH="/var/run/lightdm/root/:0"            # X server auth (greeter and session)
+DETECT_LOCK="/run/h96-audio-detect.lock"     # shared with h96-cec phys-addr
+SCDC_BIN="/usr/sbin/h96-scdc"
+NOLOCK="/etc/h96/display-nolock"             # "display_md5 kHz WxH@HZ": h96-scdc saw no lock
+AUTODETECT_OFF="${H96_AUTODETECT_OFF:-/etc/h96/display-autodetect.off}"
+EDID_REAL_FLAG="${H96_EDID_REAL:-/etc/h96/display-edid-real}"   # display EDID as kernel EDID (off)
+# boot args (DVI profile); H96_* overrides = selftest sandbox
+BOOT_ENV="${H96_BOOT_ENV:-/boot/armbianEnv.txt}"
+DVI_PROFILE="${H96_DVI_PROFILE:-/etc/h96/display-dvi-profile}"        # tokens the sync removed
+FORCED_MODE="${H96_FORCED_MODE:-/etc/h96/display-forced-mode}"        # video= kept by h96-display keep
+BOOTARGS_ON="${H96_BOOTARGS_SYNC_ON:-/etc/h96/display-bootargs-sync.on}"  # gate: absent = no drop
+ENV_LOCK="${H96_ENV_LOCK:-/run/lock/h96-armbianenv.lock}"             # shared armbianEnv writer lock
+FINDMNT="${H96_FINDMNT:-findmnt}"
+IMG_EDID_TOK="drm.edid_firmware=HDMI-A-1:edid/h96-sink-audio.bin"
+IMG_VIDEO_TOK="video=HDMI-A-1:1920x1080@60"
+HDMI20_OFF="/etc/h96/display-hdmi20.off"      # hdmi20 (600 MHz tier + h96-scdc) default on
+SAFE_PREF="1920x1080@60"
+WP_PENDING="/run/h96-audio-detect.wp-pending"
+HOTPLUG_STATE="/run/h96-audio-detect.last"    # debounce: "TS HASH" of last hotplug run
+HOTPLUG_DEBOUNCE=5                            # seconds; same EDID hash inside this window = skip
+HDMI_NODE_RE='^alsa_output\.platform-hdmi0-sound\.'
+
+# Sink EDID (detect) lists which compressed codecs the sink accepts. Only AC3 is
+# advertised, and only with codecs on + kernel fix; DTS/EAC3 untested (no AVR);
+# TrueHD/DTS-HD need HBR/MAT, unverified on this stack.
+
+err()  { printf '%s\n' "$*" >&2; }
+have() { command -v "$1" >/dev/null 2>&1; }
+
+# mpv_check: 0 when mpv starts; otherwise MPV_ERR holds the reason
+mpv_check() {
+  MPV_ERR=""
+  have mpv || { MPV_ERR="mpv is not installed"; return 1; }
+  local out rc miss
+  out=$(timeout 15 mpv --no-config --version 2>&1); rc=$?
+  [ "$rc" -eq 0 ] && return 0
+  miss=$(ldd "$(command -v mpv)" 2>/dev/null | awk '/not found/{printf "%s ", $1}')
+  MPV_ERR="mpv does not start (exit $rc): $(printf '%s\n' "$out" | grep -m1 .)"
+  [ -n "$miss" ] && MPV_ERR="$MPV_ERR; missing libraries: ${miss% }"
+  MPV_ERR="$MPV_ERR; video setup log: /var/log/h96-video-setup.log"
+  return 1
+}
+
+need_root() {
+  if [ "$(id -u)" -ne 0 ]; then
+    err "This action changes system config; re-run as root (sudo $0 $*)."
+    exit 1
+  fi
+}
+
+# ---------------------------------------------------------------- state I/O
+# best layout last detect found (stereo when never detected / EDID unreadable)
+detected_channels() {
+  local c=""
+  [ -r "$SINK_JSON" ] && c="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["mpv_channels"].split(",")[0])' "$SINK_JSON" 2>/dev/null)"
+  printf '%s\n' "${c:-stereo}"
+}
+
+STATE_MODE="off"; STATE_DEVICE=""; STATE_CHANNELS=""
+load_state() {
+  STATE_CHANNELS="$(detected_channels)"
+  [ -r "$STATE" ] || return 0
+  # shellcheck disable=SC1090
+  . "$STATE" 2>/dev/null || true
+  STATE_MODE="${MODE:-off}"
+  STATE_DEVICE="${DEVICE:-}"
+  STATE_CHANNELS="${CHANNELS:-$STATE_CHANNELS}"
+}
+save_state() {
+  mkdir -p "$(dirname "$STATE")"
+  {
+    echo "# h96-audio-passthrough state -- managed file, edited by the tool."
+    echo "MODE=$1"
+    echo "DEVICE=\"$2\""
+    echo "CHANNELS=\"$3\""
+  } > "$STATE.h96new" && mv -f "$STATE.h96new" "$STATE"
+}
+
+# ---------------------------------------------------------------- discovery
+# Emit candidate HDMI PCM names, best first, one per line.
+# Prefers hdmi:CARD=... (does IEC958 status bits + channel map), then
+# iec958:CARD=..., then a raw hw: fallback derived from the card index.
+list_hdmi_pcms() {
+  if have aplay; then
+    aplay -L 2>/dev/null | grep -E '^(hdmi|iec958):CARD=' || true
+  fi
+  # raw hw: fallback from /proc/asound/cards -- match card whose id/name mentions hdmi
+  if [ -r /proc/asound/cards ]; then
+    awk '
+      /^[ ]*[0-9]+ \[/ {
+        idx=$1; name=$0
+        # id is the token inside [ ]
+        gsub(/^[ ]*[0-9]+ \[/,"",name); sub(/\].*/,"",name); gsub(/ /,"",name)
+        line=$0
+      }
+      tolower($0) ~ /hdmi/ && idx!="" {
+        if (!seen[idx]++) print "hw:" idx ",0   (card " idx " " name ")"
+      }
+    ' /proc/asound/cards 2>/dev/null | sed 's/  *(card.*)//'
+  fi
+}
+
+# The single best default PCM name (no annotations).
+detect_device() {
+  local d
+  d="$(list_hdmi_pcms | head -n1)"
+  # strip any trailing annotation
+  printf '%s\n' "$d" | awk '{print $1}'
+}
+
+# Resolve the device to use: explicit arg > persisted > auto.
+resolve_device() {
+  local arg="${1:-}"
+  if [ -n "$arg" ]; then printf '%s\n' "$arg"; return 0; fi
+  load_state
+  if [ -n "$STATE_DEVICE" ]; then printf '%s\n' "$STATE_DEVICE"; return 0; fi
+  detect_device
+}
+
+# ---------------------------------------------------------------- mpv block
+strip_block() {
+  # remove the managed marker block from mpv.conf (if present)
+  [ -f "$MPV_CONF" ] || return 0
+  if grep -qF "$BEGIN" "$MPV_CONF" 2>/dev/null; then
+    sed -i "/$(printf '%s' "$BEGIN" | sed 's/[][\.*^$/]/\\&/g')/,/$(printf '%s' "$END" | sed 's/[][\.*^$/]/\\&/g')/d" "$MPV_CONF"
+    # trailing blank lines go too (add_block writes one before the block)
+    sed -i -e :a -e '/^\n*$/{$d;N;ba' -e '}' "$MPV_CONF"
+  fi
+}
+
+add_block() {
+  mkdir -p "$(dirname "$MPV_CONF")"
+  [ -f "$MPV_CONF" ] || : > "$MPV_CONF"
+  strip_block
+  # drop trailing blank lines then append the block
+  printf '\n%s\n' "$BEGIN" >> "$MPV_CONF"
+  printf 'include=%s\n' "$FRAG" >> "$MPV_CONF"
+  printf '%s\n' "$END" >> "$MPV_CONF"
+}
+
+write_frag_lpcm() {
+  local dev="$1" ch="$2" chain
+  case "$ch" in 7.1) chain="7.1,5.1,stereo" ;; 5.1) chain="5.1,stereo" ;; *) chain="stereo" ;; esac
+  mkdir -p "$(dirname "$FRAG")"
+  cat > "$FRAG" <<EOF
+# /etc/mpv/passthrough.conf -- managed by h96-audio-passthrough (mode: lpcm)
+# Edits here are overwritten on the next enable/disable. Included by mpv.conf
+# only while passthrough is ON.
+#
+# Multichannel uncompressed LPCM over HDMI. mpv decodes on-box and sends
+# discrete channels to the receiver. Falls back down the channel list if the
+# sink/ELD cannot take the top layout. Top layout = 'detect' result.
+# mpv opens HDMI PCM directly: stop other HDMI playback (PipeWire HDMI sink
+# busy -> ALSA open fails).
+ao=alsa,pipewire
+audio-device=alsa/$dev
+audio-exclusive=yes
+audio-channels=$chain
+# no audio-spdif: send PCM, let the receiver render the speaker layout.
+EOF
+}
+
+write_frag_bitstream() {
+  mkdir -p "$(dirname "$FRAG")"
+  cat > "$FRAG" <<EOF
+# /etc/mpv/passthrough.conf -- managed by h96-audio-passthrough (mode: bitstream)
+# Edits here are overwritten on the next enable/disable. Included by mpv.conf
+# only while passthrough is ON.
+#
+# AC-3 passthrough through PipeWire (HDMI sink advertises iec958.codecs PCM AC3).
+# Plays on the default sink: HDMI must be the default output. Other codecs and
+# non-AC-3 sinks: mpv decodes to PCM. Passthrough bypasses software volume: TV or
+# receiver volume is the only volume control.
+ao=pipewire
+audio-spdif=ac3
+EOF
+}
+
+# ---------------------------------------------------------------- pipewire
+# Run a command as desktop user UID (pactl / systemctl --user need session env).
+as_user() {
+  local uid="$1"; shift
+  local user; user="$(id -nu "$uid" 2>/dev/null)" || return 1
+  if [ "$(id -u)" -eq "$uid" ]; then
+    XDG_RUNTIME_DIR="/run/user/$uid" "$@"
+  else
+    runuser -u "$user" -- env XDG_RUNTIME_DIR="/run/user/$uid" \
+      DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$uid/bus" "$@"
+  fi
+}
+
+hdmi_sink_of() {   # first HDMI-TX sink name for UID
+  as_user "$1" pactl list short sinks 2>/dev/null | awk '{print $2}' | grep -E "$HDMI_NODE_RE" | head -n1
+}
+
+# Advertised codecs from 51-h96-iec958.conf, space separated (PCM AC3); empty without the file.
+wp_codecs() {
+  sed -n 's/.*iec958\.codecs = \[\([^]]*\)\].*/\1/p' "${H96_WP_CONF:-$WP_CONF}" 2>/dev/null | head -n1 | tr -d '",' | xargs
+}
+
+# HDMI card Output route for UID: "<device id> <route index> <route device> <codecs>" (codecs comma separated).
+hdmi_route_of() {
+  as_user "$1" pw-dump 2>/dev/null | python3 -c '
+import json, sys
+try:
+    objs = json.load(sys.stdin)
+except ValueError:
+    sys.exit(0)
+for o in objs:
+    info = o.get("info") or {}
+    if (info.get("props") or {}).get("device.name") != "alsa_card.platform-hdmi0-sound":
+        continue
+    for r in (info.get("params") or {}).get("Route", []):
+        if r.get("direction") == "Output":
+            c = (r.get("props") or {}).get("iec958Codecs") or []
+            print(o["id"], r["index"], r["device"], ",".join(c) or "-")
+            sys.exit(0)
+'
+}
+
+# Saved HDMI route keeps the codecs the node advertises (ACP seeds it from the sink ELD).
+route_sync_uid() {
+  local uid="$1" want have id idx dev i
+  want="$(wp_codecs)"
+  [ -n "$want" ] || return 0
+  for i in $(seq 1 20); do
+    read -r id idx dev have <<<"$(hdmi_route_of "$uid")"
+    [ -n "${id:-}" ] && break
+    sleep 0.5
+  done
+  [ -n "${id:-}" ] || { echo "  uid $uid: no HDMI route (no HDMI card or sink)"; return 0; }
+  [ "$have" = "${want// /,}" ] && { echo "  uid $uid: HDMI route codecs already $want"; return 0; }
+  as_user "$uid" pw-cli set-param "$id" Route \
+    "{ index: $idx, device: $dev, props: { iec958Codecs: [ $want ] }, save: true }" >/dev/null 2>&1 \
+    || { err "uid $uid: HDMI route codecs not set"; return 1; }
+  echo "  uid $uid: HDMI route codecs $have -> $want"
+}
+
+# route-sync: own session as a user; every running desktop session as root.
+cmd_route_sync() {
+  local rd uid
+  if [ "$(id -u)" -ne 0 ]; then route_sync_uid "$(id -u)"; return; fi
+  for rd in /run/user/[0-9]*; do
+    uid="${rd##*/}"
+    [ "$uid" -ge 1000 ] 2>/dev/null && [ -S "$rd/pipewire-0" ] || continue
+    route_sync_uid "$uid"
+  done
+  return 0
+}
+
+# Restart WirePlumber in every running desktop session. HDMI sink name changes
+# with ACP profile (hdmi-stereo / hdmi-surround71), so default sink and HDMI
+# volume are read before and put back after. Bluetooth default is untouched.
+# Profile set without mappings (DVI sink): no HDMI sink; WirePlumber picks another default.
+wp_reload() {
+  local rd uid old_def old_sink old_vol new i done_any=0 want_hdmi=1
+  grep -q '^\[Mapping' "$PROFILE_SET" 2>/dev/null || want_hdmi=0
+  for rd in /run/user/[0-9]*; do
+    uid="${rd##*/}"
+    [ "$uid" -ge 1000 ] 2>/dev/null || continue
+    [ -S "$rd/pipewire-0" ] || continue
+    as_user "$uid" systemctl --user is-active --quiet wireplumber || continue
+    old_def="$(as_user "$uid" pactl get-default-sink 2>/dev/null)"
+    old_sink="$(hdmi_sink_of "$uid")"
+    old_vol=""
+    [ -n "$old_sink" ] && old_vol="$(as_user "$uid" pactl get-sink-volume "$old_sink" 2>/dev/null \
+      | grep -oE '[0-9]+%' | head -n1)"
+    as_user "$uid" systemctl --user restart wireplumber || { err "wireplumber restart failed (uid $uid)"; continue; }
+    if [ "$want_hdmi" -eq 0 ]; then
+      sleep 2
+      echo "  WirePlumber restarted for uid $uid (no HDMI audio: DVI sink; default sink:" \
+           "$(as_user "$uid" pactl get-default-sink 2>/dev/null || true))"
+      done_any=1
+      continue
+    fi
+    new=""
+    for i in $(seq 1 20); do
+      sleep 0.5
+      new="$(hdmi_sink_of "$uid")"
+      [ -n "$new" ] && break
+    done
+    if [ -z "$new" ]; then
+      err "!! uid $uid: no HDMI sink after WirePlumber restart (check: pactl list cards)"
+      continue
+    fi
+    if printf '%s\n' "$old_def" | grep -qE "$HDMI_NODE_RE" && [ "$old_def" != "$new" ]; then
+      as_user "$uid" pactl set-default-sink "$new" && echo "  default sink kept on HDMI: $new"
+    fi
+    [ -n "$old_vol" ] && as_user "$uid" pactl set-sink-volume "$new" "$old_vol"
+    echo "  WirePlumber restarted for uid $uid (HDMI sink: $new)"
+    route_sync_uid "$uid"
+    done_any=1
+  done
+  [ "$done_any" -eq 1 ] || echo "  no running desktop session: new config applies at next login"
+  return 0
+}
+
+# Kernel capability: IEC958 channel status applied at prepare (patch 0001). Name lookup
+# works for any user; H96_KALLSYMS honoured only in self-test mode.
+pt_kernel_ok() {
+  local ks=/proc/kallsyms
+  [ "${H96_SELFTEST:-0}" = 1 ] && [ -n "${H96_KALLSYMS:-}" ] && ks="$H96_KALLSYMS"
+  awk -v s="$PT_SYM" '$3 == s {f = 1; exit} END {exit !f}' "$ks" 2>/dev/null
+}
+
+# 0 = detect passes --codecs-on (flag set and kernel capable)
+pt_codecs_enabled() { [ -e "$CODECS_ON_FLAG" ] && pt_kernel_ok; }
+
+# AC-3 bitstream gate: 0 = allowed, else prints reason
+bitstream_gate() {
+  pt_kernel_ok || { echo "running kernel lacks HDMI IEC958 channel-status fix ($PT_SYM)"; return 1; }
+  [ -e "$CODECS_ON_FLAG" ] || { echo "codecs off (sudo h96-audio-passthrough codecs on)"; return 1; }
+  python3 -c 'import json,sys; sys.exit(0 if "AC3" in (json.load(open(sys.argv[1])).get("passthrough") or []) else 1)' \
+    "$SINK_JSON" 2>/dev/null || { echo "connected sink lists no AC-3 (or not detected yet)"; return 1; }
+}
+
+codecs_flags_off() { rm -f "$CODECS_ON_FLAG" "$CODECS_OFF_FLAG"; }
+
+codecs_on() {
+  if ! pt_kernel_ok; then
+    err "codecs on: running kernel lacks HDMI IEC958 channel-status fix ($PT_SYM)."
+    err "Compressed passthrough needs a kernel with that fix. Nothing changed."
+    return 1
+  fi
+  need_root "codecs on"
+  mkdir -p "$(dirname "$CODECS_ON_FLAG")"
+  : > "$CODECS_ON_FLAG"
+  rm -f "$CODECS_OFF_FLAG"
+  echo "codecs on: AC3 advertised when sink lists AC-3 (TV or receiver volume is the only limiter)"
+  cmd_detect --force-wp
+}
+
+codecs_off() {
+  need_root "codecs off"
+  codecs_flags_off
+  load_state
+  if [ "$STATE_MODE" = bitstream ]; then
+    strip_block
+    save_state off "$STATE_DEVICE" "$STATE_CHANNELS"
+    echo "bitstream mode off: mpv back on base config"
+  fi
+  echo "codecs off: PCM only"
+  cmd_detect --force-wp
+}
+
+# ---------------------------------------------------------------- detect
+# CEC physical address of sink -> dw_hdmi_qp override (belt and braces: merged EDID
+# carries sink VSDB too; audio-only mode carries forced 1.0.0.0). 0 = changed.
+set_cec_pa() {
+  local want="${1:-}" cur
+  [ -n "$want" ] && [ "$want" != None ] && [ -w "$CEC_PHYS_PARAM" ] || return 1
+  cur="$(printf '0x%04x' "$(cat "$CEC_PHYS_PARAM" 2>/dev/null || echo 0)")"
+  [ "$cur" = "$want" ] && return 1
+  echo "$((want))" > "$CEC_PHYS_PARAM" || return 1
+  echo "  CEC physical address: $cur -> $want"
+  return 0
+}
+
+# connector status write (test stand-ins replace this function)
+kstatus() { echo "$1" > "$DRM_CONN/status"; }
+kmd5() { md5sum < "$DRM_CONN/edid" | cut -c1-32; }
+# 6.3+: debugfs reset keeps connector EDID cached until a disconnected probe (6.12 vendor dw-hdmi-qp)
+k_cached() {
+  local r="${H96_KREL:-$(uname -r)}" a b
+  a="${r%%.*}"; b="${r#*.}"; b="${b%%.*}"
+  [ "$a" -gt 6 ] 2>/dev/null || { [ "$a" -eq 6 ] && [ "$b" -ge 3 ]; } 2>/dev/null
+}
+# re-probe until kernel EDID md5 = $1; cached kernel: off then detect (screen dark ~1 s, desktop sees replug)
+kreprobe() {
+  kstatus detect
+  [ "$(kmd5)" = "$1" ] && return 0
+  k_cached || return 1
+  kstatus off
+  sleep "${H96_OFF_S:-1}"
+  kstatus detect
+  [ "$(kmd5)" = "$1" ]
+}
+
+# $SINK_EDID must always exist and hold content the kernel already accepted (revert
+# target after a failed reload). Seed it from the forced (stereo) EDID the first time.
+ensure_known_good_edid() {
+  [ -s "$SINK_EDID" ] && return 0
+  mkdir -p "$(dirname "$SINK_EDID")"
+  install -m 0644 "$FORCED_EDID" "$SINK_EDID.h96new" && mv -f "$SINK_EDID.h96new" "$SINK_EDID"
+}
+
+# Load merged EDID into DRM: kernel modes, ELD (hdmi-codec channel limit + infoframe
+# speaker allocation) and CEC address follow sink. Never writes debugfs edid_override
+# content (a stored override NULL-derefs on HDMI replug in this 6.1 tree) and never
+# writes 'force'. No modeset: connector re-probe only; desktop applies its own choice.
+# New CANDIDATE content is staged under a throwaway name and test-loaded first; only a
+# kernel-accepted candidate is renamed onto $SINK_EDID (the file the boot cmdline names),
+# so a rejected merge never reaches disk. On rejection $SINK_EDID is left exactly as it
+# was (already kernel-accepted, or freshly seeded by ensure_known_good_edid above).
+# Returns 0 = reloaded (video same), 3 = reloaded (video changed), 2 = current, 1 = failed.
+# 6.12 (cached connector EDID): load through kreprobe, off then detect when plain detect keeps old EDID.
+apply_kernel_edid() {
+  local pa="${1:-}" candidate="${2:-}" want="HDMI-A-1:$SINK_EDID_REL" \
+        cur_md5 want_md5 modes_before same_video=0 edid_src edid_rel staged=0
+  if [ ! -w "$DRM_PARAM" ] || [ ! -e "$DRM_OVERRIDE" ] || [ ! -e "$DRM_CONN/status" ]; then
+    echo "  kernel EDID: DRM parameter/debugfs missing, unchanged"; return 1
+  fi
+  if [ "$(cat "$DRM_CONN/status")" != "connected" ]; then
+    echo "  kernel EDID: HDMI-A-1 not connected, unchanged"; return 1
+  fi
+  local pa_changed=0
+  set_cec_pa "$pa" && pa_changed=1
+  ensure_known_good_edid
+
+  if [ -n "$candidate" ] && ! cmp -s "$candidate" "$SINK_EDID" 2>/dev/null; then
+    edid_src="$(mktemp "${SINK_EDID}.XXXXXX")" || { err "!! kernel EDID: mktemp failed, unchanged"; return 1; }
+    install -m 0644 "$candidate" "$edid_src"
+    edid_rel="$(dirname "$SINK_EDID_REL")/$(basename "$edid_src")"
+    staged=1
+  else
+    edid_src="$SINK_EDID"
+    edid_rel="$SINK_EDID_REL"
+  fi
+
+  want_md5="$(md5sum < "$edid_src" | cut -c1-32)"
+  cur_md5="$(md5sum < "$DRM_CONN/edid" | cut -c1-32)"
+  if [ "$staged" -eq 0 ] && [ "$(cat "$DRM_PARAM")" = "$want" ] && [ "$cur_md5" = "$want_md5" ]; then
+    [ "$pa_changed" -eq 1 ] && kstatus detect
+    echo "  kernel EDID: current"; return 2
+  fi
+  # DVI profile boot (no drm.edid_firmware): kernel read same EDID over DDC, nothing to load
+  if [ "$staged" -eq 0 ] && [ -z "$(cat "$DRM_PARAM")" ] && [ "$cur_md5" = "$want_md5" ]; then
+    [ "$pa_changed" -eq 1 ] && kstatus detect
+    echo "  kernel EDID: current (read by kernel at boot)"; return 2
+  fi
+  cmp -s -n 128 "$edid_src" "$DRM_CONN/edid" && same_video=1
+  modes_before="$(cat "$DRM_CONN/modes")"
+  printf '%s' "HDMI-A-1:$edid_rel" > "$DRM_PARAM"
+  printf reset > "$DRM_OVERRIDE"   # exactly 5 bytes: "reset\n" is parsed as EDID -> EINVAL
+  kreprobe "$want_md5"
+  cur_md5="$(kmd5)"
+  local modes_now; modes_now="$(cat "$DRM_CONN/modes")"
+  if [ "$cur_md5" != "$want_md5" ] || [ -z "$modes_now" ] || \
+     { [ "$same_video" -eq 1 ] && [ "$(printf '%s\n' "$modes_now" | sort -u)" != "$(printf '%s\n' "$modes_before" | sort -u)" ]; }; then
+    err "!! kernel EDID: reload mismatch (edid md5 $cur_md5, want $want_md5; modes before $(printf '%s' "$modes_before" | sort -u | tr '\n' ' '), after $(printf '%s' "$modes_now" | sort -u | tr '\n' ' ')): back to forced EDID"
+    [ "$staged" -eq 1 ] && rm -f "$edid_src"    # candidate discarded, $SINK_EDID untouched
+    printf '%s' "HDMI-A-1:${FORCED_EDID#/lib/firmware/}" > "$DRM_PARAM"
+    printf reset > "$DRM_OVERRIDE"
+    kreprobe "$(md5sum < "$FORCED_EDID" | cut -c1-32)"
+    return 1
+  fi
+  if [ "$staged" -eq 1 ]; then
+    mv -f "$edid_src" "$SINK_EDID"    # verified content only: atomic, same directory
+    printf '%s' "$want" > "$DRM_PARAM"
+    printf reset > "$DRM_OVERRIDE"
+    kreprobe "$want_md5"
+  fi
+  if [ "$same_video" -eq 1 ]; then
+    echo "  kernel EDID: reloaded from $SINK_EDID (video unchanged)"; return 0
+  fi
+  echo "  kernel EDID: reloaded from $SINK_EDID, modes: $(sort -u "$DRM_CONN/modes" | tr '\n' ' ')"
+  return 3
+}
+
+# Real EDID mode (display-edid-real): no firmware file, no override; kernel reads display EDID over
+# DDC (6.12 ddc-i2c-bus). $1 CEC address, $2 raw DDC EDID. Returns as apply_kernel_edid; no forced fallback.
+apply_kernel_real() {
+  local pa="${1:-}" raw="${2:-}" want cur same_video=0 pa_changed=0
+  if [ ! -w "$DRM_PARAM" ] || [ ! -e "$DRM_OVERRIDE" ] || [ ! -e "$DRM_CONN/status" ]; then
+    echo "  kernel EDID: DRM parameter/debugfs missing, unchanged"; return 1
+  fi
+  if [ "$(cat "$DRM_CONN/status")" != "connected" ]; then
+    echo "  kernel EDID: HDMI-A-1 not connected, unchanged"; return 1
+  fi
+  set_cec_pa "$pa" && pa_changed=1
+  want="$(md5sum < "$raw" | cut -c1-32)"
+  cur="$(kmd5)"
+  if [ -z "$(tr -d '\0' < "$DRM_PARAM")" ] && [ "$cur" = "$want" ]; then
+    [ "$pa_changed" -eq 1 ] && kstatus detect
+    echo "  kernel EDID: current (display EDID)"; return 2
+  fi
+  cmp -s -n 128 "$raw" "$DRM_CONN/edid" && same_video=1
+  printf '\0' > "$DRM_PARAM"      # one byte: empty parameter (zero-byte write leaves it set)
+  printf reset > "$DRM_OVERRIDE"
+  if ! kreprobe "$want"; then
+    err "!! kernel EDID: display EDID not loaded (kernel md5 $(kmd5), DDC md5 $want)"
+    return 1
+  fi
+  if [ "$same_video" -eq 1 ]; then echo "  kernel EDID: display EDID (video unchanged)"; return 0; fi
+  echo "  kernel EDID: display EDID, modes: $(sort -u "$DRM_CONN/modes" | tr '\n' ' ')"
+  return 3
+}
+
+# Sysfs re-probe sends no uevent: X keeps its old mode list until asked. xrandr -q makes
+# X re-probe; mode set only when current mode and rate are no longer offered (mode set blanks
+# display), then preferred mode (--auto). Changed list still offering current mode: no mode set.
+x_reprobe() {
+  local d=:0 a="$X_AUTH"
+  if [ -r /usr/lib/h96/h96-xdisplay ] && . /usr/lib/h96/h96-xdisplay && h96_xdisplay; then
+    if [ "$H96_XD_TYPE" = wayland ]; then    # KWin re-reads connectors on DRM change event (no HOTPLUG key)
+      printf change 2>/dev/null > "${DRM_CONN%-HDMI-A-*}/uevent" && echo "  KWin re-probe requested (DRM change event)"
+      return 0
+    fi
+    [ "$H96_XD_TYPE" = x11 ] || return 0
+    d="$H96_XD_DISPLAY"; [ -n "$H96_XD_XAUTH" ] && a="$H96_XD_XAUTH"
+  fi
+  [ -S "/tmp/.X11-unix/X${d#:}" ] && [ -r "$a" ] && have xrandr || return 0
+  local q b cur
+  # connected output, current mode, current rate (rate field marked *)
+  cur='/^[^ ]/{o = ($2 == "connected") ? $1 : ""; next}
+    o && /\*/{for (i = 2; i <= NF; i++) if ($i ~ /\*/) {r = $i; gsub(/[*+]/, "", r); print o, $1, r; exit}}'
+  b="$(DISPLAY="$d" XAUTHORITY="$a" timeout 10 xrandr --current 2>/dev/null | awk "$cur")"   # before probe, no probe
+  q="$(DISPLAY="$d" XAUTHORITY="$a" timeout 10 xrandr -q 2>/dev/null)" || return 0
+  echo "  X re-probed"
+  set -- $b
+  [ $# -eq 3 ] || { echo "  X: no current mode before re-probe: nothing set"; return 0; }
+  if ! printf '%s\n' "$q" | awk -v o="$1" '$1 == o && $2 == "connected" {f = 1} END {exit !f}'; then
+    echo "  X output $1 not connected after re-probe: nothing set"; return 0
+  fi
+  # mode set blanks display: only when current mode and rate left offered list
+  if printf '%s\n' "$q" | awk -v o="$1" -v m="$2" -v r="$3" '/^[^ ]/{c = ($1 == o); next}
+      c && $1 == m {for (i = 2; i <= NF; i++) {x = $i; gsub(/[*+]/, "", x); if (x == r) f = 1}} END {exit !f}'; then
+    echo "  X current mode $2 at $3 Hz still offered on $1: not set again (no blank)"
+    return 0
+  fi
+  echo "  X current mode $2 at $3 Hz no longer offered on $1"
+  if DISPLAY="$d" XAUTHORITY="$a" timeout 10 xrandr --output "$1" --auto >/dev/null 2>&1; then
+    echo "  X output $1 set to preferred mode (--auto)"
+  fi
+}
+
+# DVI sink, console link still HDMI: fb blank/unblank = one console modeset, driver
+# re-reads sink type (DVI). Skipped with a display manager/X up (it sets its own mode);
+# kernel also refuses it (EBUSY) while a DRM master is held. $1 offer.json, $2 EDID reloaded.
+console_dvi() {
+  local link
+  [ "$(jget dvi "$1")" = True ] || return 0
+  link="$(sed -n 's/.*Mode: *//p' "$DW_STATUS" 2>/dev/null | head -1)"
+  case "$link" in
+    DVI) return 0 ;;
+    HDMI) ;;
+    *) [ -n "$(cat "$DW_STATUS" 2>/dev/null)" ] && return 0   # PHY disabled
+       [ "${2:-0}" -eq 1 ] || return 0 ;;                      # link unknown: reload runs only
+  esac
+  "$PGREP" -x 'Xorg|X|Xwayland|kwin_wayland|lightdm|sddm|gdm|gdm3' >/dev/null 2>&1 && return 0
+  [ -w "$FB_BLANK" ] || return 0
+  if { echo 1 > "$FB_BLANK" && echo 0 > "$FB_BLANK"; } 2>/dev/null; then
+    echo "  console: DVI sink, console mode re-set for DVI signal"
+  else
+    echo 0 > "$FB_BLANK" 2>/dev/null || true
+  fi
+}
+
+# Open HDMI PCM with zero samples: hdmi-codec copies new ELD into its ALSA 'ELD'
+# control on open. Silent. Skipped while PipeWire holds the device.
+prime_eld() {
+  local idx
+  idx="$(awk -v c="$HDMI_CARD" '$2=="["c {print $1}' /proc/asound/cards 2>/dev/null)"
+  [ -n "$idx" ] || return 0
+  fuser "/dev/snd/pcmC${idx}D0p" >/dev/null 2>&1 && return 0
+  aplay -q -D "$HDMI_HW" -t raw -f S16_LE -r 48000 -c 2 /dev/null >/dev/null 2>&1 || true
+}
+
+# install SRC DST: copy when content differs; prints and returns 0 when changed
+install_if_changed() {
+  local src="$1" dst="$2"
+  if [ -f "$dst" ] && cmp -s "$src" "$dst"; then return 1; fi
+  mkdir -p "$(dirname "$dst")"
+  install -m 0644 "$src" "$dst.h96new" && mv -f "$dst.h96new" "$dst"
+  echo "  updated $dst"
+  return 0
+}
+
+jget() { python3 -c 'import json,sys; v=json.load(open(sys.argv[1])).get(sys.argv[2]); print("" if v is None else v)' "$2" "$1" 2>/dev/null; }
+
+# ---------------------------------------------------------------- boot args (DVI profile)
+# DVI display read over DDC: kernel can read its EDID at boot itself, so the image-default
+# drm.edid_firmware and video= tokens are dropped (console in the display's own mode from
+# kernel start). Removed tokens are listed in $DVI_PROFILE; an HDMI display (or autodetect
+# off) puts back only those. Gate $BOOTARGS_ON absent: no drop, marker restore still runs.
+
+# $1 offer.json $2 raw DDC EDID $3 apply_kernel_edid rc $4 kernel EDID file -> "class reason"
+bootargs_class() {
+  case "$3" in 0|2|3) ;; *) echo "none kernel EDID not loaded"; return ;; esac
+  [ -e "$AUTODETECT_OFF" ] && { echo "hdmi autodetect off"; return; }
+  [ "$(jget source "$1")" = edid ] || { echo "none EDID unreadable"; return; }
+  case "$(jget label "$1")" in "DDC "*) ;; *) echo "none EDID not read over DDC"; return ;; esac
+  [ "$(jget dvi "$1")" = True ] || { echo "hdmi HDMI display"; return; }
+  [ "$(jget video "$1")" = display ] || { echo "none DVI display lists no drivable mode"; return; }
+  if [ -s "$2" ] && cmp -s "$2" "$4"; then echo "dvi DVI display"
+  else echo "none DVI EDID differs from kernel EDID (extension dropped)"; fi
+}
+
+# $1 drop|restore $2 dry(0/1): token-only edit of extraargs; fsync file, rename, fsync dir
+bootenv_edit() {
+  python3 - "$1" "$2" "$BOOT_ENV" "$DVI_PROFILE" "$FORCED_MODE" "$IMG_EDID_TOK" "$IMG_VIDEO_TOK" <<'PY'
+import os
+import sys
+
+act, dry, env, prof, forced = sys.argv[1:6]
+defaults = sys.argv[6:8]
+prefix = {defaults[0]: "drm.edid_firmware=", defaults[1]: "video=HDMI-A-1:"}
+
+
+def entries(path):
+    try:
+        with open(path, encoding="utf-8", errors="surrogateescape") as f:
+            return [x.strip() for x in f if x.strip() and not x.startswith("#")]
+    except OSError:
+        return []
+
+
+def fsync_dir(path):
+    fd = os.open(os.path.dirname(os.path.abspath(path)), os.O_RDONLY)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
+def put(path, data, mode):
+    tmp = path + ".h96tmp"
+    with open(tmp, "w", encoding="utf-8", errors="surrogateescape") as f:
+        f.write(data)
+        f.flush()
+        os.fsync(f.fileno())
+    os.chmod(tmp, mode)
+    os.replace(tmp, path)
+    fsync_dir(path)
+
+
+with open(env, encoding="utf-8", errors="surrogateescape") as f:
+    lines = f.read().split("\n")
+idx = next((i for i, x in enumerate(lines) if x.startswith("extraargs=")), None)
+toks = lines[idx][len("extraargs="):].split() if idx is not None else []
+old = [t for t in entries(prof) if t in defaults]
+gone, added = [], []
+if act == "drop":
+    keep = set(entries(forced))
+    gone = [t for t in defaults if t in toks and t not in keep]
+    new = [t for t in toks if t not in gone]
+    marker = old + [t for t in gone if t not in old]
+else:
+    added = [t for t in old if not any(x.startswith(prefix[t]) for x in toks)]
+    new = toks + added
+changed = new != toks
+if changed:
+    if idx is None:
+        lines.insert(len(lines) - 1 if lines[-1] == "" else len(lines), "extraargs=" + " ".join(new))
+    else:
+        lines[idx] = "extraargs=" + " ".join(new)
+summary = ("removed " + " ".join(gone)) if gone else ("restored " + " ".join(added)) if added else "unchanged"
+if dry == "1":
+    print(f"   boot args ({act}): {summary}")
+    print("   extraargs=" + " ".join(new))
+    sys.exit(0)
+if act == "drop" and marker != old:
+    os.makedirs(os.path.dirname(prof), exist_ok=True)
+    put(prof, "# h96 boot args removed for DVI display (h96-audio-passthrough detect)\n"
+        + "".join(t + "\n" for t in marker), 0o644)
+if changed:
+    put(env, "\n".join(lines), os.stat(env).st_mode & 0o7777)
+if act == "restore" and os.path.exists(prof):
+    os.remove(prof)
+    fsync_dir(prof)
+print(summary)
+PY
+}
+
+# $1 offer.json $2 raw DDC EDID $3 apply_kernel_edid rc $4 kernel EDID file $5 dry(0/1)
+boot_args_sync() {
+  local cls why act dir out
+  if [ "${H96_SELFTEST:-0}" = 1 ]; then
+    case "$BOOT_ENV" in /boot/*) err "boot args: selftest refusing $BOOT_ENV"; return 1 ;; esac
+  fi
+  read -r cls why <<<"$(bootargs_class "$1" "$2" "$3" "$4")"
+  case "$cls" in
+    dvi)  if [ -e "$BOOTARGS_ON" ]; then act=drop; else act=restore; why="$why, sync gate off"; fi ;;
+    hdmi) act=restore ;;
+    *)    [ "${5:-0}" = 1 ] && echo "   boot args: unchanged ($why)"; return 0 ;;
+  esac
+  if [ "$act" = restore ] && [ ! -e "$DVI_PROFILE" ]; then
+    [ "${5:-0}" = 1 ] && echo "   boot args: unchanged ($why, no DVI profile)"
+    return 0
+  fi
+  [ -f "$BOOT_ENV" ] || { echo "  boot args: $BOOT_ENV missing, unchanged"; return 0; }
+  dir="$(dirname "$BOOT_ENV")"
+  if [ -e "$dir/h96-display.trial" ] || [ -e "$dir/h96-display.trial.seen" ]; then
+    echo "  boot args: forced-mode trial pending, unchanged"; return 0
+  fi
+  if [ "${5:-0}" = 1 ]; then bootenv_edit "$act" 1; return 0; fi
+  mkdir -p "$(dirname "$ENV_LOCK")"
+  out="$(
+    exec 8>"$ENV_LOCK"
+    flock -w 30 8 || { echo "lock busy, unchanged"; exit 0; }
+    # re-check under lock: guard may have reverted a trial meanwhile
+    if [ -e "$dir/h96-display.trial" ] || [ -e "$dir/h96-display.trial.seen" ]; then
+      echo "forced-mode trial pending, unchanged"; exit 0
+    fi
+    "$FINDMNT" -n -o OPTIONS --target "$dir" 2>/dev/null | grep -qE '^rw(,|$)' \
+      || { echo "$dir not mounted rw, unchanged"; exit 0; }
+    bootenv_edit "$act" 0 2>&1
+  )"
+  echo "  boot args: $out ($why)"
+  case "$out" in
+    removed*|restored*)
+      [ "${H96_SELFTEST:-0}" = 1 ] || logger -t h96-display "boot args: $out ($why)" 2>/dev/null || true ;;
+  esac
+  return 0
+}
+
+# ---------------------------------------------------------------- display (KDE)
+# Kernel EDID is byte-stable per display and tier: KDE keeps one saved config per display
+# (~/.local/share/kscreen/outputs/<kernel EDID md5>) and lists every mode; KDE's own keep
+# dialog covers mode choices. h96-scdc reverts a scrambled mode without sink lock.
+# display revert|native|status (h96-display)
+cmd_display() {
+  local act="${1:-status}" md5 name pref
+  md5="$(jget kernel_edid_md5 "$SINK_JSON")"; name="$(jget sink "$SINK_JSON")"; pref="$(jget preferred "$SINK_JSON")"
+  case "$act" in
+    status)
+      echo "display:     ${name:-unknown} (kernel EDID ${md5:-never detected})"
+      echo "video:       $(jget video "$SINK_JSON"), preferred ${pref:-?}"
+      echo "autodetect:  $([ -e "$AUTODETECT_OFF" ] && echo off || echo on)   hdmi20: $([ -e "$HDMI20_OFF" ] && echo off || echo on)"
+      [ -x "$SCDC_BIN" ] && "$SCDC_BIN" status 2>/dev/null | sed 's/^/scdc:        /'
+      [ -s "$NOLOCK" ] && sed 's/^/no lock:     /' "$NOLOCK"
+      return 0 ;;
+  esac
+  need_root "display $act"
+  case "$act" in
+    keep)   return 0 ;;   # forced-mode trial only (h96-display keep)
+    revert) "$SCDC_BIN" set-mode "$SAFE_PREF" && echo "$name: $SAFE_PREF (KDE saves it)" ;;
+    native) [ -f "$NOLOCK" ] && [ -n "$md5" ] && sed -i "/^$(jget display_md5 "$SINK_JSON") /d" "$NOLOCK"
+            "$SCDC_BIN" set-mode "$pref" && echo "$name: $pref (KDE saves it)" ;;
+    *) err "display: keep | revert | native | status"; return 1 ;;
+  esac
+}
+
+cmd_detect() {
+  local edid="" dry=0 restart=1 hotplug=0 force_wp=0 quiet=0
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --edid)       edid="${2:-}"; shift ;;
+      --dry-run|-n) dry=1 ;;
+      --no-restart) restart=0 ;;
+      --hotplug)    hotplug=1 ;;
+      --force-wp)   force_wp=1 ;;
+      --quiet|-q)   quiet=1 ;;
+      --codecs-off) ;;   # v7.0 compatibility: no effect
+      -h|--help)    usage_detect; return 0 ;;
+      *) err "detect: unknown option '$1'"; usage_detect; return 1 ;;
+    esac
+    shift
+  done
+  if [ "$dry" -eq 0 ]; then
+    need_root detect
+    # one DDC reader at a time (boot service, udev hotplug, manual run, h96-cec)
+    exec 9>"$DETECT_LOCK"
+    flock -w 60 9 || { err "detect: another detect still running"; return 1; }
+  fi
+  [ -r "$EDID_LIB" ] || { err "missing $EDID_LIB"; return 1; }
+  [ -r "$FORCED_EDID" ] || { err "missing $FORCED_EDID"; return 1; }
+  if [ -n "$edid" ] && [ ! -r "$edid" ]; then err "cannot read EDID file: $edid"; return 1; fi
+  # retired state: edid-adapt opt-in, hdmi20 opt-in, display trial and its keep tokens
+  if [ "$dry" -eq 0 ]; then
+    rm -f /etc/h96/display-autodetect.enabled /run/h96-edid-adapt.last \
+      /etc/h96/display-hdmi20.enabled /etc/h96/display-known /etc/h96/display-trial
+    rm -rf /var/lib/h96/display-confirm
+  fi
+
+  # hotplug: HPD may rise before sink EEPROM answers; unplug leaves state as is.
+  if [ "$hotplug" -eq 1 ] && [ -z "$edid" ]; then
+    local st i
+    for i in 1 2 3 4 5; do
+      st="$(cat "$DRM_CONN/status" 2>/dev/null)"
+      [ "$st" = "connected" ] && break
+      sleep 2
+    done
+    if [ "$st" != "connected" ]; then
+      echo "HDMI-A-1 disconnected: detection state unchanged."; return 0
+    fi
+    sleep 2
+  fi
+
+  local tmp; tmp="$(mktemp -d /tmp/h96-detect.XXXXXX)" || return 1
+  local plan_args=(plan --forced "$FORCED_EDID" --outdir "$tmp")
+  [ -n "$edid" ] && plan_args+=(--edid "$edid")
+  local pt_note=""
+  if [ -e "$CODECS_ON_FLAG" ]; then
+    if pt_kernel_ok; then plan_args+=(--codecs-on)
+    else pt_note="(codecs on flag set; running kernel lacks IEC958 fix: PCM only)"; fi
+  fi
+  [ -e "$AUTODETECT_OFF" ] && plan_args+=(--audio-only)
+  # H96_DISPLAY_HDMI20=on|off: h96-display trial value, flag file untouched
+  case "${H96_DISPLAY_HDMI20:-}" in
+    on) plan_args+=(--hdmi20) ;;
+    off) ;;
+    *) [ -e "$HDMI20_OFF" ] || plan_args+=(--hdmi20) ;;
+  esac
+  [ "$quiet" -eq 1 ] || h96_banner "H D M I   D E T E C T"
+  if ! python3 "$EDID_LIB" "${plan_args[@]}" > "$tmp/stdout" 2>&1; then
+    cat "$tmp/stdout" >&2; rm -rf "$tmp"; return 1
+  fi
+
+  [ "$quiet" -eq 1 ] || cat "$tmp/report.txt"
+  [ "$quiet" -eq 1 ] || [ -z "$pt_note" ] || echo "$pt_note"
+
+  # real EDID mode: kernel EDID = display EDID; offer carries its md5 (KDE identity, hotplug, h96-cec)
+  local real=0
+  if [ -e "$EDID_REAL_FLAG" ] && [ ! -e "$AUTODETECT_OFF" ] && [ -s "$tmp/sink-edid.bin" ]; then
+    real=1
+    python3 -c 'import hashlib,json,sys
+o = json.load(open(sys.argv[1])); o["kernel_edid_md5"] = hashlib.md5(open(sys.argv[2], "rb").read()).hexdigest(); o["edid"] = "real"
+open(sys.argv[1], "w").write(json.dumps(o, indent=1, sort_keys=True) + "\n")' "$tmp/offer.json" "$tmp/sink-edid.bin"
+    [ "$quiet" -eq 1 ] || echo "kernel EDID: display EDID as read (h96-display edid real)"
+  fi
+
+  # debounce: repeat hotplug triggers inside HOTPLUG_DEBOUNCE do nothing.
+  local cur_hash=""
+  cur_hash="$(jget kernel_edid_md5 "$tmp/offer.json")"
+  if [ "$hotplug" -eq 1 ] && [ "$dry" -eq 0 ] && [ -n "$cur_hash" ] && [ -r "$HOTPLUG_STATE" ]; then
+    local last_ts="" last_hash="" now; now="$(date +%s)"
+    read -r last_ts last_hash < "$HOTPLUG_STATE" 2>/dev/null
+    if [ "$cur_hash" = "$last_hash" ] && [ -n "$last_ts" ] && [ $((now - last_ts)) -lt "$HOTPLUG_DEBOUNCE" ]; then
+      [ "$quiet" -eq 1 ] || echo "debounce: same sink EDID re-detected <${HOTPLUG_DEBOUNCE}s after last run, skipping"
+      rm -rf "$tmp"; return 0
+    fi
+  fi
+
+  if [ "$dry" -eq 1 ]; then
+    echo
+    echo "-- dry run: nothing changed. Would write:"
+    echo "   kernel EDID md5: $cur_hash"
+    local f
+    for f in "$PROFILE_SET:h96-hdmi.conf" "$WP_CONF:51-h96-iec958.conf" "$SINK_EDID:h96-sink-audio.bin"; do
+      if [ -f "${f%%:*}" ] && cmp -s "$tmp/${f##*:}" "${f%%:*}"; then echo "   ${f%%:*} (unchanged)"
+      else echo "   ${f%%:*} (CHANGE)"; fi
+    done
+    echo
+    echo "-- profile set:"; grep -E '^\[Mapping|^description' "$tmp/h96-hdmi.conf" | sed 's/^/   /'
+    echo "-- iec958.codecs:"; grep -o 'iec958.codecs = \[.*\]' "$tmp/51-h96-iec958.conf" | sed 's/^/   /'
+    echo "-- boot args (assuming kernel EDID loads):"
+    boot_args_sync "$tmp/offer.json" "$tmp/sink-edid.bin" 0 "$tmp/h96-sink-audio.bin" 1
+    rm -rf "$tmp"; return 0
+  fi
+
+  echo
+  local wp_changed=0 k_changed=0 multi=0 krc
+  install_if_changed "$tmp/h96-hdmi.conf" "$PROFILE_SET" && wp_changed=1
+  install_if_changed "$tmp/51-h96-iec958.conf" "$WP_CONF" && wp_changed=1
+  # kernel EDID: staged + test-loaded by apply_kernel_edid; $SINK_EDID is only ever
+  # replaced with content the kernel already accepted (see its own comment).
+  if [ "$real" -eq 1 ]; then
+    apply_kernel_real "$(jget phys_addr_hex "$tmp/offer.json")" "$tmp/sink-edid.bin"; krc=$?
+  else
+    apply_kernel_edid "$(jget phys_addr_hex "$tmp/offer.json")" "$tmp/h96-sink-audio.bin"; krc=$?
+  fi
+  case "$krc" in
+    0) k_changed=1 ;;
+    3) k_changed=1; x_reprobe ;;
+  esac
+  console_dvi "$tmp/offer.json" "$k_changed"
+  local kfile="$SINK_EDID"
+  [ "$real" -eq 1 ] && kfile="$tmp/sink-edid.bin"
+  boot_args_sync "$tmp/offer.json" "$tmp/sink-edid.bin" "$krc" "$kfile" 0
+  install_if_changed "$tmp/offer.json" "$SINK_JSON" || true
+  # hotplug: connected display's colour format / range back on connector (no-op at defaults)
+  if [ "$hotplug" -eq 1 ] && [ -x /usr/sbin/h96-display ]; then
+    /usr/sbin/h96-display session-apply || true
+  fi
+  prime_eld
+  grep -q '^\[Mapping hdmi-surround' "$PROFILE_SET" && multi=1
+
+  # mpv lpcm fragment follows detected layouts
+  load_state
+  if [ "$STATE_MODE" = "lpcm" ]; then
+    write_frag_lpcm "$(resolve_device)" "$(detected_channels)"
+    save_state lpcm "$STATE_DEVICE" "$(detected_channels)"
+    echo "  mpv lpcm fragment -> $(detected_channels)"
+  elif [ "$STATE_MODE" = "bitstream" ]; then
+    local why
+    if why="$(bitstream_gate)"; then
+      write_frag_bitstream; echo "  mpv bitstream fragment: AC-3 through PipeWire"
+    elif grep -qx 'ao=pipewire' "$FRAG" 2>/dev/null && ! grep -q 'hw:' "$FRAG"; then
+      echo "  bitstream: AC-3 not advertised now ($why): mpv decodes to PCM"
+    else   # fragment from an older release (direct ALSA): never send IEC61937 past PipeWire
+      strip_block; save_state off "$STATE_DEVICE" "$STATE_CHANNELS"
+      echo "  bitstream: older fragment removed ($why): passthrough off"
+    fi
+  fi
+
+  # ACP probes channel counts once, at card creation: recreate card when profile
+  # set / codecs changed, or kernel ELD changed while surround layouts are listed.
+  # restart skipped by an earlier --no-restart stays pending until one happens
+  if [ "$force_wp" -eq 1 ] || [ "$wp_changed" -eq 1 ] || [ -e "$WP_PENDING" ] \
+     || { [ "$k_changed" -eq 1 ] && [ "$multi" -eq 1 ]; }; then
+    if [ "$restart" -eq 1 ]; then wp_reload; rm -f "$WP_PENDING"
+    else touch "$WP_PENDING"; echo "  --no-restart: restart WirePlumber to apply (pending: next detect restarts)"; fi
+  else
+    echo "  no audio change: WirePlumber left running"
+  fi
+  if [ "$hotplug" -eq 1 ] && [ -n "$cur_hash" ]; then
+    printf '%s %s\n' "$(date +%s)" "$cur_hash" > "$HOTPLUG_STATE.h96new" 2>/dev/null \
+      && mv -f "$HOTPLUG_STATE.h96new" "$HOTPLUG_STATE" 2>/dev/null || true
+  fi
+  rm -rf "$tmp"
+  return 0
+}
+
+usage_detect() {
+  cat <<EOF
+h96-display detect [--edid FILE] [--dry-run] [--no-restart] [--hotplug] [--quiet]
+(same as: h96-audio-passthrough detect ...)
+
+Reads connected display / AV receiver EDID over DDC (i2c-ddc) and builds one kernel
+EDID from it (/lib/firmware/edid/h96-sink-audio.bin, loaded via drm.edid_firmware):
+  video        display modes (preferred first) as KDE System Settings > Display lists
+               them; RGB 8-bit only (YCbCr, deep colour, HDR, 4:2:0 blocks removed);
+               modes above 600 MHz (340 MHz with hdmi20 off) and interlaced removed
+  layouts      Digital Stereo / Surround 5.1 / Surround 7.1 (HDMI) card profiles,
+               selectable in KDE tray (speaker menu > Profile) and
+               System Settings > Sound (Profile box). Only layouts sink lists.
+  passthrough  AC3 advertised to PipeWire only after 'codecs on' (default off), on a
+               kernel with the HDMI IEC958 fix, for a sink that lists AC-3; DTS and
+               E-AC-3 not offered. Stereo PCM works; 5.1/7.1 untested.
+  CEC          sink physical address -> dw_hdmi_qp cec_phys_addr
+  boot args    DVI display (with /etc/h96/display-bootargs-sync.on): image-default
+               drm.edid_firmware and video= removed from /boot/armbianEnv.txt, so the
+               kernel reads display EDID at boot; HDMI display puts back only those
+               tokens (list: /etc/h96/display-dvi-profile). Skipped while a forced-mode
+               trial is pending; a video= kept with 'h96-display keep' stays.
+No mode is set: X re-probes, KDE applies its own choice (display preferred mode).
+KDE remembers the mode per display (System Settings > Display lists every mode).
+EDID unreadable -> forced 1920x1080@60 EDID, stereo, no passthrough.
+DVI display (no CTA block, e.g. HDMI-to-DVI adapter) -> own EDID unchanged (DVI
+signal), no HDMI audio: no HDMI sink, default output moves to another sink.
+No change -> nothing reloaded or restarted.
+
+  --edid FILE   use FILE as sink EDID (test a receiver without one:
+                --edid .../h96-1080p-audio-8ch.bin), then run 'detect' again
+  --dry-run     print result, planned file and boot-arg changes, change nothing
+  --no-restart  write config, do not restart WirePlumber
+  --hotplug     boot unit: wait for HDMI connect + DDC, skip on unplug
+Kernel EDID source: h96-display edid merged (default) | real (display EDID unchanged).
+  --quiet       no report
+Switches: h96-display autodetect off (forced 1080p video, sink audio only),
+          h96-display hdmi20 off (340 MHz ceiling, no scrambling; default on).
+Runs automatically: h96-hdmi-audio-detect.service (boot), h96-hdmi-hotplug.service
+(HDMI hotplug, new display only).
+EOF
+}
+
+# ---------------------------------------------------------------- commands
+cmd_devices() {
+  h96_banner "A U D I O   P A S S T H R O U G H"
+  echo "-- ALSA HDMI / IEC958 PCMs (use one of these as DEV) --"
+  local pcms; pcms="$(list_hdmi_pcms)"
+  if [ -n "$pcms" ]; then printf '%s\n' "$pcms" | sed 's/^/  /'
+  else echo "  (none found -- no HDMI audio card exposed by ALSA)"; fi
+  echo
+  echo "-- aplay -l (card:device map) --"
+  if have aplay; then aplay -l 2>/dev/null | grep -iE 'card|hdmi' | sed 's/^/  /' || echo "  (aplay reported nothing)"
+  else echo "  aplay not installed (apt-get install alsa-utils)"; fi
+  echo
+  echo "-- PipeWire HDMI sinks --"
+  if have wpctl; then
+    local rd uid sinks=""
+    if [ "$(id -u)" -eq 0 ]; then   # root runs no PipeWire: ask each desktop session
+      for rd in /run/user/[0-9]*; do
+        uid="${rd##*/}"; [ "$uid" -ge 1000 ] 2>/dev/null || continue
+        sinks="$sinks$(as_user "$uid" wpctl status 2>/dev/null | sed -n '/Sinks:/,/Sources:/p' | grep -i hdmi)"$'\n'
+      done
+    else
+      sinks="$(wpctl status 2>/dev/null | sed -n '/Sinks:/,/Sources:/p' | grep -i hdmi)"
+    fi
+    if [ -n "${sinks//[[:space:]]/}" ]; then printf '%s\n' "$sinks" | grep -v '^$' | sed 's/^/  /'
+    else echo "  (no HDMI sink listed by wpctl -- PipeWire may not be running for this user)"; fi
+  else echo "  wpctl not available"; fi
+}
+
+cmd_status() {
+  load_state
+  h96_banner "A U D I O   P A S S T H R O U G H"
+  local dev; dev="$(resolve_device)"
+  echo "mode:            $STATE_MODE"
+  echo "device (chosen): ${STATE_DEVICE:-<auto>}"
+  echo "device (resolved): ${dev:-<none detected>}"
+  [ "$STATE_MODE" = "lpcm" ] && echo "channels:        $STATE_CHANNELS"
+  echo
+  echo "mpv config:      $MPV_CONF"
+  mpv_check || echo "  mpv binary:      $MPV_ERR"
+  if [ -f "$MPV_CONF" ] && grep -qF "$BEGIN" "$MPV_CONF"; then
+    echo "  passthrough block: PRESENT"
+    [ -f "$FRAG" ] && sed 's/^/    /' "$FRAG" | grep -E 'mode:|ao=|audio-device=|audio-spdif=|audio-channels='
+  else
+    echo "  passthrough block: absent (mpv on base/PCM config)"
+  fi
+  echo
+  if pt_kernel_ok; then echo "kernel IEC958 fix: yes ($PT_SYM)"
+  else echo "kernel IEC958 fix: no (compressed passthrough needs a kernel with the fix)"; fi
+  echo "codecs:          $([ -e "$CODECS_ON_FLAG" ] && echo on || echo "off (default)")"
+  echo "PipeWire IEC958 advertise: $([ -f "$WP_CONF" ] && grep -o 'iec958.codecs = \[.*\]' "$WP_CONF" || echo off)"
+  if [ -r "$SINK_JSON" ]; then
+    echo "detected sink:   $(python3 -c '
+import json, sys
+o = json.load(open(sys.argv[1]))
+listed = " ".join(o["codecs"][1:]) or "none"
+adv = " ".join(o.get("passthrough") or ["PCM"])
+print("%s (%s): layouts %s, sink lists: %s, advertised: %s" % (o.get("sink") or "?", o["source"],
+      " ".join(o["layouts"]) or "none (DVI sink: no HDMI audio)", listed, adv))
+' "$SINK_JSON" 2>/dev/null)"
+  else
+    echo "detected sink:   never detected (run: sudo h96-audio-passthrough detect)"
+  fi
+  echo
+  if [ -z "$dev" ]; then
+    echo "!! No HDMI audio PCM detected. Passthrough cannot work until the box"
+    echo "   exposes an HDMI sound card. Check: aplay -l ; dmesg | grep -i hdmi"
+  fi
+}
+
+# AC-3 only, PipeWire only (iec958 hooks + current kernel channel status); exit 1 = refused
+enable_bitstream() {
+  local dev="${1:-}" why
+  case "$dev" in
+    hw:*|plughw:*) err "bitstream: PipeWire only, never $dev (raw device keeps stale channel status)"; exit 1 ;;
+  esac
+  if ! why="$(bitstream_gate)"; then
+    err "bitstream refused: $why. Use 'lpcm' for multichannel PCM."
+    exit 1
+  fi
+  need_root "bitstream"
+  load_state
+  write_frag_bitstream
+  add_block
+  save_state bitstream "$STATE_DEVICE" "$STATE_CHANNELS"
+  echo "AC-3 passthrough ON (mpv through PipeWire, HDMI as default output)."
+  echo "  TV or receiver volume is the only volume control. Restart mpv to pick up the config."
+  [ -n "$dev" ] && echo "  DEV $dev not used: bitstream goes through the PipeWire HDMI sink."
+  return 0
+}
+
+enable_lpcm() {
+  need_root "$@"
+  local dev ch
+  dev="$(resolve_device "${1:-}")"
+  ch="${2:-}"
+  [ -z "$ch" ] && ch="$(detected_channels)"
+  if [ -z "$dev" ]; then
+    err "No HDMI ALSA device detected and none given (see 'devices')."
+    exit 1
+  fi
+  case "$ch" in
+    5.1|7.1|stereo) : ;;
+    *) err "channels must be one of: stereo 5.1 7.1  (got '$ch')"; exit 1 ;;
+  esac
+  if grep -q '"layouts": \[\]' "$SINK_JSON" 2>/dev/null; then
+    err "warning: detected sink has no HDMI audio (DVI); mpv output stays silent until an HDMI audio sink is detected."
+  elif [ "$ch" != stereo ] && ! grep -q "\"$ch\"" "$SINK_JSON" 2>/dev/null; then
+    err "warning: sink did not report $ch (see 'detect'); mpv falls back down the list."
+  fi
+  write_frag_lpcm "$dev" "$ch"
+  add_block
+  save_state lpcm "$dev" "$ch"
+  echo "multichannel LPCM passthrough ON  ->  $dev  (top layout $ch)"
+  echo "  Restart mpv to pick up the new config."
+}
+
+cmd_off() {
+  need_root "$@"
+  strip_block
+  load_state
+  save_state off "$STATE_DEVICE" "$STATE_CHANNELS"
+  echo "passthrough OFF. mpv reverted to base config. ($FRAG left in place, unused.)"
+  [ -e "$CODECS_ON_FLAG" ] && echo "  (PipeWire still advertises AC3; 'codecs off' removes that too.)"
+  return 0
+}
+
+cmd_set_device() {
+  need_root "$@"
+  local dev="${1:-}"
+  [ -z "$dev" ] && { err "usage: set-device <ALSA-PCM>   (see 'devices')"; exit 1; }
+  load_state
+  save_state "$STATE_MODE" "$dev" "$STATE_CHANNELS"
+  echo "persisted device: $dev"
+  # if a mode is active, rewrite the fragment against the new device
+  case "$STATE_MODE" in
+    bitstream) echo "  bitstream goes through PipeWire: device not used by the fragment." ;;
+    lpcm)      write_frag_lpcm "$dev" "$STATE_CHANNELS"; echo "  re-applied lpcm fragment." ;;
+  esac
+}
+
+cmd_test() {
+  h96_banner "A U D I O   P A S S T H R O U G H"
+  local rc=0 dev; dev="$(resolve_device)"
+  if mpv_check; then
+    echo "1) mpv runs:               yes"
+  else
+    echo "1) mpv runs:               NO ($MPV_ERR)"; rc=1
+  fi
+  if [ -z "$MPV_ERR" ]; then
+    if mpv --audio-spdif=help 2>&1 | grep -qiE 'ac3|dts' \
+       || mpv --list-options 2>/dev/null | grep -q -- '--audio-spdif'; then
+      echo "2) mpv --audio-spdif:      supported"
+    else
+      echo "2) mpv --audio-spdif:      UNKNOWN (option not advertised) "; rc=1
+    fi
+  fi
+  echo "3) HDMI PCM detected:      ${dev:-NONE}"
+  [ -z "$dev" ] && rc=1
+  # hw_params only: zero-sample open from /dev/null, nothing audible is sent.
+  local ch lay layouts; layouts="stereo"
+  [ -r "$SINK_JSON" ] && layouts="$(python3 -c 'import json,sys; print(" ".join(json.load(open(sys.argv[1]))["layouts"]) or "none")' "$SINK_JSON" 2>/dev/null)"
+  echo "4) hw_params (silent, $HDMI_HW):"
+  [ "$layouts" = none ] && { echo "   skipped: DVI sink, no HDMI audio"; rc=1; }
+  for lay in ${layouts:-stereo}; do
+    [ "$lay" = none ] && continue
+    case "$lay" in 7.1) ch=8 ;; 5.1) ch=6 ;; *) ch=2 ;; esac
+    if aplay -q -D "$HDMI_HW" -t raw -f S16_LE -r 48000 -c "$ch" /dev/null 2>"/tmp/h96-apt.$$"; then
+      echo "   $lay (${ch}ch): accepted"
+    elif grep -qi busy "/tmp/h96-apt.$$"; then
+      echo "   $lay (${ch}ch): device busy (PipeWire HDMI sink playing), not tested"
+    else
+      echo "   $lay (${ch}ch): REFUSED ($(head -n1 "/tmp/h96-apt.$$"))"; rc=1
+    fi
+  done
+  rm -f "/tmp/h96-apt.$$"
+  local rd sinks=""
+  for rd in /run/user/[0-9]*; do
+    [ -S "$rd/pipewire-0" ] || continue
+    sinks="$sinks $(hdmi_sink_of "${rd##*/}")"
+  done
+  sinks="$(echo $sinks)"
+  echo "5) PipeWire HDMI node:     ${sinks:-not listed (no desktop session with PipeWire)}"
+  echo
+  if [ "$rc" -eq 0 ]; then echo "PASS (baseline). Real confirmation is on the receiver -- box-test."
+  else echo "Some checks failed; see above. Feature may be partially/unsupported here."; fi
+  return "$rc"
+}
+
+# ------------------------------------------------------------- selftest
+# Offline unit test of apply_kernel_edid's stage/verify/promote/revert logic: a
+# sandboxed fake DRM_CONN/DRM_PARAM/DRM_OVERRIDE + forced/sink EDID pair, run via the
+# H96_DRM_*/H96_FORCED_EDID/H96_SINK_EDID* overrides. No hardware, no real kernel.
+cmd_selftest() {
+  local self sb pass=1 rc libdir sony_edid forced_edid
+  self="$(readlink -f "$0" 2>/dev/null || echo "$0")"
+  sb="$(mktemp -d /tmp/h96-apt-selftest.XXXXXX)" || { err "selftest: mktemp -d failed"; return 1; }
+
+  st_check() { if eval "$2"; then echo "PASS $1"; else echo "FAIL $1"; pass=0; fi; }
+  st_stray() { ls "$sb"/fw/edid/sink.bin.?????? >/dev/null 2>&1; }
+  st_reset() {
+    rm -rf "$sb/conn" "$sb/fw"; mkdir -p "$sb/conn" "$sb/fw/edid"
+    printf 'connected\n' > "$sb/conn/status"
+    printf 'FORCED-EDID-STEREO-SEED' > "$sb/fw/edid/forced.bin"
+    : > "$sb/edid_firmware"; : > "$sb/edid_override"
+  }
+  st_run() {
+    H96_SOURCE_ONLY=1 H96_DRM_CONN="$sb/conn" H96_DRM_PARAM="$sb/edid_firmware" \
+      H96_DRM_OVERRIDE="$sb/edid_override" H96_CEC_PHYS_PARAM="$sb/no-cec" \
+      H96_FORCED_EDID="$sb/fw/edid/forced.bin" H96_SINK_EDID="$sb/fw/edid/sink.bin" \
+      H96_SINK_EDID_REL="edid/sink.bin" \
+      bash -c '. "$0"; apply_kernel_edid "" "$1"' "$self" "$1" >/dev/null 2>"$sb/stderr"
+  }
+
+  # A: candidate == installed SINK_EDID, live already matches -> current (rc 2)
+  st_reset
+  printf 'SINK-A' > "$sb/fw/edid/sink.bin"
+  printf 'SINK-A' > "$sb/conn/edid"
+  printf '1920x1080@60\n' > "$sb/conn/modes"
+  printf 'HDMI-A-1:edid/sink.bin' > "$sb/edid_firmware"
+  printf 'SINK-A' > "$sb/candidate.bin"
+  st_run "$sb/candidate.bin"; rc=$?
+  st_check "unchanged candidate: current (rc 2)" '[ "$rc" -eq 2 ]'
+  st_check "unchanged candidate: no stray temp file" '! st_stray'
+
+  # A2: DVI profile boot: empty drm.edid_firmware, kernel EDID = SINK_EDID -> current, no param write
+  st_reset
+  printf 'SINK-A2' > "$sb/fw/edid/sink.bin"
+  printf 'SINK-A2' > "$sb/conn/edid"
+  printf '1440x900@60\n' > "$sb/conn/modes"
+  printf 'SINK-A2' > "$sb/candidate.bin"
+  st_run "$sb/candidate.bin"; rc=$?
+  st_check "empty edid_firmware, same EDID: current (rc 2)" '[ "$rc" -eq 2 ]'
+  st_check "empty edid_firmware, same EDID: parameter left empty, no reprobe" \
+    '[ ! -s "$sb/edid_firmware" ] && [ ! -s "$sb/edid_override" ]'
+
+  # B: new candidate, fake kernel accepts it -> promoted (rc 0)
+  st_reset
+  printf 'SINK-OLD-B' > "$sb/fw/edid/sink.bin"
+  printf 'SINK-NEW-B' > "$sb/conn/edid"
+  printf '1920x1080@60\n' > "$sb/conn/modes"
+  printf 'SINK-NEW-B' > "$sb/candidate.bin"
+  st_run "$sb/candidate.bin"; rc=$?
+  st_check "accepted candidate: reloaded (rc 0)" '[ "$rc" -eq 0 ]'
+  st_check "accepted candidate: promoted onto SINK_EDID" '[ "$(cat "$sb/fw/edid/sink.bin")" = "SINK-NEW-B" ]'
+  st_check "accepted candidate: no stray temp file" '! st_stray'
+
+  # C: new candidate, fake kernel rejects it (edid stays old) -> SINK_EDID untouched (rc 1)
+  st_reset
+  printf 'SINK-GOOD-C' > "$sb/fw/edid/sink.bin"
+  printf 'SINK-GOOD-C' > "$sb/conn/edid"
+  printf '1920x1080@60\n' > "$sb/conn/modes"
+  printf 'SINK-REJECTED-C' > "$sb/candidate.bin"
+  st_run "$sb/candidate.bin"; rc=$?
+  st_check "rejected candidate: failed (rc 1)" '[ "$rc" -eq 1 ]'
+  st_check "rejected candidate: SINK_EDID never touched" '[ "$(cat "$sb/fw/edid/sink.bin")" = "SINK-GOOD-C" ]'
+  st_check "rejected candidate: no stray temp file" '! st_stray'
+
+  # D: SINK_EDID never installed + rejection -> seeded from forced EDID, not the candidate
+  st_reset
+  printf 'SINK-STALE-D' > "$sb/conn/edid"
+  printf '1920x1080@60\n' > "$sb/conn/modes"
+  printf 'SINK-REJECTED-D' > "$sb/candidate.bin"
+  st_run "$sb/candidate.bin"; rc=$?
+  st_check "never installed + rejected: failed (rc 1)" '[ "$rc" -eq 1 ]'
+  st_check "never installed + rejected: seeded from forced EDID" \
+    '[ "$(cat "$sb/fw/edid/sink.bin")" = "FORCED-EDID-STEREO-SEED" ]'
+
+  # E: codecs opt-in. Without flag (or kernel fix) PCM only; with both PCM AC3 (Sony lists AC-3).
+  local libdir sony_edid forced_edid
+  libdir="$(dirname "$(readlink -f "$EDID_LIB" 2>/dev/null || echo "$EDID_LIB")")"
+  sony_edid="$sb/sony.bin"; forced_edid="$sb/forced.bin"
+  if PYTHONPATH="$libdir" python3 -c '
+import sys, edid_merge as em
+open(sys.argv[1], "wb").write(em.sample_sony())
+open(sys.argv[2], "wb").write(em.sample_forced())
+' "$sony_edid" "$forced_edid" 2>"$sb/stderr" \
+     && python3 "$EDID_LIB" plan --forced "$forced_edid" --edid "$sony_edid" --outdir "$sb" \
+          >/dev/null 2>>"$sb/stderr" \
+     && python3 "$EDID_LIB" plan --forced "$forced_edid" --edid "$sony_edid" --outdir "$sb/e-on" --codecs-on \
+          >/dev/null 2>>"$sb/stderr" \
+     && python3 "$EDID_LIB" plan --forced "$forced_edid" --edid "$sony_edid" --outdir "$sb/e-legacy" --codecs-off \
+          >/dev/null 2>>"$sb/stderr"; then
+    st_check "51-h96-iec958.conf, codecs off: PCM only for AC3-capable sink" \
+      '[ "$(grep -c "iec958.codecs = \[" "$sb/51-h96-iec958.conf")" -eq 1 ] && grep -qF "iec958.codecs = [ \"PCM\" ]" "$sb/51-h96-iec958.conf"'
+    st_check "51-h96-iec958.conf, codecs on: PCM AC3 for Sony (lists AC-3)" \
+      'grep -qF "iec958.codecs = [ \"PCM\" \"AC3\" ]" "$sb/e-on/51-h96-iec958.conf"'
+    st_check "legacy --codecs-off accepted, no effect (PCM only)" \
+      'grep -qF "iec958.codecs = [ \"PCM\" ]" "$sb/e-legacy/51-h96-iec958.conf"'
+    st_check "51-h96-iec958.conf: neutral text (no noise claim)" '! grep -qi noise "$sb/51-h96-iec958.conf" "$sb/e-on/51-h96-iec958.conf"'
+  else
+    echo "FAIL 51-h96-iec958.conf: could not run edid_audio.py plan (see $sb/stderr)"; pass=0
+  fi
+  # gate: sandboxed kallsyms, flags and sink json (H96_KALLSYMS honoured only with H96_SELFTEST=1)
+  printf 'ffffffc008000000 T _text\nffffffc0089a0000 t %s\n' "$PT_SYM" > "$sb/ks-fixed"
+  printf 'ffffffc008000000 T _text\nffffffc0089a0000 t %s.cold\n' "$PT_SYM" > "$sb/ks-plain"
+  st_pt() {  # $1 kallsyms file $2 selftest(0/1) $3.. command -> rc; output in $sb/pt.out
+    local ks="$1" stm="$2"; shift 2
+    H96_SOURCE_ONLY=1 H96_SELFTEST="$stm" H96_KALLSYMS="$ks" H96_CODECS_ON_FLAG="$sb/codecs-on" \
+      H96_CODECS_OFF_FLAG="$sb/codecs-off" H96_SINK_JSON="$sb/sink.json" H96_MPV_CONF="$sb/mpv.conf" \
+      H96_PT_FRAG="$sb/passthrough.conf" H96_PT_STATE="$sb/pt.state" \
+      bash -c '. "$0"; "$@"' "$self" "$@" > "$sb/pt.out" 2>&1
+  }
+  rm -f "$sb/codecs-on"
+  st_pt "$sb/ks-fixed" 1 pt_kernel_ok; rc=$?
+  st_check "kernel probe: fixed kernel (symbol present) detected" '[ "$rc" -eq 0 ]'
+  st_pt "$sb/ks-plain" 1 pt_kernel_ok; rc=$?
+  st_check "kernel probe: unpatched kernel (.cold only) not capable" '[ "$rc" -ne 0 ]'
+  local real_a real_b
+  st_pt "$sb/ks-fixed" 0 pt_kernel_ok; real_a=$?
+  st_pt "$sb/ks-plain" 0 pt_kernel_ok; real_b=$?
+  st_check "H96_KALLSYMS ignored outside self-test mode" '[ "$real_a" -eq "$real_b" ]'
+  st_pt "$sb/ks-fixed" 1 pt_codecs_enabled; rc=$?
+  st_check "detect --codecs-on: not passed without flag" '[ "$rc" -ne 0 ]'
+  : > "$sb/codecs-on"
+  st_pt "$sb/ks-fixed" 1 pt_codecs_enabled; rc=$?
+  st_check "detect --codecs-on: passed with flag on capable kernel" '[ "$rc" -eq 0 ]'
+  st_pt "$sb/ks-plain" 1 pt_codecs_enabled; rc=$?
+  st_check "detect --codecs-on: not passed with flag on unpatched kernel" '[ "$rc" -ne 0 ]'
+  rm -f "$sb/codecs-on"
+  st_pt "$sb/ks-plain" 1 main codecs on; rc=$?
+  st_check "codecs on refused on unpatched kernel, flag not written" \
+    '[ "$rc" -eq 1 ] && [ ! -e "$sb/codecs-on" ] && grep -q "lacks HDMI IEC958" "$sb/pt.out"'
+  : > "$sb/codecs-on"; : > "$sb/codecs-off"
+  st_pt "$sb/ks-plain" 1 codecs_flags_off
+  st_check "codecs off removes opt-in and legacy codecs-off flags" '[ ! -e "$sb/codecs-on" ] && [ ! -e "$sb/codecs-off" ]'
+  st_pt "$sb/ks-fixed" 1 main bitstream hw:CARD=rockchiphdmi0,DEV=0; rc=$?
+  st_check "bitstream refuses hw: device" '[ "$rc" -eq 1 ] && grep -q "never hw:" "$sb/pt.out"'
+  : > "$sb/codecs-on"
+  st_pt "$sb/ks-plain" 1 main bitstream; rc=$?
+  st_check "bitstream refused on unpatched kernel" '[ "$rc" -eq 1 ] && grep -q "lacks HDMI IEC958" "$sb/pt.out"'
+  printf '{"passthrough": ["PCM", "AC3"]}\n' > "$sb/sink.json"
+  st_pt "$sb/ks-fixed" 1 bitstream_gate; rc=$?
+  st_check "bitstream gate: capable kernel + codecs on + sink AC-3 -> allowed" '[ "$rc" -eq 0 ]'
+  printf '{"passthrough": ["PCM"]}\n' > "$sb/sink.json"
+  st_pt "$sb/ks-fixed" 1 bitstream_gate; rc=$?
+  st_check "bitstream gate: sink without AC-3 -> refused" '[ "$rc" -ne 0 ] && grep -q "no AC-3" "$sb/pt.out"'
+  rm -f "$sb/codecs-on"
+  printf '{"passthrough": ["PCM", "AC3"]}\n' > "$sb/sink.json"
+  st_pt "$sb/ks-fixed" 1 bitstream_gate; rc=$?
+  st_check "bitstream gate: codecs off -> refused" '[ "$rc" -ne 0 ] && grep -q "codecs off" "$sb/pt.out"'
+  st_pt "$sb/ks-fixed" 1 usage
+  st_check "help text: no noise claim" '! grep -qi noise "$sb/pt.out"'
+
+  # F: DVI sink (no CTA block): kernel EDID = sink block 0, profile set without mappings
+  local dvi_edid="$sb/dvi.bin" dvi_out="$sb/dvi"
+  if PYTHONPATH="$libdir" python3 -c '
+import sys, edid_audio as ea
+open(sys.argv[1], "wb").write(ea._mk_dvi())
+' "$dvi_edid" 2>>"$sb/stderr" \
+     && python3 "$EDID_LIB" plan --forced "$forced_edid" --edid "$dvi_edid" --outdir "$dvi_out" --hdmi20 \
+          >/dev/null 2>>"$sb/stderr"; then
+    st_check "DVI sink: kernel EDID = sink EDID (128 bytes, no CTA)" 'cmp -s "$dvi_edid" "$dvi_out/h96-sink-audio.bin"'
+    st_check "DVI sink: profile set without mappings" '! grep -q "^\[Mapping" "$dvi_out/h96-hdmi.conf"'
+    st_check "DVI sink: offer lists no layouts" 'grep -q "\"layouts\": \[\]" "$dvi_out/offer.json"'
+  else
+    echo "FAIL DVI sink: could not run edid_audio.py plan (see $sb/stderr)"; pass=0
+  fi
+
+  # G: console modeset for DVI sink (fake link status, fb blank file, process list)
+  printf '#!/bin/sh\ngrep -qxE "$2" "%s/procs"\n' "$sb" > "$sb/pgrep"; chmod +x "$sb/pgrep"
+  st_con() {  # $1 offer $2 link $3 procs $4 reloaded -> output in $sb/con.out
+    printf 'PHY: enabled\t\t\tMode: %s\n' "$2" > "$sb/dw-status"
+    printf '%s\n' "$3" > "$sb/procs"; printf x > "$sb/fb-blank"
+    H96_SOURCE_ONLY=1 H96_DW_STATUS="$sb/dw-status" H96_FB_BLANK="$sb/fb-blank" H96_PGREP="$sb/pgrep" \
+      bash -c '. "$0"; console_dvi "$1" "$2"' "$self" "$1" "$4" > "$sb/con.out" 2>>"$sb/stderr"
+  }
+  if [ -s "$dvi_out/offer.json" ] && [ -s "$sb/offer.json" ]; then
+    st_con "$dvi_out/offer.json" HDMI systemd 1
+    st_check "DVI sink, HDMI link, no display manager: console modeset" \
+      '[ "$(cat "$sb/fb-blank")" = 0 ] && grep -q "console: DVI sink" "$sb/con.out"'
+    st_con "$dvi_out/offer.json" HDMI lightdm 1
+    st_check "DVI sink, display manager running: no console modeset" '[ "$(cat "$sb/fb-blank")" = x ]'
+    st_con "$dvi_out/offer.json" DVI systemd 1
+    st_check "DVI sink, link already DVI: no console modeset" '[ "$(cat "$sb/fb-blank")" = x ]'
+    st_con "$sb/offer.json" HDMI systemd 1
+    st_check "HDMI sink: no console modeset" '[ "$(cat "$sb/fb-blank")" = x ]'
+  else
+    echo "FAIL console DVI: offer.json missing (see $sb/stderr)"; pass=0
+  fi
+
+  # H: boot-arg sync on a sandbox armbianEnv.txt (H96_BOOT_ENV; /boot is never opened)
+  local benv="$sb/boot/armbianEnv.txt" def rest0 h1 t mp="$sb/etc/dvi-profile"
+  local both="rw rootwait cma=512M $IMG_EDID_TOK $IMG_VIDEO_TOK"
+  def="rw rootwait $IMG_EDID_TOK cma=512M $IMG_VIDEO_TOK"
+  bt_env() {  # $1 extraargs value: fresh sandbox boot dir and /etc/h96 files, gate on
+    rm -rf "$sb/boot" "$sb/etc"; mkdir -p "$sb/boot" "$sb/etc"
+    printf '%s\n' 'verbosity=3' 'bootlogo=false' 'fdtfile=rockchip/rk3588-h96-max-v58-panthor.dtb' \
+      'consoleargs=console=ttyFIQ0 console=tty1' "extraargs=$1" \
+      'extraboardargs=net.ifnames=0 max_loop=128' 'overlays=uart7-m2' > "$benv"
+    : > "$sb/etc/sync.on"
+  }
+  bt_run() {  # $1 offer $2 apply_kernel_edid rc [$3 dry] -> output in $sb/bt.out
+    H96_SOURCE_ONLY=1 H96_SELFTEST=1 H96_BOOT_ENV="$benv" H96_DVI_PROFILE="$mp" \
+      H96_FORCED_MODE="$sb/etc/forced-mode" H96_BOOTARGS_SYNC_ON="$sb/etc/sync.on" \
+      H96_ENV_LOCK="$sb/env.lock" H96_AUTODETECT_OFF="$sb/etc/autodetect.off" \
+      H96_FINDMNT="${BT_FINDMNT:-findmnt}" \
+      bash -c '. "$0"; boot_args_sync "$@"' "$self" "$1" "$sb/raw.bin" "$2" "$sb/kedid.bin" "${3:-0}" \
+      > "$sb/bt.out" 2>&1
+  }
+  bt_args() { sed -n 's/^extraargs=//p' "$benv"; }
+  bt_rest() { grep -v '^extraargs=' "$benv"; }
+  bt_sum() { cat "$benv" "$mp" 2>/dev/null | md5sum; }
+  printf '{"source": "edid", "label": "DDC i2c-10", "dvi": true, "video": "display"}\n' > "$sb/o-dvi.json"
+  printf '{"source": "edid", "label": "DDC i2c-10", "video": "display"}\n' > "$sb/o-hdmi.json"
+  printf '{"source": "fallback", "label": "DDC i2c-10 (no ACK)", "video": "forced"}\n' > "$sb/o-fb.json"
+  printf 'DVI-EDID' > "$sb/raw.bin"; printf 'DVI-EDID' > "$sb/kedid.bin"
+
+  bt_env "$def"; rest0="$(bt_rest)"
+  bt_run "$sb/o-dvi.json" 0
+  st_check "boot args DVI: both image-default tokens removed" '[ "$(bt_args)" = "rw rootwait cma=512M" ]'
+  st_check "boot args DVI: marker lists exactly the removed tokens" \
+    '[ "$(grep -v "^#" "$mp")" = "$(printf "%s\n%s" "$IMG_EDID_TOK" "$IMG_VIDEO_TOK")" ]'
+  st_check "boot args DVI: every other line unchanged" '[ "$(bt_rest)" = "$rest0" ]'
+  st_check "boot args: no temp file left" '! ls "$sb"/boot/*.h96tmp "$sb"/etc/*.h96tmp >/dev/null 2>&1'
+  h1="$(bt_sum)"; bt_run "$sb/o-dvi.json" 2
+  st_check "boot args DVI: second run byte-identical (env + marker)" '[ "$(bt_sum)" = "$h1" ]'
+  bt_run "$sb/o-hdmi.json" 3
+  st_check "boot args HDMI: marker tokens restored, marker deleted" '[ "$(bt_args)" = "$both" ] && [ ! -e "$mp" ]'
+  st_check "boot args HDMI: every other line unchanged" '[ "$(bt_rest)" = "$rest0" ]'
+  h1="$(bt_sum)"; bt_run "$sb/o-hdmi.json" 2
+  st_check "boot args HDMI: second run byte-identical" '[ "$(bt_sum)" = "$h1" ]'
+
+  bt_env "rw rootwait cma=512M video=HDMI-A-1:2560x1440@60"; h1="$(bt_sum)"
+  bt_run "$sb/o-hdmi.json" 0
+  st_check "boot args HDMI, no marker: hand-edited env untouched" '[ "$(bt_sum)" = "$h1" ]'
+  for t in h96-display.trial h96-display.trial.seen; do
+    bt_env "$def"; : > "$sb/boot/$t"; h1="$(bt_sum)"
+    bt_run "$sb/o-dvi.json" 0
+    st_check "boot args DVI, $t present: untouched" '[ "$(bt_sum)" = "$h1" ] && [ ! -e "$mp" ]'
+  done
+  bt_env "$def"; bt_run "$sb/o-dvi.json" 0; : > "$sb/etc/autodetect.off"; bt_run "$sb/o-dvi.json" 0
+  st_check "boot args autodetect off: defaults restored" '[ "$(bt_args)" = "$both" ] && [ ! -e "$mp" ]'
+  bt_env "$def"; printf '%s\n' "$IMG_VIDEO_TOK" > "$sb/etc/forced-mode"; bt_run "$sb/o-dvi.json" 0
+  st_check "boot args DVI: video= kept by h96-display keep stays" \
+    '[ "$(bt_args)" = "rw rootwait cma=512M $IMG_VIDEO_TOK" ] && [ "$(grep -v "^#" "$mp")" = "$IMG_EDID_TOK" ]'
+  bt_env "rw rootwait $IMG_EDID_TOK cma=512M video=HDMI-A-1:2560x1440@60"; bt_run "$sb/o-dvi.json" 0
+  st_check "boot args DVI: user video=2560x1440@60 kept" \
+    '[ "$(bt_args)" = "rw rootwait cma=512M video=HDMI-A-1:2560x1440@60" ]'
+  bt_run "$sb/o-hdmi.json" 0
+  st_check "boot args HDMI: only drm.edid_firmware back, no second video=" \
+    '[ "$(bt_args)" = "rw rootwait cma=512M video=HDMI-A-1:2560x1440@60 $IMG_EDID_TOK" ]'
+  bt_env "$def"; h1="$(bt_sum)"
+  bt_run "$sb/o-dvi.json" 1
+  st_check "boot args: apply_kernel_edid rc 1: untouched" '[ "$(bt_sum)" = "$h1" ]'
+  bt_run "$sb/o-fb.json" 0
+  st_check "boot args: EDID unreadable: untouched" '[ "$(bt_sum)" = "$h1" ]'
+  printf 'DVI-EDID+VTB' > "$sb/raw.bin"; bt_run "$sb/o-dvi.json" 0; printf 'DVI-EDID' > "$sb/raw.bin"
+  st_check "boot args: DVI with dropped extension: untouched" '[ "$(bt_sum)" = "$h1" ]'
+  rm -f "$sb/etc/sync.on"; bt_run "$sb/o-dvi.json" 0
+  st_check "boot args: gate off, DVI: untouched" '[ "$(bt_sum)" = "$h1" ] && [ ! -e "$mp" ]'
+  bt_env "$def"; bt_run "$sb/o-dvi.json" 0; rm -f "$sb/etc/sync.on"; bt_run "$sb/o-dvi.json" 2
+  st_check "boot args: gate off with marker: own change undone" '[ "$(bt_args)" = "$both" ] && [ ! -e "$mp" ]'
+  printf '#!/bin/sh\necho ro,noatime\n' > "$sb/findmnt-ro"; chmod +x "$sb/findmnt-ro"
+  bt_env "$def"; h1="$(bt_sum)"
+  BT_FINDMNT="$sb/findmnt-ro" bt_run "$sb/o-dvi.json" 0
+  st_check "boot args: p1 read-only: untouched" '[ "$(bt_sum)" = "$h1" ] && grep -q "not mounted rw" "$sb/bt.out"'
+  bt_run "$sb/o-dvi.json" 0 1
+  st_check "boot args --dry-run: plan printed, nothing written" \
+    '[ "$(bt_sum)" = "$h1" ] && grep -q "extraargs=rw rootwait cma=512M$" "$sb/bt.out"'
+  H96_SOURCE_ONLY=1 H96_SELFTEST=1 H96_BOOT_ENV=/boot/h96-selftest-absent/armbianEnv.txt \
+    bash -c '. "$0"; boot_args_sync "$@"' "$self" "$sb/o-dvi.json" "$sb/raw.bin" 0 "$sb/kedid.bin" 0 \
+    > "$sb/bt.out" 2>&1; rc=$?
+  st_check "boot args: self-test mode refuses a /boot path" '[ "$rc" -eq 1 ] && grep -q refusing "$sb/bt.out"'
+
+  # same-boot trial revert (guard) + detect race: shared lock, either order gives a consistent env
+  local guard="${H96_GUARD:-/usr/lib/h96/h96-display-guard.sh}" i bad=0 a
+  g_run() {
+    H96_SELFTEST=1 H96_BOOT_ENV="$benv" H96_ENV_LOCK="$sb/env.lock" \
+      H96_GUARD_REBOOT="touch $sb/rebooted" bash "$guard" >/dev/null 2>&1
+  }
+  g_prep() {  # DVI profile active, unconfirmed trial without lastgood, HDMI display now connected
+    bt_env "rw rootwait cma=512M video=HDMI-A-1:1280x720@60"
+    printf '%s\n' "$IMG_EDID_TOK" "$IMG_VIDEO_TOK" > "$mp"
+    : > "$sb/boot/h96-display.trial"; : > "$sb/boot/h96-display.trial.seen"; rm -f "$sb/rebooted"
+  }
+  if grep -qs '^GUARD_API=[2-9]' "$guard"; then
+    g_prep; g_run; bt_run "$sb/o-hdmi.json" 0
+    st_check "guard then detect: trial token removed, defaults restored, reboot requested" \
+      '[ "$(bt_args)" = "$both" ] && [ ! -e "$sb/boot/h96-display.trial" ] && [ -e "$sb/rebooted" ]'
+    local n_skip=0 n_after=0
+    for i in 1 2 3 4 5 6 7 8 9 10 11 12; do
+      g_prep
+      # even runs: third holder keeps the lock 1 s, both writers queue on it
+      if [ $((i % 2)) -eq 0 ]; then flock -x "$sb/env.lock" sleep 1 & sleep 0.05; fi
+      g_run & bt_run "$sb/o-hdmi.json" 0 &
+      wait
+      a="$(bt_args)"
+      case "$a" in
+        "rw rootwait cma=512M") n_skip=$((n_skip + 1)) ;;   # detect first: trial pending, skipped
+        "$both") n_after=$((n_after + 1)) ;;                # guard first: detect restored defaults
+        *) bad=$((bad + 1)) ;;
+      esac
+      [ "$(grep -c '^extraargs=' "$benv")" -eq 1 ] || bad=$((bad + 1))
+      [ ! -e "$sb/boot/h96-display.trial" ] && [ -e "$sb/rebooted" ] || bad=$((bad + 1))
+      ls "$sb"/boot/*.h96tmp "$sb"/boot/*.h96guard >/dev/null 2>&1 && bad=$((bad + 1))
+    done
+    st_check "guard + detect race (12 runs: detect first $n_skip, guard first $n_after): consistent env, trial reverted" \
+      '[ "$bad" -eq 0 ]'
+  else
+    echo "SKIP guard + detect race: $guard has no GUARD_API=2 (v7.1 guard not installed)"
+  fi
+
+  rm -rf "$sb"
+  [ "$pass" -eq 1 ]
+}
+
+usage() {
+  cat <<EOF
+h96-audio-passthrough -- multichannel LPCM and AC-3 passthrough over HDMI
+
+  status              (default) show detected device, mode, kernel fix, codecs, mpv + PW state
+  devices             list ALSA HDMI/IEC958 PCMs and PipeWire HDMI sinks
+  bitstream [DEV]     AC-3 passthrough for mpv through PipeWire (never hw:). Needs a
+                      kernel with the HDMI IEC958 fix, 'codecs on' and a sink listing AC-3
+  lpcm [DEV] [CH]     enable multichannel LPCM (CH = stereo|5.1|7.1, default detected)
+  off                 disable passthrough, revert mpv to base config
+  set-device DEV      persist the HDMI ALSA device (see 'devices')
+  codecs on|off       on: advertise AC3 on PipeWire HDMI node when sink lists AC-3
+                      (refused on a kernel without the IEC958 fix); off: PCM only (default).
+                      DTS, E-AC-3, TrueHD not offered. TV or receiver volume is the only
+                      volume control for passthrough audio
+  test                silent probe: mpv spdif, hw_params per layout, PW node
+  detect [OPTS]       = h96-display detect: read display / receiver EDID, load its
+                      modes + audio into kernel EDID, apply layouts + codecs
+                      (--edid FILE, --dry-run, --no-restart; 'detect --help')
+  route-sync          HDMI route codecs = advertised codecs (runs at every WirePlumber start)
+  selftest           offline unit test of kernel-EDID stage/verify/promote, codecs gate
+                      and boot-arg sync (sandboxed files only, nothing changed on the box)
+
+DEV example:  hdmi:CARD=rockchiphdmi0,DEV=0
+Layouts appear in KDE: tray speaker menu > Profile, System Settings > Sound.
+EOF
+}
+
+main() {
+  local cmd="${1:-status}"; shift || true
+  case "$cmd" in
+    status|"")     cmd_status ;;
+    devices|list)  cmd_devices ;;
+    bitstream|bs)  enable_bitstream "$@" ;;
+    lpcm|pcm)      enable_lpcm "$@" ;;
+    off|disable)   cmd_off "$@" ;;
+    set-device)    cmd_set_device "$@" ;;
+    codecs)        case "${1:-}" in
+                     on)  codecs_on ;;
+                     off) codecs_off ;;
+                     *)   err "usage: codecs on|off"; exit 1 ;;
+                   esac ;;
+    test)          cmd_test ;;
+    selftest)      cmd_selftest ;;
+    detect)        cmd_detect "$@" ;;
+    display)       cmd_display "$@" ;;
+    route-sync)    cmd_route_sync ;;
+    -h|--help|help) usage ;;
+    *)             err "unknown command: $cmd"; usage; exit 1 ;;
+  esac
+}
+
+[ "${H96_SOURCE_ONLY:-0}" = 1 ] || main "$@"

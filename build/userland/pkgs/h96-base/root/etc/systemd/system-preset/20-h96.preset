@@ -1,0 +1,7 @@
+# Keeps one-shot first-boot units retired once run; sorts before 50-h96.preset, and systemd preset uses first-match-wins, so `systemctl preset-all` cannot resurrect them and re-drag network-online.target onto steady-state boots.
+disable h96-panthor-setup.service
+disable h96-gaming-setup.service
+disable h96-firstboot.service
+disable h96-firstboot-cleanup.service
+# h96-cec on by default (8.0)
+enable h96-cec.service

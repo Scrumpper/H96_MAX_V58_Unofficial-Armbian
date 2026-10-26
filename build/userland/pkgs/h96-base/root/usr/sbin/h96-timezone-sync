@@ -1,0 +1,15 @@
+#!/bin/sh
+# h96-timezone-sync: /etc/timezone follows /etc/localtime (armbian-config writes America/New_York when the file is absent)
+ROOT=${H96_TZ_ROOT:-}  # test root (empty on the box)
+LT=$ROOT/etc/localtime
+TZF=$ROOT/etc/timezone
+t=$(readlink "$LT") || exit 0
+case "$t" in
+  */zoneinfo/*) zone=${t##*/zoneinfo/} ;;
+  *) exit 0 ;;
+esac
+[ -n "$zone" ] && [ -f "$ROOT/usr/share/zoneinfo/$zone" ] || exit 0
+[ "$(cat "$TZF" 2>/dev/null)" = "$zone" ] && exit 0
+printf '%s\n' "$zone" > "$TZF.h96new" && chmod 0644 "$TZF.h96new" && mv -f "$TZF.h96new" "$TZF" || exit 1
+[ -n "$ROOT" ] || logger -t h96-timezone-sync "/etc/timezone set to $zone (from /etc/localtime)" 2>/dev/null
+echo "h96-timezone-sync: /etc/timezone = $zone"

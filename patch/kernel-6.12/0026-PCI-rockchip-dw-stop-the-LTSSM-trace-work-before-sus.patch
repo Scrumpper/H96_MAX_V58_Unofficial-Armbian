@@ -1,0 +1,36 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Scrumpper <190908034+Scrumpper@users.noreply.github.com>
+Date: Mon, 19 Oct 2026 22:35:59 -0700
+Subject: [PATCH 26/59] PCI: rockchip: dw: stop the LTSSM trace work before
+ suspend gates the clocks
+
+rk_pcie_establish_link() arms trace_work, which re-arms itself every
+5 s (also with the tracepoint off) and reads PCIE_CLIENT_DBG_FIFO_STATUS
+when the tracepoint is on. It is cancelled on link failure and in
+remove, not in rockchip_dw_pcie_suspend(), so a run between
+rk_pcie_hardware_io_unconfig() and the next hardware_io_config() touches
+a block with gated clocks. Short in a bcmdhd RESET, long in system
+suspend.
+
+Cancel the trace at no_l2, while clocks are still on. Link setup on
+resume re-arms it. The !TRACING || !NO_GKI stub is empty. 6.12 t6.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01P6itje71iKPFBX7YKkfvRo
+---
+ drivers/pci/controller/dwc/pcie-dw-rockchip.c | 2 ++
+ 1 file changed, 2 insertions(+)
+
+diff --git a/drivers/pci/controller/dwc/pcie-dw-rockchip.c b/drivers/pci/controller/dwc/pcie-dw-rockchip.c
+index 54c03f1a6..a80098fc9 100644
+--- a/drivers/pci/controller/dwc/pcie-dw-rockchip.c
++++ b/drivers/pci/controller/dwc/pcie-dw-rockchip.c
+@@ -2286,6 +2286,8 @@ static int __maybe_unused rockchip_dw_pcie_suspend(struct device *dev)
+ 		dev_err(pci->dev, "Link isn't in L2 idle!\n");
+ 
+ no_l2:
++	/* trace work reads APB; stop it before clocks go off */
++	rockchip_pcie_ltssm_trace(rk_pcie, false);
+ 	rk_pcie_disable_ltssm(rk_pcie);
+ 
+ 	ret = phy_validate(rk_pcie->phy, PHY_TYPE_PCIE, 0, NULL);

@@ -1,0 +1,18 @@
+[Unit]
+Documentation=file:/usr/share/doc/h96-base/COMMANDS.md
+# enabled at first boot (h96-firstboot.sh); after armbian-led-state so its restore does not overwrite; h96-leds on/off toggles it.
+Description=H96 front-panel LED triggers (net-led/hdd-led/work-led)
+DefaultDependencies=no
+After=sysinit.target armbian-led-state.service
+Before=multi-user.target shutdown.target
+# stopped at shutdown so ExecStop runs before armbian-led-state saves triggers
+Conflicts=shutdown.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/bin/h96-leds apply
+ExecStop=/usr/bin/h96-leds clear
+
+[Install]
+WantedBy=multi-user.target

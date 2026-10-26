@@ -1,0 +1,42 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Scrumpper <190908034+Scrumpper@users.noreply.github.com>
+Date: Thu, 22 Oct 2026 07:04:27 -0700
+Subject: [PATCH 56/59] arm64: dts: rockchip: h96-max-v58: stop watchdog before
+ standby, IR wake
+
+Power off ends in BL31 virtual-poweroff standby; the DesignWare watchdog
+kept counting there and reset the board about 44 s later. With a CRU
+reset on the node, dw_wdt_stop() asserts it, so systemd's disarm at
+poweroff and the watchdog core's power-off notifier really stop it.
+SRST_P_WDT0 resolves to 240 (SOFTRST_CON15 bit 0) in the vendor bit
+index scheme registered by clk-rk3588.c.
+
+List the remotectl interrupt lines (SPI 345 power-key match, SPI 344
+channel) in rockchip,virtual-poweroff-irqs so BL31 keeps them as wake
+sources in standby.
+---
+ arch/arm64/boot/dts/rockchip/rk3588-h96-max-v58.dts | 7 +++++++
+ 1 file changed, 7 insertions(+)
+
+diff --git a/arch/arm64/boot/dts/rockchip/rk3588-h96-max-v58.dts b/arch/arm64/boot/dts/rockchip/rk3588-h96-max-v58.dts
+index dd7418a7c..e18193f7f 100644
+--- a/arch/arm64/boot/dts/rockchip/rk3588-h96-max-v58.dts
++++ b/arch/arm64/boot/dts/rockchip/rk3588-h96-max-v58.dts
+@@ -192,10 +192,17 @@ &uart9 {
+ 	status = "okay";
+ };
+ 
++/* CRU reset makes dw_wdt_stop() a real stop: systemd disarms at poweroff before standby */
+ &wdt {
++	resets = <&cru SRST_P_WDT0>;
+ 	status = "okay";
+ };
+ 
++/* standby wake: remotectl power-key match (SPI 345) and channel (SPI 344) lines, as GIC INTIDs */
++&rockchip_suspend {
++	rockchip,virtual-poweroff-irqs = <377 376>;
++};
++
+ /* HDMI0: CEC, external DDC bus, I2S path; HDMI1 not wired */
+ &hdmi0 {
+ 	cec-enable;

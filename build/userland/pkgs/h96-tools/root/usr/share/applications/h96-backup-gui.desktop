@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=H96 Backup and Restore
+Comment=Choose what to back up or restore on this box
+Exec=h96-backup-gui
+Icon=drive-harddisk
+Terminal=false
+Categories=System;Utility;
+Keywords=backup;restore;

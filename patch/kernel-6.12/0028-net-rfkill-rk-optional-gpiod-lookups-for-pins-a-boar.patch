@@ -1,0 +1,64 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Scrumpper <190908034+Scrumpper@users.noreply.github.com>
+Date: Mon, 19 Oct 2026 22:36:33 -0700
+Subject: [PATCH 28/59] net: rfkill: rk: optional gpiod lookups for pins a
+ board does not wire
+
+The 6.12 rfkill-wlan and rfkill-bt drivers request every pin with
+devm_gpiod_get(), so pins absent from the DT log an error on each boot:
+  [WLAN_RFKILL]: rkwlangpiod_request failed to request WIFI,vbat gpio, err -2
+  [WLAN_RFKILL]: rkwlangpiod_request failed to request WIFI,reset gpio, err -2
+  [BT_RFKILL]: rkgpiod_request failed to request BT,power gpio, err -2
+The 6.1 drivers used of_get_named_gpio() and stayed silent.
+
+Use devm_gpiod_get_optional() and return -ENOENT without a message when
+the pin is not in the DT; callers see the same return code as before
+(bluetooth_platdata_parse_dt() keys on the BT,wake_host result). Wired
+pins still log "get property", and -EBUSY (the t4 hog collision) and
+every other error still print. 6.12 t6.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01P6itje71iKPFBX7YKkfvRo
+---
+ net/rfkill/rfkill-bt.c   | 8 +++++++-
+ net/rfkill/rfkill-wlan.c | 8 +++++++-
+ 2 files changed, 14 insertions(+), 2 deletions(-)
+
+diff --git a/net/rfkill/rfkill-bt.c b/net/rfkill/rfkill-bt.c
+index ef955de88..edbd85bfd 100644
+--- a/net/rfkill/rfkill-bt.c
++++ b/net/rfkill/rfkill-bt.c
+@@ -564,7 +564,13 @@ static int rkgpiod_request(struct device *dev, const char *con_id,
+ 	struct  gpio_desc	*gpiodesc;
+ 	int error;
+ 
+-	gpiodesc = devm_gpiod_get(dev, con_id, flags);
++	gpiodesc = devm_gpiod_get_optional(dev, con_id, flags);
++	if (!gpiodesc) {
++		/* not wired on this board */
++		DBG("%s no %s gpio\n", __func__, con_id);
++		rk_gpio->io = NULL;
++		return -ENOENT;
++	}
+ 	error = PTR_ERR_OR_ZERO(gpiodesc);
+ 	if (error) {
+ 		LOG("%s failed to request %s gpio, err %d\n", __func__, con_id, error);
+diff --git a/net/rfkill/rfkill-wlan.c b/net/rfkill/rfkill-wlan.c
+index 5d8ea5945..b4dec38ec 100644
+--- a/net/rfkill/rfkill-wlan.c
++++ b/net/rfkill/rfkill-wlan.c
+@@ -526,7 +526,13 @@ static int rkwlangpiod_request(struct device *dev,
+ 	struct  gpio_desc	*gpio;
+ 	int error;
+ 
+-	gpio = devm_gpiod_get(dev, con_id, flags);
++	gpio = devm_gpiod_get_optional(dev, con_id, flags);
++	if (!gpio) {
++		/* not wired on this board */
++		DBG("%s no %s gpio\n", __func__, con_id);
++		rk_gpio->io = NULL;
++		return -ENOENT;
++	}
+ 	error = PTR_ERR_OR_ZERO(gpio);
+ 	if (error) {
+ 		LOG("%s failed to request %s gpio, err %d\n", __func__, con_id, error);

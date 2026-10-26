@@ -1,0 +1,14 @@
+[Unit]
+Documentation=file:/usr/share/doc/h96-base/COMMANDS.md
+Description=H96 dpkg diversions for firmware and video stack
+# before any package install that could write the protected paths
+After=local-fs.target
+Before=armbian-firstrun.service h96-video-setup.service packagekit.service apt-daily-upgrade.service unattended-upgrades.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/sbin/h96-protect-updates --add
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target

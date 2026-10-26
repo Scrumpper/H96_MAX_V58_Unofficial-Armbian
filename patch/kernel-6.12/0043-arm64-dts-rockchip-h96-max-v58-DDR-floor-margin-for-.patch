@@ -1,0 +1,50 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: H96 series reconstruction <builder@h96-build>
+Date: Tue, 20 Oct 2026 09:21:39 -0700
+Subject: [PATCH 43/59] arm64: dts: rockchip: h96-max-v58: DDR floor margin for
+ 1440p60
+
+The 900 MB/s mid-high threshold sat just above the 1440p60 frame
+bandwidth (884 MB/s); only the line figure (909 MB/s, CVT-RB timing)
+cleared it, and AFBC scanout halves both, so 4K60 with AFBC (995 MB/s)
+had 10 % margin. Lower the mid-high threshold to 800 MB/s in both
+tables: 1440p60 linear clears it by 10 %, AFBC 4K60 by 24 %, 1080p60
+linear (497 MB/s) keeps the full range down to 528 MHz.
+
+AFBC 1440p60 (442 MB/s) stays without a floor: it cannot be told
+apart from a linear 1080p60 desktop by bandwidth. Comment states the
+covered and uncovered cases.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01P6itje71iKPFBX7YKkfvRo
+---
+ arch/arm64/boot/dts/rockchip/rk3588-h96-max-v58.dts | 10 +++++++---
+ 1 file changed, 7 insertions(+), 3 deletions(-)
+
+diff --git a/arch/arm64/boot/dts/rockchip/rk3588-h96-max-v58.dts b/arch/arm64/boot/dts/rockchip/rk3588-h96-max-v58.dts
+index 4db8a6d60..dd7418a7c 100644
+--- a/arch/arm64/boot/dts/rockchip/rk3588-h96-max-v58.dts
++++ b/arch/arm64/boot/dts/rockchip/rk3588-h96-max-v58.dts
+@@ -530,15 +530,19 @@ &vop {
+ /* DDR DVFS (dfi + dmc okay from rk3588-android.dtsi); loader rate held for 30 s after probe */
+ &dmc {
+ 	delayed-freq-scaling;
+-	/* scanout floor in MB/s: 1440p60, 1080p144, 4K60 and up get mid-high, two full 4K60 planes get high */
++	/*
++	 * scanout floor in MB/s, linear ARGB8888 (AFBC halves): 1440p60 884,
++	 * 1080p144 1194, 4K60 1990 get mid-high; 1080p60 497 keeps the full
++	 * range; AFBC 4K60 995 stays mid-high, AFBC 1440p60 442 gets none
++	 */
+ 	vop-bw-dmc-level = <
+ 		/* min	max	level */
+-		900	2999	DMC_FREQ_LEVEL_MID_HIGH
++		800	2999	DMC_FREQ_LEVEL_MID_HIGH
+ 		3000	99999	DMC_FREQ_LEVEL_HIGH
+ 	>;
+ 	vop-frame-bw-dmc-level = <
+ 		/* min	max	level */
+-		900	2999	DMC_FREQ_LEVEL_MID_HIGH
++		800	2999	DMC_FREQ_LEVEL_MID_HIGH
+ 		3000	99999	DMC_FREQ_LEVEL_HIGH
+ 	>;
+ };

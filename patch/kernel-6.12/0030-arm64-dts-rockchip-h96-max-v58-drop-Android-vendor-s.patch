@@ -1,0 +1,44 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Scrumpper <190908034+Scrumpper@users.noreply.github.com>
+Date: Mon, 19 Oct 2026 22:37:33 -0700
+Subject: [PATCH 30/59] arm64: dts: rockchip: h96-max-v58: drop Android vendor
+ storage, disable OP-TEE
+
+rk3588-android.dtsi adds vendor-storage (rockchip,ram-vendor-storage)
+and its size-0 reserved-memory placeholder vendor-storage-rm, filled in
+by Android loaders only. No driver is built (ROCKCHIP_RAM_VENDOR_STORAGE
+unset) and 6.12 logs "failed to reserve memory for node
+'vendor-storage-rm@00000000'". The booted 6.1 DTB has neither node.
+drm-logo and drm-cubic-lut stay: U-Boot fills them when it hands over a
+logo or LUT, and display-subsystem references drm_logo.
+
+The loader FIT carries no BL32, so the optee node fails the same way on
+6.1 and 6.12 ("api uid mismatch", probe error -22). Disable it; a
+loader with OP-TEE can re-enable it. 6.12 t6.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01P6itje71iKPFBX7YKkfvRo
+---
+ arch/arm64/boot/dts/rockchip/rk3588-h96-max-v58.dts | 9 +++++++++
+ 1 file changed, 9 insertions(+)
+
+diff --git a/arch/arm64/boot/dts/rockchip/rk3588-h96-max-v58.dts b/arch/arm64/boot/dts/rockchip/rk3588-h96-max-v58.dts
+index 8a43422c8..e1a9b40e2 100644
+--- a/arch/arm64/boot/dts/rockchip/rk3588-h96-max-v58.dts
++++ b/arch/arm64/boot/dts/rockchip/rk3588-h96-max-v58.dts
+@@ -71,6 +71,15 @@ wireless_wlan: wireless-wlan {
+ 	};
+ };
+ 
++/* Android RAM vendor storage: no driver in this kernel */
++/delete-node/ &vendor_storage;
++/delete-node/ &vendor_storage_rm;
++
++/* no BL32 in the loader */
++&optee {
++	status = "disabled";
++};
++
+ /* GPU: Panthor binding on the vendor node, so the device stays fb000000.gpu */
+ &gpu {
+ 	compatible = "rockchip,rk3588-mali", "arm,mali-valhall-csf";

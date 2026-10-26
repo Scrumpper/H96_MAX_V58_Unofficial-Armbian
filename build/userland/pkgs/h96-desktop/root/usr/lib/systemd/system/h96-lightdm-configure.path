@@ -1,0 +1,9 @@
+[Unit]
+ConditionPathExists=!/var/lib/h96-lightdm-configure-done
+Description=Watch for LightDM install
+
+[Path]
+PathExists=/usr/sbin/lightdm
+
+[Install]
+WantedBy=multi-user.target

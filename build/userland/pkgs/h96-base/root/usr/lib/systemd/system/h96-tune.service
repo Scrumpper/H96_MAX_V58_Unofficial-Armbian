@@ -1,0 +1,15 @@
+[Unit]
+Documentation=file:/usr/share/doc/h96-base/COMMANDS.md
+Description=H96 Max V58 CPU tune profile
+After=sysinit.target
+Before=multi-user.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/bin/h96-bench --apply-tune
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

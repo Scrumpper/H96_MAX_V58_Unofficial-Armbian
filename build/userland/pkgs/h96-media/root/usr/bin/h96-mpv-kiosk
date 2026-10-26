@@ -1,0 +1,16 @@
+#!/bin/sh
+# h96-mpv-kiosk: fullscreen GPU-composited mpv via cage, lowest CPU path.
+# usage: h96-mpv-kiosk <file|URL> [mpv args...]
+
+# shared block-letter header; stub avoids command-not-found when banner.sh is missing
+[ -r /usr/lib/h96/banner.sh ] && . /usr/lib/h96/banner.sh
+command -v h96_banner >/dev/null 2>&1 || h96_banner() { :; }
+
+case "${1:-}" in
+  ""|-h|--help) echo "usage: h96-mpv-kiosk <file|URL> [mpv args...]  (from text console, not beside running desktop)"; exit 0 ;;
+esac
+
+h96_banner "M E D I A   K I O S K"
+
+exec env WLR_RENDERER=gles2 WLR_NO_HARDWARE_CURSORS=1 \
+  cage -- mpv "$@"

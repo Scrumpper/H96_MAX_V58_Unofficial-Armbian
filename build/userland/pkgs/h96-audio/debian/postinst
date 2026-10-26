@@ -1,0 +1,69 @@
+#!/bin/sh
+# 7.2 enablement on fresh install; upgrades keep admin choices
+set -e
+R="${DPKG_ROOT:-}"
+mklink() { [ -e "$R$1" ] || [ -L "$R$1" ] && return 0; mkdir -p "$R${1%/*}"; ln -s "$2" "$R$1"; }
+case "$1" in
+configure)
+  if [ -n "$2" ] && dpkg --compare-versions "$2" lt-nl 8.0.0~r10; then
+    if [ -e "$R/var/lib/h96/seed-keep/h96-hdmi.conf" ]; then
+      if [ -e "$R/etc/alsa-card-profile/mixer/profile-sets/h96-hdmi.conf" ]; then rm -f "$R/var/lib/h96/seed-keep/h96-hdmi.conf"; else mkdir -p "$R/etc/alsa-card-profile/mixer/profile-sets"; mv -f "$R/var/lib/h96/seed-keep/h96-hdmi.conf" "$R/etc/alsa-card-profile/mixer/profile-sets/h96-hdmi.conf"; fi
+    fi
+    [ -e "$R/etc/alsa-card-profile/mixer/profile-sets/h96-hdmi.conf" ] || { mkdir -p "$R/etc/alsa-card-profile/mixer/profile-sets"; cp -p "$R/usr/lib/h96/seed/h96-hdmi.conf" "$R/etc/alsa-card-profile/mixer/profile-sets/h96-hdmi.conf"; }
+    if [ -e "$R/var/lib/h96/seed-keep/51-h96-iec958.conf" ]; then
+      if [ -e "$R/etc/wireplumber/wireplumber.conf.d/51-h96-iec958.conf" ]; then rm -f "$R/var/lib/h96/seed-keep/51-h96-iec958.conf"; else mkdir -p "$R/etc/wireplumber/wireplumber.conf.d"; mv -f "$R/var/lib/h96/seed-keep/51-h96-iec958.conf" "$R/etc/wireplumber/wireplumber.conf.d/51-h96-iec958.conf"; fi
+    fi
+    [ -e "$R/etc/wireplumber/wireplumber.conf.d/51-h96-iec958.conf" ] || { mkdir -p "$R/etc/wireplumber/wireplumber.conf.d"; cp -p "$R/usr/lib/h96/seed/51-h96-iec958.conf" "$R/etc/wireplumber/wireplumber.conf.d/51-h96-iec958.conf"; }
+    rmdir "$R/var/lib/h96/seed-keep" 2>/dev/null || true
+  fi
+  while read -r _ _ p; do
+    rm -f "$R$p.h96-v72"; d="${p%/*}"
+    case "$p" in /usr/local/bin/*|/usr/local/sbin/*)
+      if [ -e "$R$p" ] || [ -L "$R$p" ]; then
+        echo "warning: $p differs from v7.2 copy, kept; it precedes packaged command in PATH" >&2
+      fi ;;
+    esac
+    while case "$d" in /opt/h96-*|/opt/panthor|/opt/panthor/*|/usr/local/lib/h96|/usr/local/lib/h96/*|/usr/local/share/h96|/usr/local/share/h96/*) true ;; *) false ;; esac; do
+      rmdir "$R$d" 2>/dev/null || break; d="${d%/*}"
+    done
+  done <<'EOF'
+f 8dc8b35498357a1ab116c5d95fa699baf7d14ffd9254257108941b42e90b16ea /etc/pipewire/pipewire.conf.d/95-h96-silence-source.conf
+f b56fe6caa4012808255aad6e4fdf94c815fd29d502d55c55b430cfd969a69f82 /etc/systemd/system/bluetooth.service.d/20-h96-policy.conf
+f 4f558a253591a2963265c45d56624e7a48ec7352f0c2e022265a01f95e9b69ac /etc/systemd/system/bt-sco-hci.service
+f 949df27e7adb82af2c056768cbfacac9cfc9ff7acfd025d8c8ea20ea1b08525c /etc/systemd/system/h96-hdmi-audio-detect.service
+l /etc/systemd/system/bt-sco-hci.service /etc/systemd/system/multi-user.target.wants/bt-sco-hci.service
+l /etc/systemd/system/h96-hdmi-audio-detect.service /etc/systemd/system/multi-user.target.wants/h96-hdmi-audio-detect.service
+f 678861edfc1624e3c8b2f759d698534bb10ed46e25aa206a4c96c5f560356191 /etc/udev/rules.d/99-h96-hdmi-audio.rules
+f c7200b72a10d46bc849f1b2d85c2057146190878f4db4756919a2e5b100169af /etc/wireplumber/wireplumber.conf.d/20-h96-hdmi-audio.conf
+f b8a548d3a9569e2282b0957d02d571085632e81ca68c4094d0d7cd30e2952df8 /etc/wireplumber/wireplumber.conf.d/30-h96-bluetooth.conf
+f 6de4479d92e8b956cab2bde09ffd53a3f1aacb417670b2e5590360ee550aac73 /usr/local/bin/h96-audio-eq
+f 1bb9a42810c07be5f6e9f8374c66e0cd42f6096ad450cde47717db771892079d /usr/local/bin/h96-audio-passthrough
+f 7b5137e1e1bf369b6dfed60c84cca3f5097448972224f62c6cbee3152aca1d8e /usr/local/bin/h96-bt-speaker
+f a148c32bdc7ccfb180d39c20899ccf92c629b25faf78246277962ec65f238c4c /usr/local/lib/h96/edid_audio.py
+f 9f45082f35d4616c891b5060d30705d6d85dc55bbc113de72b24f8fb60957c28 /usr/local/lib/h96/h96-bt-agent
+f 3b02b990077abbee05ee320e812b103200f043373a83e3e0575d79a156e91517 /usr/local/lib/h96/h96-bt-loopback
+f e5549e9f4b6df2db618b7571f0ab42941364206ae5c20f2403f3e5e2ce0b623a /usr/local/lib/h96/h96-bt-policy.py
+f 020107aab1bd138650eb2be4023c97546d6c1cb51a643c1b16f5c2d8ade81924 /usr/local/lib/h96/h96-hdmi-sink-migrate.sh
+f 50753dd05364b06469552f29a0991d6b97986892bd55ae2d266625c10ca5304f /usr/local/sbin/h96-bt-attach.py
+f 058cb3796dc474105bb79b4e479af3503fd3d5c876898a975a32448f5786d328 /usr/local/sbin/h96-bt-sco.py
+f ed8adca88a8011bc68ac619bc2358c266a51611d4d8da7961bab1ec3e9c64f8f /usr/local/sbin/h96-wireplumber-offline.sh
+EOF
+  if [ -z "$2" ]; then
+    mklink /etc/systemd/system/multi-user.target.wants/bt-sco-hci.service /usr/lib/systemd/system/bt-sco-hci.service
+    mklink /etc/systemd/system/multi-user.target.wants/h96-bt.service /usr/lib/systemd/system/h96-bt.service
+    mklink /etc/systemd/system/multi-user.target.wants/h96-hdmi-audio-detect.service /usr/lib/systemd/system/h96-hdmi-audio-detect.service
+    mklink /etc/systemd/system/multi-user.target.wants/h96-rfcomm.service /usr/lib/systemd/system/h96-rfcomm.service
+    mklink /etc/systemd/user/wireplumber.service.wants/h96-hdmi-route-sync.service /usr/lib/systemd/user/h96-hdmi-route-sync.service
+    [ -e "$R/etc/alsa-card-profile/mixer/profile-sets/h96-hdmi.conf" ] || { mkdir -p "$R/etc/alsa-card-profile/mixer/profile-sets"; cp -p "$R/usr/lib/h96/seed/h96-hdmi.conf" "$R/etc/alsa-card-profile/mixer/profile-sets/h96-hdmi.conf"; }
+    [ -e "$R/etc/skel/.local/state/wireplumber/default-nodes" ] || { mkdir -p "$R/etc/skel/.local/state/wireplumber"; cp -p "$R/usr/lib/h96/seed/default-nodes" "$R/etc/skel/.local/state/wireplumber/default-nodes"; }
+    [ -e "$R/etc/wireplumber/wireplumber.conf.d/51-h96-iec958.conf" ] || { mkdir -p "$R/etc/wireplumber/wireplumber.conf.d"; cp -p "$R/usr/lib/h96/seed/51-h96-iec958.conf" "$R/etc/wireplumber/wireplumber.conf.d/51-h96-iec958.conf"; }
+    :
+  fi
+  if [ -z "$R" ] && [ -d /run/systemd/system ]; then systemctl daemon-reload || true; fi
+  # upgrade: hotplug run in progress restarts with new code
+  if [ -n "$2" ] && [ -z "$R" ] && [ -d /run/systemd/system ]; then
+    deb-systemd-invoke try-restart h96-hdmi-hotplug.service || true
+  fi
+  ;;
+esac
+exit 0

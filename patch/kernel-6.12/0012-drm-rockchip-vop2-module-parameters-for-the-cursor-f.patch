@@ -1,0 +1,53 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: H96 build <builder@h96-build>
+Date: Fri, 16 Oct 2026 00:00:00 +0000
+Subject: [PATCH 12/59] drm/rockchip: vop2: module parameters for the cursor
+ fixes
+
+rockchipdrm.cursor_sync_image (part 1) and rockchipdrm.cursor_relatch
+(part 2), both default Y, so both cursor fixes can be switched off at
+runtime for A/B tests. Defaults keep the behaviour unchanged.
+
+H96 series: 2c08fca9e.
+---
+ drivers/gpu/drm/rockchip/rockchip_drm_vop2.c | 13 +++++++++++--
+ 1 file changed, 11 insertions(+), 2 deletions(-)
+
+diff --git a/drivers/gpu/drm/rockchip/rockchip_drm_vop2.c b/drivers/gpu/drm/rockchip/rockchip_drm_vop2.c
+index e5e41d07b..dee26136b 100644
+--- a/drivers/gpu/drm/rockchip/rockchip_drm_vop2.c
++++ b/drivers/gpu/drm/rockchip/rockchip_drm_vop2.c
+@@ -191,6 +191,15 @@
+  */
+ #define VOP2_HDMI_EMP_FRAME_GAP		3
+ 
++/* H96 cursor fixes, switchable at runtime for A/B tests */
++static bool cursor_sync_image = true;
++module_param(cursor_sync_image, bool, 0644);
++MODULE_PARM_DESC(cursor_sync_image, "cursor image changes use a blocking commit (part 1)");
++
++static bool cursor_relatch = true;
++module_param(cursor_relatch, bool, 0644);
++MODULE_PARM_DESC(cursor_relatch, "re-assert the cursor window on every other flush (part 2)");
++
+ enum vop2_data_format {
+ 	VOP2_FMT_ARGB8888 = 0,
+ 	VOP2_FMT_RGB888_YUV444,
+@@ -8949,7 +8958,7 @@ rockchip_atomic_helper_update_plane(struct drm_plane *plane,
+ 	 * paid on the X server thread; position moves are never delayed. Part 2 is
+ 	 * vop2_crtc_relatch_cursor(), which keeps the cursor latched afterwards.
+ 	 */
+-	if ((plane == crtc->cursor && plane->state->fb == fb) ||
++	if ((plane == crtc->cursor && (!cursor_sync_image || plane->state->fb == fb)) ||
+ 	    vpstate->async_commit)
+ 		state->legacy_cursor_update = true;
+ 
+@@ -16683,7 +16692,7 @@ static void vop2_crtc_relatch_cursor(struct drm_crtc *crtc, struct drm_atomic_st
+ 	struct vop2_win *cwin;
+ 
+ 	/* no cursor plane bound to this crtc, or crtc is off */
+-	if (!cursor || !crtc->state->active)
++	if (!cursor_relatch || !cursor || !crtc->state->active)
+ 		return;
+ 
+ 	/* leave splice (two VPs driving one output) paths alone */

@@ -1,0 +1,21 @@
+// H96 Max V58: NetworkManager's default "Wired connection 1" profile leaves IPv6
+// nominally enabled on eth0 (net.ipv6.conf.eth0.disable_ipv6=0) even though this
+// LAN has no working IPv6 route out — confirmed live: `curl -6` to a real Ubuntu
+// mirror fails outright (exit 7, no route), `curl -4` to the same mirror succeeds
+// instantly. The earlier `noipv6` fix in /etc/dhcpcd.conf ([V3.2.2]) only ever
+// covered the standalone wpa_supplicant/dhcpcd path used for wlan0 — it never
+// touched Ethernet, which NetworkManager manages independently.
+//
+// Confirmed live this let apt/PackageKit acquire attempts intermittently try the
+// dead IPv6 path and fail: one heavy install (kdenlive + ~70 deps) succeeded by
+// silently falling back to IPv4, then the very next install attempt, seconds
+// later, failed immediately with PackageKit::Transaction::ErrorNoNetwork
+// ("No network connection available") — reported by Discover as a connectivity
+// problem despite the box having full, working internet the entire time
+// (nmcli reported "full" connectivity throughout; the polkit auth for that same
+// failed transaction succeeded).
+//
+// Forcing apt to IPv4-only removes the dead path entirely rather than trying to
+// fix NetworkManager's per-connection IPv6 defaults (broader, riskier change for
+// a bug that is specific to package acquisition).
+Acquire::ForceIPv4 "true";

@@ -1,0 +1,70 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Scrumpper <190908034+Scrumpper@users.noreply.github.com>
+Date: Wed, 21 Oct 2026 00:00:00 +0000
+Subject: [PATCH 55/59] drm/bridge: dw-hdmi-qp: fresh EDID on each probe,
+ resend ELD on change
+
+get_modes reused connector->edid_blob_ptr whenever it was set, so a
+connected sink kept its first EDID until a disconnected detect cleared
+the property. On 6.1 a debugfs edid_override "reset" cleared the
+property (drm_edid_override_reset -> drm_connector_update_edid_property
+NULL); since 6.3 it only frees connector->edid_override, so neither a
+new drm.edid_firmware value, a debugfs override nor "reset" followed by
+a status "detect" reaches the connector on 6.12.
+
+Read the EDID through drm_edid_read_ddc() on every probe (override,
+firmware parameter, then DDC, as mainline dw-hdmi does). Keep the last
+EDID only when that read fails on a re-probe.
+
+hdmi-codec copies the ELD in its plugged callback, which detect calls
+before get_modes has updated connector->eld, so the ALSA ELD control
+stayed one probe behind after a hotplug. Call the plugged callback
+again when the ELD changed.
+---
+ drivers/gpu/drm/bridge/synopsys/dw-hdmi-qp.c | 18 +++++++++++++++---
+ 1 file changed, 15 insertions(+), 3 deletions(-)
+
+diff --git a/drivers/gpu/drm/bridge/synopsys/dw-hdmi-qp.c b/drivers/gpu/drm/bridge/synopsys/dw-hdmi-qp.c
+index f0bca068a..058497637 100644
+--- a/drivers/gpu/drm/bridge/synopsys/dw-hdmi-qp.c
++++ b/drivers/gpu/drm/bridge/synopsys/dw-hdmi-qp.c
+@@ -3236,6 +3236,8 @@ static int dw_hdmi_connector_get_modes(struct drm_connector *connector)
+ 	struct drm_display_info *info = &connector->display_info;
+ 	void *data = hdmi->plat_data->phy_data;
+ 	struct drm_property_blob *edid_blob_ptr = connector->edid_blob_ptr;
++	u8 old_eld[MAX_ELD_BYTES];
++	bool eld_changed;
+ 	int i, ret = 0;
+ 	int ext_block_num;
+ 
+@@ -3283,10 +3285,14 @@ static int dw_hdmi_connector_get_modes(struct drm_connector *connector)
+ 	memset(metedata, 0, sizeof(*metedata));
+ 	memset(hdmi->vendor_info, 0, VENDOR_INFO_LEN);
+ 
+-	if (edid_blob_ptr && edid_blob_ptr->length)
++	/* fresh read each probe: debugfs override, drm.edid_firmware and a new sink apply */
++	drm_edid = drm_edid_read_ddc(connector, hdmi->ddc);
++	/* DDC miss on a re-probe: keep last EDID of this connection */
++	if (!drm_edid && edid_blob_ptr && edid_blob_ptr->length)
+ 		drm_edid = drm_edid_alloc(edid_blob_ptr->data, edid_blob_ptr->length);
+-	else
+-		drm_edid = drm_edid_read_ddc(connector, hdmi->ddc);
++	mutex_lock(&connector->eld_mutex);
++	memcpy(old_eld, connector->eld, MAX_ELD_BYTES);
++	mutex_unlock(&connector->eld_mutex);
+ 
+ 	if (drm_edid)
+ 		edid = drm_edid_raw(drm_edid);
+@@ -3300,6 +3306,12 @@ static int dw_hdmi_connector_get_modes(struct drm_connector *connector)
+ 		ret = drm_edid_connector_update(connector, drm_edid);
+ 		if (!ret)
+ 			ret = drm_edid_connector_add_modes(connector);
++		/* hdmi-codec caches ELD at plug-in, before this update: resend on change */
++		mutex_lock(&connector->eld_mutex);
++		eld_changed = memcmp(old_eld, connector->eld, MAX_ELD_BYTES);
++		mutex_unlock(&connector->eld_mutex);
++		if (eld_changed)
++			handle_plugged_change(hdmi, true);
+ 
+ 		edid_blob_ptr = connector->edid_blob_ptr;
+ 		ext_block_num = edid_blob_ptr->length / HDMI_EDID_BLOCK_LEN - 1;

@@ -1,0 +1,17 @@
+/etc/chromium-browser/native-messaging-hosts/ff2mpv.json
+/etc/chromium-browser/policies/managed/h96-youtube.json
+/etc/chromium/native-messaging-hosts/ff2mpv.json
+/etc/chromium/policies/managed/h96-youtube.json
+/etc/h96/cec-keymap.conf
+/etc/h96/transcode.conf
+/etc/mpv/hdr-kms.conf
+/etc/mpv/hdr.conf
+/etc/mpv/motion.conf
+/etc/mpv/passthrough.conf
+/etc/mpv/scripts/h96-dpms-wake.lua
+/etc/mpv/scripts/h96-mpris.lua
+/etc/opt/chrome/native-messaging-hosts/ff2mpv.json
+/etc/systemd/system/h96-video-setup.service.d/zz-h96-apt-order.conf
+/etc/systemd/system/h96-ytdlp-update.timer.d/zz-h96-boot.conf
+/etc/xdg/autostart/h96-cec-wake.desktop
+/etc/yt-dlp.conf

@@ -1,0 +1,53 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: H96 build <builder@h96-build>
+Date: Mon, 19 Oct 2026 00:00:00 +0000
+Subject: [PATCH 19/59] arm64: dts: rockchip: h96-max-v58: 6.1 pstore layout,
+ eMMC CQE and VOP DVFS off
+
+- ramoops: reg 0xf0000 at 0x110000, record 0x20000, console 0x80000,
+  pmsg 0x50000, ftrace 0, no boot-log (layout of 6.1 kernel with 8.0
+  DTB). 6.12 t1 layout (dmesg 2 x 0x18000, console at 0x140000) left
+  6.1 unable to read records of a failed 6.12 boot after fallback.
+- sdhci: supports-cqe removed; 8.0 DTB never enabled eMMC command
+  queueing on this board.
+- vop: operating-points-v2 and vop-supply removed; 8.0 DTB has no VOP
+  aclk DVFS, aclk stays at assigned 800 MHz.
+
+6.12 t2.
+---
+ .../boot/dts/rockchip/rk3588-h96-max-v58.dts  | 22 +++++++++++++++++++
+ 1 file changed, 22 insertions(+)
+
+diff --git a/arch/arm64/boot/dts/rockchip/rk3588-h96-max-v58.dts b/arch/arm64/boot/dts/rockchip/rk3588-h96-max-v58.dts
+index 82690dc40..863af8161 100644
+--- a/arch/arm64/boot/dts/rockchip/rk3588-h96-max-v58.dts
++++ b/arch/arm64/boot/dts/rockchip/rk3588-h96-max-v58.dts
+@@ -499,6 +499,28 @@ opp-1008000000 {
+ 	};
+ };
+ 
++/* pstore layout of the 6.1 kernel (8.0 DTB): either kernel reads the other's records */
++&ramoops {
++	reg = <0x0 0x110000 0x0 0xf0000>;
++	record-size = <0x20000>;
++	console-size = <0x80000>;
++	ftrace-size = <0x0>;
++	pmsg-size = <0x50000>;
++	/delete-property/ boot-log-size;
++	/delete-property/ boot-log-count;
++};
++
++/* eMMC without command queueing, as 8.0 DTB */
++&sdhci {
++	/delete-property/ supports-cqe;
++};
++
++/* VOP aclk DVFS off, as 8.0 DTB: aclk stays at assigned rate, no vdd_log vote */
++&vop {
++	/delete-property/ operating-points-v2;
++	/delete-property/ vop-supply;
++};
++
+ /* AV1 decoder and its IOMMU */
+ &av1d {
+ 	status = "okay";

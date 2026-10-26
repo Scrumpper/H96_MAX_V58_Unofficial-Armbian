@@ -1,0 +1,16 @@
+Source: h96-boot
+Section: admin
+Priority: optional
+Maintainer: Scrumpper <190908034+Scrumpper@users.noreply.github.com>
+Rules-Requires-Root: no
+Standards-Version: 4.7.0
+
+Package: h96-boot
+Architecture: all
+Multi-Arch: foreign
+Depends: h96-base (= 8.0.0~r39)
+Description: H96 MAX V58 boot chain guards: apt pins, update guards, EDID, hang recovery
+ Apt pin protecting boot packages, armbian-update stub and guard path unit,
+ update diversion service, initramfs EDID hook and blobs, kernel staging
+ scripts, watchdog and panic sysctl settings. Nothing under /boot is owned by
+ this package.

@@ -1,0 +1,7 @@
+/etc/apt/preferences.d/03-h96-box64
+/etc/apt/sources.list.d/box64.sources
+/etc/apt/sources.list.d/box86.sources
+/etc/apt/trusted.gpg.d/box64-debs-archive-keyring.gpg
+/etc/apt/trusted.gpg.d/box86-debs-archive-keyring.gpg
+/etc/modules-load.d/xpad.conf
+/etc/sysctl.d/zz-h96-steam.conf

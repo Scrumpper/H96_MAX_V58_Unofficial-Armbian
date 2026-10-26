@@ -1,0 +1,11 @@
+#!/bin/sh
+# Put the forced EDID into the initramfs so drm.edid_firmware resolves at the first HDMI probe.
+# Install as /etc/initramfs-tools/hooks/h96-edid (0755), then update-initramfs -u.
+PREREQ=""
+prereqs() { echo "$PREREQ"; }
+case "$1" in prereqs) prereqs; exit 0;; esac
+. /usr/share/initramfs-tools/hook-functions
+for f in /lib/firmware/edid/h96-sink-audio.bin; do
+  [ -f "$f" ] && copy_file firmware "$f" "/usr/lib/firmware/edid/$(basename "$f")"
+done
+exit 0

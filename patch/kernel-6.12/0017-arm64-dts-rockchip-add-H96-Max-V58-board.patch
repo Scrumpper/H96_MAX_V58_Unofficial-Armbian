@@ -1,0 +1,590 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: H96 build <builder@h96-build>
+Date: Sun, 18 Oct 2026 00:00:00 +0000
+Subject: [PATCH 17/59] arm64: dts: rockchip: add H96 Max V58 board
+
+Board DTS for this tree's RK3588 layout. Base is
+rk3588-nvr-demo-v10-android.dts, the board the box's vendor DTB is
+built from. Board content follows the H96 8.0 DTB (vendor DTB plus
+h96-max-v58.dtso overlay):
+
+- GPU: Panthor binding on the vendor gpu node (device stays
+  fb000000.gpu), CRU core clock, 300 to 1000 MHz table, gpu-supply on
+  the power controller, NPLL 4 GHz.
+- cursor-win-id 0 on VP0; watchdog on; cpu-sleep idle state on; 408 to
+  1008 MHz CPU points for the standard RK3588 bin (opp-supported-hw
+  0xe9, same mask as this tree's 1200 MHz and up points).
+- WiFi on pcie2x1l0 with reset gpio and wl_reg_on hog, SDIO off,
+  wlan/bluetooth platform nodes, uart9 without DMA.
+- HDMI0 CEC, i2c-gpio DDC bus (alias i2c10), I2S5 hdmi-path, HDMI
+  sound cards as simple-audio-card with the 8.0 card names, S/PDIF tx0.
+- RTC interrupt and 32 kHz clock output, gmac1 reset gpio, USB3 OTG0
+  host mode, work LED, vendor remote key tables, AV1 decoder.
+- es8311, i2s0 sound, gmac0, csi2 dphy, mipi dcphy, DP1, i2c5, vepu
+  and fiq-debugger off as in the 8.0 DTB.
+
+H96 series: 6.12 port of tvboox dtb-overlay/src/h96-max-v58.dtso and
+the board nodes of the vendor DTB.
+---
+ arch/arm64/boot/dts/rockchip/Makefile         |   1 +
+ .../boot/dts/rockchip/rk3588-h96-max-v58.dts  | 539 ++++++++++++++++++
+ 2 files changed, 540 insertions(+)
+ create mode 100644 arch/arm64/boot/dts/rockchip/rk3588-h96-max-v58.dts
+
+diff --git a/arch/arm64/boot/dts/rockchip/Makefile b/arch/arm64/boot/dts/rockchip/Makefile
+index 1d5eeac5e..91d1f873b 100644
+--- a/arch/arm64/boot/dts/rockchip/Makefile
++++ b/arch/arm64/boot/dts/rockchip/Makefile
+@@ -409,6 +409,7 @@ dtb-$(CONFIG_ARCH_ROCKCHIP) += rk3588-evb10-v10.dtb
+ dtb-$(CONFIG_ARCH_ROCKCHIP) += rk3588-evb10-v10-linux.dtb
+ dtb-$(CONFIG_ARCH_ROCKCHIP) += rk3588-nvr-demo-v10.dtb
+ dtb-$(CONFIG_ARCH_ROCKCHIP) += rk3588-nvr-demo-v10-android.dtb
++dtb-$(CONFIG_ARCH_ROCKCHIP) += rk3588-h96-max-v58.dtb
+ dtb-$(CONFIG_ARCH_ROCKCHIP) += rk3588-nvr-demo-v10-ipc-4x-linux.dtb
+ dtb-$(CONFIG_ARCH_ROCKCHIP) += rk3588-nvr-demo-v10-spi-nand.dtb
+ dtb-$(CONFIG_ARCH_ROCKCHIP) += rk3588-nvr-demo1-v21.dtb
+diff --git a/arch/arm64/boot/dts/rockchip/rk3588-h96-max-v58.dts b/arch/arm64/boot/dts/rockchip/rk3588-h96-max-v58.dts
+new file mode 100644
+index 000000000..82690dc40
+--- /dev/null
++++ b/arch/arm64/boot/dts/rockchip/rk3588-h96-max-v58.dts
+@@ -0,0 +1,539 @@
++// SPDX-License-Identifier: (GPL-2.0+ OR MIT)
++/*
++ * H96 Max V58 (RK3588). Base: Rockchip NVR DEMO V10 Android board, which the
++ * vendor DTB of this box is built from. Board changes follow the H96 8.0 DTB
++ * (vendor DTB + h96-max-v58.dtso overlay); SoC nodes follow this tree.
++ */
++
++#include "rk3588-nvr-demo-v10-android.dts"
++
++/ {
++	model = "H96 Max V58";
++
++	aliases {
++		i2c10 = &i2c_ddc;
++	};
++
++	/* HDMI0 DDC as GPIO I2C: on-chip I2CM gets no transfer through on this board */
++	i2c_ddc: i2c-ddc {
++		compatible = "i2c-gpio";
++		#address-cells = <1>;
++		#size-cells = <0>;
++		sda-gpios = <&gpio4 RK_PC0 (GPIO_ACTIVE_HIGH | GPIO_OPEN_DRAIN)>;
++		scl-gpios = <&gpio4 RK_PB7 (GPIO_ACTIVE_HIGH | GPIO_OPEN_DRAIN)>;
++		i2c-gpio,delay-us = <5>;
++		status = "okay";
++	};
++
++	spdif_tx0_dc: spdif-tx0-dc {
++		compatible = "linux,spdif-dit";
++		#sound-dai-cells = <0>;
++		status = "okay";
++	};
++
++	spdif-tx0-sound {
++		compatible = "simple-audio-card";
++		simple-audio-card,mclk-fs = <128>;
++		simple-audio-card,name = "rockchip,spdif-tx0";
++		status = "okay";
++
++		simple-audio-card,cpu {
++			sound-dai = <&spdif_tx0>;
++		};
++
++		simple-audio-card,codec {
++			sound-dai = <&spdif_tx0_dc>;
++		};
++	};
++
++	wireless_bluetooth: wireless-bluetooth {
++		compatible = "bluetooth-platdata";
++		clocks = <&hym8563>;
++		clock-names = "ext_clock";
++		uart_rts_gpios = <&gpio4 RK_PC4 GPIO_ACTIVE_LOW>;
++		pinctrl-names = "default", "rts_gpio";
++		pinctrl-0 = <&uart9m0_rtsn>, <&bt_reset_gpio>, <&bt_wake_gpio>, <&bt_irq_gpio>;
++		pinctrl-1 = <&uart9_gpios>;
++		BT,reset_gpio = <&gpio0 RK_PC6 GPIO_ACTIVE_HIGH>;
++		BT,wake_gpio = <&gpio0 RK_PC5 GPIO_ACTIVE_HIGH>;
++		BT,wake_host_irq = <&gpio0 RK_PA0 GPIO_ACTIVE_HIGH>;
++		status = "okay";
++	};
++
++	wireless_wlan: wireless-wlan {
++		compatible = "wlan-platdata";
++		wifi_chip_type = "ap6255";
++		pinctrl-names = "default";
++		pinctrl-0 = <&wifi_host_wake_irq>, <&wifi_poweren_gpio>;
++		WIFI,host_wake_irq = <&gpio0 RK_PB2 GPIO_ACTIVE_HIGH>;
++		WIFI,poweren_gpio = <&gpio0 RK_PC4 GPIO_ACTIVE_HIGH>;
++		status = "okay";
++	};
++};
++
++/* GPU: Panthor binding on the vendor node, so the device stays fb000000.gpu */
++&gpu {
++	compatible = "rockchip,rk3588-mali", "arm,mali-valhall-csf";
++	clocks = <&cru CLK_GPU>, <&cru CLK_GPU_COREGROUP>, <&cru CLK_GPU_STACKS>;
++	clock-names = "core", "coregroup", "stacks";
++	interrupts = <GIC_SPI 92 IRQ_TYPE_LEVEL_HIGH>,
++		     <GIC_SPI 93 IRQ_TYPE_LEVEL_HIGH>,
++		     <GIC_SPI 94 IRQ_TYPE_LEVEL_HIGH>;
++	interrupt-names = "job", "mmu", "gpu";
++	operating-points-v2 = <&gpu_panthor_opp_table>;
++	/delete-property/ mem-supply;
++	/delete-property/ upthreshold;
++	/delete-property/ downdifferential;
++
++	gpu_panthor_opp_table: opp-table {
++		compatible = "operating-points-v2";
++
++		opp-300000000 {
++			opp-hz = /bits/ 64 <300000000>;
++			opp-microvolt = <675000 675000 850000>;
++		};
++		opp-400000000 {
++			opp-hz = /bits/ 64 <400000000>;
++			opp-microvolt = <675000 675000 850000>;
++		};
++		opp-500000000 {
++			opp-hz = /bits/ 64 <500000000>;
++			opp-microvolt = <675000 675000 850000>;
++		};
++		opp-600000000 {
++			opp-hz = /bits/ 64 <600000000>;
++			opp-microvolt = <675000 675000 850000>;
++		};
++		opp-700000000 {
++			opp-hz = /bits/ 64 <700000000>;
++			opp-microvolt = <700000 700000 850000>;
++		};
++		opp-800000000 {
++			opp-hz = /bits/ 64 <800000000>;
++			opp-microvolt = <750000 750000 850000>;
++		};
++		opp-900000000 {
++			opp-hz = /bits/ 64 <900000000>;
++			opp-microvolt = <800000 800000 850000>;
++		};
++		opp-1000000000 {
++			opp-hz = /bits/ 64 <1000000000>;
++			opp-microvolt = <850000 850000 850000>;
++		};
++	};
++};
++
++&power {
++	gpu-supply = <&vdd_gpu_s0>;
++};
++
++/* NPLL 4 GHz for the 1000 MHz GPU point; other rates as in rk3588s.dtsi */
++&cru {
++	assigned-clock-rates =
++		<1100000000>, <786432000>,
++		<4000000000>, <1188000000>,
++		<702000000>,
++		<400000000>, <500000000>,
++		<750000000>, <100000000>,
++		<400000000>, <100000000>,
++		<200000000>,
++		<375000000>, <150000000>,
++		<200000000>, <12000000>,
++		<12000000>, <99000000>,
++		<20000000>;
++};
++
++/* hardware cursor plane on VP0 */
++&vp0 {
++	cursor-win-id = <0>;
++};
++
++/* onboard WiFi on PCIe 2.0 x1 (pcie2x1l0), vestigial SDIO off */
++&pcie2x1l0 {
++	reset-gpios = <&gpio4 RK_PA5 GPIO_ACTIVE_HIGH>;
++	vpcie3v3-supply = <&vcc3v3_pcie30>;
++	rockchip,skip-scan-in-resume;
++	status = "okay";
++};
++
++&vcc3v3_pcie30 {
++	regulator-always-on;
++	regulator-boot-on;
++	status = "okay";
++};
++
++&gpio0 {
++	wl_reg_on_hog {
++		gpio-hog;
++		gpios = <RK_PC4 GPIO_ACTIVE_HIGH>;
++		line-name = "wl_reg_on";
++		output-high;
++	};
++};
++
++&sdio {
++	status = "disabled";
++};
++
++/* no analog audio */
++&es8311 {
++	status = "disabled";
++};
++
++&i2s0_sound {
++	status = "disabled";
++};
++
++/* Bluetooth UART, no DMA */
++&uart9 {
++	pinctrl-0 = <&uart9m0_xfer &uart9m0_ctsn>;
++	/delete-property/ dmas;
++	/delete-property/ dma-names;
++	status = "okay";
++};
++
++&wdt {
++	status = "okay";
++};
++
++/* HDMI0: CEC, external DDC bus, I2S path; HDMI1 not wired */
++&hdmi0 {
++	cec-enable;
++	ddc-i2c-bus = <&i2c_ddc>;
++	pinctrl-0 = <&hdmim0_tx0_cec &hdmim0_tx0_hpd>;
++};
++
++&hdmi1 {
++	/delete-property/ cec-enable;
++};
++
++&i2s5_8ch {
++	assigned-clock-parents = <&cru PLL_AUPLL>;
++	rockchip,hdmi-path;
++	/delete-property/ rockchip,always-on;
++};
++
++&i2s6_8ch {
++	assigned-clock-parents = <&cru PLL_AUPLL>;
++	/delete-property/ rockchip,hdmi-path;
++	/delete-property/ rockchip,always-on;
++};
++
++&hdmi0_sound {
++	compatible = "simple-audio-card";
++	simple-audio-card,format = "i2s";
++	simple-audio-card,mclk-fs = <128>;
++	simple-audio-card,name = "rockchip,hdmi0";
++	/delete-property/ rockchip,card-name;
++	/delete-property/ rockchip,mclk-fs;
++	/delete-property/ rockchip,cpu;
++	/delete-property/ rockchip,codec;
++	/delete-property/ rockchip,jack-det;
++	status = "okay";
++
++	simple-audio-card,cpu {
++		sound-dai = <&i2s5_8ch>;
++	};
++
++	simple-audio-card,codec {
++		sound-dai = <&hdmi0>;
++	};
++};
++
++&hdmi1_sound {
++	compatible = "simple-audio-card";
++	simple-audio-card,format = "i2s";
++	simple-audio-card,mclk-fs = <128>;
++	simple-audio-card,name = "rockchip,hdmi1";
++	/delete-property/ rockchip,card-name;
++	/delete-property/ rockchip,mclk-fs;
++	/delete-property/ rockchip,cpu;
++	/delete-property/ rockchip,codec;
++	/delete-property/ rockchip,jack-det;
++	status = "disabled";
++
++	simple-audio-card,cpu {
++		sound-dai = <&i2s6_8ch>;
++	};
++
++	simple-audio-card,codec {
++		sound-dai = <&hdmi1>;
++	};
++};
++
++/* S/PDIF on spdif_tx0 (m1 pins), spdif_tx5 (DP1 audio) off */
++&spdif_tx0 {
++	pinctrl-0 = <&spdif0m1_tx>;
++	status = "okay";
++};
++
++&spdif_tx5 {
++	status = "disabled";
++};
++
++/* RTC: interrupt on GPIO0_D3, 32 kHz clock output feeds the Bluetooth module */
++&hym8563 {
++	#clock-cells = <0>;
++	clock-frequency = <32768>;
++	clock-output-names = "hym8563";
++	interrupts = <RK_PD3 IRQ_TYPE_LEVEL_LOW>;
++};
++
++&rtc_int {
++	rockchip,pins = <0 RK_PD3 RK_FUNC_GPIO &pcfg_pull_up>;
++};
++
++&gmac0 {
++	status = "disabled";
++};
++
++&gmac1 {
++	snps,reset-gpio = <&gpio3 RK_PB7 GPIO_ACTIVE_LOW>;
++};
++
++&usbdrd_dwc3_0 {
++	dr_mode = "host";
++};
++
++&work_led {
++	gpios = <&gpio3 RK_PD4 GPIO_ACTIVE_HIGH>;
++	default-state = "on";
++	/delete-property/ linux,default-trigger;
++};
++
++/* blocks the 8.0 DTB leaves off */
++&csi2_dphy0_hw {
++	status = "disabled";
++};
++
++&csi2_dphy1_hw {
++	status = "disabled";
++};
++
++&mipidcphy0 {
++	status = "disabled";
++};
++
++&mipidcphy1 {
++	status = "disabled";
++};
++
++&route_dp0 {
++	status = "disabled";
++};
++
++&dp1 {
++	status = "disabled";
++};
++
++&i2c5 {
++	status = "disabled";
++};
++
++&vepu {
++	status = "disabled";
++};
++
++&fiq_debugger {
++	status = "disabled";
++};
++
++/* H96 remote and other vendor remotes (vendor DTB key tables) */
++&pwm3 {
++	/delete-node/ ir_key1;
++	/delete-node/ ir_key2;
++	/delete-node/ ir_key3;
++	/delete-node/ ir_key4;
++	/delete-node/ ir_key5;
++	/delete-node/ ir_key6;
++
++	ir_key1 {
++		rockchip,usercode = <0x4040>;
++		rockchip,key_table =
++			<0xf2 0xe8>, <0xbd 0x9e>, <0xf4 0x67>, <0xf1 0x6c>,
++			<0xef 0x69>, <0xee 0x6a>, <0xe5 0x66>, <0xe7 0x73>,
++			<0xe8 0x72>, <0xb2 0x74>, <0xbc 0x71>, <0xec 0x8b>,
++			<0xbf 0x190>, <0xe0 0x191>, <0xe1 0x192>, <0xe9 0xb7>,
++			<0xe6 0xf8>, <0xe8 0xb9>, <0xe7 0xba>, <0xf0 0x184>,
++			<0xbe 0x175>;
++	};
++
++	ir_key2 {
++		rockchip,usercode = <0xff00>;
++		rockchip,key_table =
++			<0xf9 0x66>, <0xbf 0x9e>, <0xfb 0x8b>, <0xaa 0xe8>,
++			<0xb9 0x67>, <0xe9 0x6c>, <0xb8 0x69>, <0xea 0x6a>,
++			<0xeb 0x72>, <0xef 0x73>, <0xf7 0x71>, <0xe7 0x74>,
++			<0xfc 0x74>, <0xa9 0x72>, <0xa8 0xa4>, <0xe0 0x72>,
++			<0xa5 0x72>, <0xab 0xb7>, <0xb7 0x184>, <0xe8 0x184>,
++			<0xf8 0xb8>, <0xaf 0xb9>, <0xed 0x72>, <0xee 0xba>,
++			<0xb3 0x72>, <0xf1 0x72>, <0xf2 0x72>, <0xf3 0xd9>,
++			<0xb4 0x72>, <0xa4 0x8d>, <0xbe 0xd9>;
++	};
++
++	ir_key3 {
++		rockchip,usercode = <0x1dcc>;
++		rockchip,key_table =
++			<0xee 0xe8>, <0xf0 0x9e>, <0xf8 0x67>, <0xbb 0x6c>,
++			<0xef 0x69>, <0xed 0x6a>, <0xfc 0x66>, <0xf1 0x73>,
++			<0xfd 0x72>, <0xb7 0xd9>, <0xff 0x74>, <0xf3 0x71>,
++			<0xbf 0x8b>, <0xf9 0x191>, <0xf5 0x192>, <0xb3 0x184>,
++			<0xbe 0x02>, <0xba 0x03>, <0xb2 0x04>, <0xbd 0x05>,
++			<0xf9 0x06>, <0xb1 0x07>, <0xfc 0x08>, <0xf8 0x09>,
++			<0xb0 0x0a>, <0xb6 0x0b>, <0xb5 0x0e>;
++	};
++
++	ir_key4 {
++		rockchip,usercode = <0xfe01>;
++		rockchip,key_table =
++			<0xec 0xe8>, <0xe6 0x9e>, <0xe9 0x67>, <0xe5 0x6c>,
++			<0xae 0x69>, <0xaf 0x6a>, <0xee 0x66>, <0xe7 0x73>,
++			<0xef 0x72>, <0xbf 0x74>, <0xbe 0x71>, <0xb3 0x8b>,
++			<0xff 0x184>, <0xb1 0x02>, <0xf2 0x03>, <0xf3 0x04>,
++			<0xb5 0x05>, <0xf6 0x06>, <0xf7 0x07>, <0xb9 0x08>,
++			<0xfa 0x09>, <0xfb 0x0a>, <0xfe 0x0b>, <0x0e 0x68>,
++			<0x0d 0x6d>, <0xa5 0xa4>, <0xbd 0x0e>, <0xbc 0xb7>,
++			<0xf0 0xba>, <0xb4 0x19c>, <0xb8 0x1e>, <0xb0 0x197>;
++	};
++
++	ir_key5 {
++		rockchip,usercode = <0x7f80>;
++		rockchip,key_table =
++			<0xec 0xe8>, <0xd8 0x9e>, <0xc7 0x67>, <0xbf 0x6c>,
++			<0xc8 0x69>, <0xc6 0x6a>, <0x8c 0x66>, <0x78 0x73>,
++			<0x76 0x72>, <0x7e 0x74>, <0x7c 0x8b>, <0xb7 0x184>;
++	};
++
++	ir_key6 {
++		rockchip,usercode = <0xfd01>;
++		rockchip,key_table =
++			<0x31 0xe8>, <0x2f 0x9e>, <0x35 0x67>, <0x2d 0x6c>,
++			<0x66 0x69>, <0x3e 0x6a>, <0x6a 0x66>, <0x5e 0x73>,
++			<0x47 0x72>, <0x23 0x74>, <0x3a 0x184>, <0x0d 0x40>;
++	};
++};
++
++/* cpu-sleep idle state on; 408 to 1008 MHz points for the standard RK3588 bin */
++&CPU_SLEEP {
++	status = "okay";
++};
++
++&cluster0_opp_table {
++	opp-408000000 {
++		opp-supported-hw = <0xe9 0xffff>;
++		opp-hz = /bits/ 64 <408000000>;
++		opp-microvolt = <675000 675000 950000>, <675000 675000 950000>;
++		clock-latency-ns = <40000>;
++	};
++	opp-600000000 {
++		opp-supported-hw = <0xe9 0xffff>;
++		opp-hz = /bits/ 64 <600000000>;
++		opp-microvolt = <675000 675000 950000>, <675000 675000 950000>;
++		clock-latency-ns = <40000>;
++	};
++	opp-816000000 {
++		opp-supported-hw = <0xe9 0xffff>;
++		opp-hz = /bits/ 64 <816000000>;
++		opp-microvolt = <675000 675000 950000>, <675000 675000 950000>;
++		clock-latency-ns = <40000>;
++	};
++	opp-1008000000 {
++		opp-supported-hw = <0xe9 0xffff>;
++		opp-hz = /bits/ 64 <1008000000>;
++		opp-microvolt = <675000 675000 950000>, <675000 675000 950000>;
++		clock-latency-ns = <40000>;
++	};
++};
++
++&cluster1_opp_table {
++	opp-408000000 {
++		opp-supported-hw = <0xe9 0xffff>;
++		opp-hz = /bits/ 64 <408000000>;
++		opp-microvolt = <675000 675000 1000000>, <675000 675000 1000000>;
++		clock-latency-ns = <40000>;
++	};
++	opp-600000000 {
++		opp-supported-hw = <0xe9 0xffff>;
++		opp-hz = /bits/ 64 <600000000>;
++		opp-microvolt = <675000 675000 1000000>, <675000 675000 1000000>;
++		clock-latency-ns = <40000>;
++	};
++	opp-816000000 {
++		opp-supported-hw = <0xe9 0xffff>;
++		opp-hz = /bits/ 64 <816000000>;
++		opp-microvolt = <675000 675000 1000000>, <675000 675000 1000000>;
++		clock-latency-ns = <40000>;
++	};
++	opp-1008000000 {
++		opp-supported-hw = <0xe9 0xffff>;
++		opp-hz = /bits/ 64 <1008000000>;
++		opp-microvolt = <675000 675000 1000000>, <675000 675000 1000000>;
++		clock-latency-ns = <40000>;
++	};
++};
++
++&cluster2_opp_table {
++	opp-408000000 {
++		opp-supported-hw = <0xe9 0xffff>;
++		opp-hz = /bits/ 64 <408000000>;
++		opp-microvolt = <675000 675000 1000000>, <675000 675000 1000000>;
++		clock-latency-ns = <40000>;
++	};
++	opp-600000000 {
++		opp-supported-hw = <0xe9 0xffff>;
++		opp-hz = /bits/ 64 <600000000>;
++		opp-microvolt = <675000 675000 1000000>, <675000 675000 1000000>;
++		clock-latency-ns = <40000>;
++	};
++	opp-816000000 {
++		opp-supported-hw = <0xe9 0xffff>;
++		opp-hz = /bits/ 64 <816000000>;
++		opp-microvolt = <675000 675000 1000000>, <675000 675000 1000000>;
++		clock-latency-ns = <40000>;
++	};
++	opp-1008000000 {
++		opp-supported-hw = <0xe9 0xffff>;
++		opp-hz = /bits/ 64 <1008000000>;
++		opp-microvolt = <675000 675000 1000000>, <675000 675000 1000000>;
++		clock-latency-ns = <40000>;
++	};
++};
++
++/* AV1 decoder and its IOMMU */
++&av1d {
++	status = "okay";
++};
++
++&av1d_mmu {
++	compatible = "rockchip,iommu-av1d";
++};
++
++&pinctrl {
++	wireless-bluetooth {
++		uart9_gpios: uart9-gpios {
++			rockchip,pins = <4 RK_PC4 RK_FUNC_GPIO &pcfg_pull_none>;
++		};
++
++		bt_reset_gpio: bt-reset-gpio {
++			rockchip,pins = <0 RK_PC6 RK_FUNC_GPIO &pcfg_pull_none>;
++		};
++
++		bt_wake_gpio: bt-wake-gpio {
++			rockchip,pins = <0 RK_PC5 RK_FUNC_GPIO &pcfg_pull_none>;
++		};
++
++		bt_irq_gpio: bt-irq-gpio {
++			rockchip,pins = <0 RK_PA0 RK_FUNC_GPIO &pcfg_pull_down>;
++		};
++	};
++
++	wireless-wlan {
++		wifi_host_wake_irq: wifi-host-wake-irq {
++			rockchip,pins = <0 RK_PB2 RK_FUNC_GPIO &pcfg_pull_down>;
++		};
++
++		wifi_poweren_gpio: wifi-poweren-gpio {
++			rockchip,pins = <0 RK_PC4 RK_FUNC_GPIO &pcfg_pull_up>;
++		};
++	};
++};

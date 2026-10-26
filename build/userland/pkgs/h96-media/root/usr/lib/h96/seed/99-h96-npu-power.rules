@@ -1,0 +1,5 @@
+# /etc/udev/rules.d/99-h96-npu-power.rules
+# Written by `h96-npu power`. Re-applies the chosen NPU devfreq governor on
+# every boot. Selecting another profile rewrites this file; deleting it hands
+# the NPU back to the kernel default (rknpu_ondemand).
+SUBSYSTEM=="devfreq", KERNEL=="fdab0000.npu", ATTR{governor}="powersave"

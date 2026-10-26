@@ -1,0 +1,17 @@
+[Unit]
+Documentation=file:/usr/share/doc/h96-base/COMMANDS.md
+Description=H96 Max V58 standalone wpa_supplicant for wlan0
+# Decoupled from wlan0 device readiness and network.target ordering: a hard dependency here can stall network.target and everything after it (sshd included) indefinitely, with no default bound, if the PCIe WiFi device enumerates late. If wlan0 is not ready, ExecStart fails and Restart=on-failure retries.
+After=multi-user.target
+# StartLimitIntervalSec is a [Unit] key on this systemd (259); in [Service] it is silently ignored and the default rate limit (5 starts / 10s) applies instead of unlimited retries.
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+ExecStartPre=-/usr/sbin/rfkill unblock wifi
+ExecStart=/usr/sbin/wpa_supplicant -c/etc/wpa_supplicant/wpa_supplicant-wlan0.conf -iwlan0
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

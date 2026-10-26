@@ -1,0 +1,21 @@
+#!/bin/sh
+# h96-watch-mpv: desktop (X11) hardware-video launcher. Usage: h96-watch-mpv <file|URL>
+# vo/hwdec from /etc/mpv/mpv.conf (rkmpp zero-copy); 8-bit VP9 first: 10-bit decodes in software
+usage() {
+  cat <<'EOF'
+h96-watch-mpv: play a file or URL fullscreen in mpv with hardware video decode
+
+  h96-watch-mpv <file|URL> [mpv options]
+  h96-watch-mpv --help
+
+Uses vo and hwdec from /etc/mpv/mpv.conf (rkmpp). YouTube and other yt-dlp
+URLs pick 8-bit VP9 up to 1080p first, then AV1 SDR, then other codecs.
+Menu entry: "Play in mpv (hardware video)".
+EOF
+}
+case "${1:-}" in
+  -h|--help) usage; exit 0;;
+  "") usage >&2; exit 2;;
+esac
+exec mpv --fullscreen \
+  --ytdl-format='bestvideo[height<=?1080][vcodec=vp9]+bestaudio/bestvideo[height<=?1080][vcodec^=av01][dynamic_range=SDR]+bestaudio/bestvideo[height<=?1080][vcodec!*=av01]+bestaudio/best[height<=?1080]' "$@"

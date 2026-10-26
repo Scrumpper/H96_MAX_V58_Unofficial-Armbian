@@ -1,0 +1,104 @@
+#!/bin/bash
+# h96-autologin-setup: lightdm autologin for the desktop user (logout -> login applies display scale).
+# --boot (h96-autologin.service) sets it once; an existing choice (owner edit, restore, --off) stays.
+set -uo pipefail
+
+CONF=/etc/lightdm/lightdm.conf.d/70-h96-autologin.conf
+FLAG=/var/lib/h96/autologin-set
+ROOT=${H96_AUTOLOGIN_ROOT:-}  # test root (empty on the box)
+CONF=$ROOT$CONF FLAG=$ROOT$FLAG
+
+usage() {
+    cat <<'EOF'
+usage: h96-autologin-setup [--on | --off | --status | --boot] [--session plasma|plasmax11]
+  (none), --on  autologin for the first desktop account on the Plasma X11 session
+  --session S   with --on (or alone): plasmax11 (Plasma X11, default) or plasma
+                (Plasma Wayland, experimental: 4K60 video drops frames)
+  --off         remove the H96 autologin drop-in; login screen asks for the password
+  --status      print autologin user and session, or off
+  --boot        boot unit: sets autologin once; keeps any later choice
+EOF
+}
+
+need_root() { [ -n "$ROOT" ] || [ "$(id -u)" = 0 ] || { echo "h96-autologin-setup: run as root" >&2; exit 1; }; }
+set_flag() { install -d -m 0755 "${FLAG%/*}" && touch "$FLAG"; }
+
+# autologin-user= that lightdm uses: last value over lightdm.conf then lightdm.conf.d/*.conf in order
+current() {
+    local f v last=""
+    for f in "$ROOT"/etc/lightdm/lightdm.conf "$ROOT"/etc/lightdm/lightdm.conf.d/*.conf; do
+        [ -f "$f" ] || continue
+        v=$(sed -n 's/^[[:space:]]*autologin-user[[:space:]]*=[[:space:]]*//p' "$f" | tail -1)
+        [ -n "$v" ] && last=$v
+    done
+    printf '%s' "$last"
+}
+
+apply() {
+    local session u
+    session=plasmax11
+    if [ "$SESSION" = plasma ]; then
+        session=plasma
+        [ -e "$ROOT/usr/share/wayland-sessions/plasma.desktop" ] || {
+            echo "h96-autologin: Plasma Wayland session not installed (wayland-sessions/plasma.desktop, kwin-wayland); nothing changed" >&2
+            exit 1; }
+    elif [ ! -e "$ROOT/usr/share/xsessions/$session.desktop" ]; then
+        session=$(basename "$(ls "$ROOT"/usr/share/xsessions/plasma*.desktop 2>/dev/null | head -1)" .desktop 2>/dev/null)
+    fi
+    [ -n "$session" ] || { echo "h96-autologin: no Plasma session installed"; return 0; }
+    u=$(awk -F: '$3>=1000 && $3<65534 {print $1; exit}' "$ROOT/etc/passwd")
+    [ -n "$u" ] || { echo "h96-autologin: no desktop account yet"; return 0; }
+    # --session: same user with other session is rewritten; without it an existing user entry stays
+    if ! { [ -f "$CONF" ] && grep -q "^autologin-user=$u$" "$CONF" && \
+           { [ -z "$SESSION" ] || grep -q "^autologin-session=$session$" "$CONF"; }; }; then
+        install -d -m 0755 "${CONF%/*}"
+        cat > "$CONF" <<EOF
+# H96: auto-login the desktop user so display-scale changes (and normal use)
+# apply on logout->login with no manual password step. Off: h96-autologin-setup --off
+[Seat:*]
+autologin-user=$u
+autologin-session=$session
+autologin-user-timeout=0
+EOF
+        echo "h96-autologin: enabled for $u (session $session$([ "$session" = plasma ] && echo ", Plasma Wayland, experimental"))"
+    fi
+    set_flag
+}
+
+SESSION=""
+args=()
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --session) [ $# -ge 2 ] || { usage >&2; exit 2; }; SESSION=$2; shift 2 ;;
+        --session=*) SESSION=${1#--session=}; shift ;;
+        *) args+=("$1"); shift ;;
+    esac
+done
+case "$SESSION" in ""|plasma|plasmax11) ;; *) echo "h96-autologin-setup: --session takes plasma or plasmax11" >&2; exit 2 ;; esac
+set -- "${args[@]}"
+[ $# -le 1 ] || { usage >&2; exit 2; }
+[ -z "$SESSION" ] || [ $# -eq 0 ] || [ "$1" = --on ] || { usage >&2; exit 2; }
+case "${1:-}" in
+    ""|--on)
+        need_root; apply ;;
+    --boot)
+        need_root
+        [ -e "$FLAG" ] && exit 0
+        if [ -n "$(current)" ]; then set_flag; exit 0; fi
+        apply ;;
+    --off)
+        need_root
+        rm -f "$CONF"; set_flag
+        u=$(current)
+        if [ -n "$u" ]; then echo "h96-autologin: H96 drop-in removed; another lightdm file still sets autologin-user=$u"
+        else echo "h96-autologin: off (login screen asks for the password)"; fi ;;
+    --status)
+        u=$(current)
+        if [ -n "$u" ]; then
+            s=$(sed -n 's/^autologin-session=//p' "$CONF" 2>/dev/null | tail -1)
+            echo "autologin: $u${s:+ (session $s)}$([ "$s" = plasma ] && echo " Plasma Wayland, experimental")"
+        else echo "autologin: off"; fi ;;
+    -h|--help) usage ;;
+    *) usage >&2; exit 2 ;;
+esac
+exit 0

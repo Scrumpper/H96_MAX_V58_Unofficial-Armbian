@@ -1,0 +1,74 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: H96 build <builder@h96-build>
+Date: Mon, 19 Oct 2026 21:11:18 -0700
+Subject: [PATCH 22/59] arm64: dts: rockchip: h96-max-v58: gpiod property names
+ for rfkill-wlan and rfkill-bt
+
+The 6.12 vendor rfkill drivers request their GPIOs through gpiod
+(net/rfkill/rfkill-wlan.c rkwlangpiod_request(): devm_gpiod_get(dev,
+"WIFI,poweren" / "WIFI,vbat" / "WIFI,reset" / "WIFI,host_wake");
+net/rfkill/rfkill-bt.c rkgpiod_request(): "BT,power" / "BT,reset" /
+"BT,wake" / "BT,wake_host", plus of_get_named_gpio(node,
+"uart_rts-gpios")). gpiod resolves <con_id>-gpios / <con_id>-gpio only.
+The 6.1 drivers read of_get_named_gpio_flags(node, "WIFI,poweren_gpio")
+and friends. This board file was ported from the 6.1 DTB and kept the
+6.1 names, so on 6.12 every lookup fails with -ENOENT.
+
+Evidence (t3 box boot 2026-10-19 20:42, journal of the t3 boot):
+  [WLAN_RFKILL]: rkwlangpiod_request failed to request WIFI,poweren gpio, err -2
+  [WLAN_RFKILL]: rkwlangpiod_request failed to request WIFI,host_wake gpio, err -2
+  [BT_RFKILL]: rkgpiod_request failed to request BT,reset gpio, err -2
+  [BT_RFKILL]: rkgpiod_request failed to request BT,wake gpio, err -2
+  [BT_RFKILL]: rkgpiod_request failed to request BT,wake_host gpio, err -2
+  [WLAN_RFKILL]: wifi turn on power [0]        (poweron->io NULL, no-op)
+6.1 on the same box: "WIFI,poweren_gpio = 20 flags = 0", "wifi turn on
+power [GPIO20-1]", PCIe Link up 0.6 s later.
+
+Effect on 6.12 without this change: WL_REG_ON is never driven, so the
+bcmdhd power cycle at first open does not reset the AP6275P; the PCIe
+re-link after rockchip_dw_pcie_pm_ctrl_for_user(RESET) fails every time
+(console ramoops: "PCIe Linking... LTSSM is 0x3" x20, "PCIe Link Fail
+hw_retries=0/1", "failed to establish pcie link, ret=-22" at 17.30 s),
+bcmdhd retries the power sequence, and the record ends 0.4 s later with
+the i2c0 interrupt lost on CPU0. BT power is a no-op as well.
+
+Names follow the 6.12 vendor boards (rk3588-evb7-v11.dtsi lines 256-272:
+uart_rts-gpios, BT,reset-gpios, BT,wake-gpios, BT,wake_host-gpios,
+WIFI,host_wake-gpios, WIFI,poweren-gpios). Pin assignments unchanged.
+---
+ arch/arm64/boot/dts/rockchip/rk3588-h96-max-v58.dts | 12 ++++++------
+ 1 file changed, 6 insertions(+), 6 deletions(-)
+
+diff --git a/arch/arm64/boot/dts/rockchip/rk3588-h96-max-v58.dts b/arch/arm64/boot/dts/rockchip/rk3588-h96-max-v58.dts
+index aa3702c22..6c10d5a1e 100644
+--- a/arch/arm64/boot/dts/rockchip/rk3588-h96-max-v58.dts
++++ b/arch/arm64/boot/dts/rockchip/rk3588-h96-max-v58.dts
+@@ -50,13 +50,13 @@ wireless_bluetooth: wireless-bluetooth {
+ 		compatible = "bluetooth-platdata";
+ 		clocks = <&hym8563>;
+ 		clock-names = "ext_clock";
+-		uart_rts_gpios = <&gpio4 RK_PC4 GPIO_ACTIVE_LOW>;
++		uart_rts-gpios = <&gpio4 RK_PC4 GPIO_ACTIVE_LOW>;
+ 		pinctrl-names = "default", "rts_gpio";
+ 		pinctrl-0 = <&uart9m0_rtsn>, <&bt_reset_gpio>, <&bt_wake_gpio>, <&bt_irq_gpio>;
+ 		pinctrl-1 = <&uart9_gpios>;
+-		BT,reset_gpio = <&gpio0 RK_PC6 GPIO_ACTIVE_HIGH>;
+-		BT,wake_gpio = <&gpio0 RK_PC5 GPIO_ACTIVE_HIGH>;
+-		BT,wake_host_irq = <&gpio0 RK_PA0 GPIO_ACTIVE_HIGH>;
++		BT,reset-gpios = <&gpio0 RK_PC6 GPIO_ACTIVE_HIGH>;
++		BT,wake-gpios = <&gpio0 RK_PC5 GPIO_ACTIVE_HIGH>;
++		BT,wake_host-gpios = <&gpio0 RK_PA0 GPIO_ACTIVE_HIGH>;
+ 		status = "okay";
+ 	};
+ 
+@@ -65,8 +65,8 @@ wireless_wlan: wireless-wlan {
+ 		wifi_chip_type = "ap6255";
+ 		pinctrl-names = "default";
+ 		pinctrl-0 = <&wifi_host_wake_irq>, <&wifi_poweren_gpio>;
+-		WIFI,host_wake_irq = <&gpio0 RK_PB2 GPIO_ACTIVE_HIGH>;
+-		WIFI,poweren_gpio = <&gpio0 RK_PC4 GPIO_ACTIVE_HIGH>;
++		WIFI,host_wake-gpios = <&gpio0 RK_PB2 GPIO_ACTIVE_HIGH>;
++		WIFI,poweren-gpios = <&gpio0 RK_PC4 GPIO_ACTIVE_HIGH>;
+ 		status = "okay";
+ 	};
+ };

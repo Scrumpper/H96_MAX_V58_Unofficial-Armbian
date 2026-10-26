@@ -1,0 +1,13 @@
+[Unit]
+Documentation=file:/usr/share/doc/h96-base/COMMANDS.md
+Description=H96 Max V58 Bluetooth (BCM4362A2 UART firmware loader + H4 attach)
+After=systemd-user-sessions.service
+
+[Service]
+Type=simple
+ExecStart=/usr/lib/h96/h96-bt-attach.py
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

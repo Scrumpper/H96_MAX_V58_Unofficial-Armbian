@@ -1,0 +1,163 @@
+#!/bin/bash
+# h96-steam: install Steam on demand (like h96-waydroid); native (Steam ARM, ARM64, Big Picture) or
+# emulated (x86-64 under FEX-Emu, KDE desktop) route, each with its own library; run one at a time.
+#
+# This project is not affiliated with, endorsed by or sponsored by Valve Corporation.
+# Steam, Proton and Steam Deck are trademarks of Valve Corporation.
+set -uo pipefail
+# shellcheck source=/dev/null
+[ -r /usr/lib/h96/banner.sh ] && . /usr/lib/h96/banner.sh
+command -v h96_banner >/dev/null 2>&1 || h96_banner() { :; }
+
+LIB=/usr/lib/h96/steam
+NATIVE="$LIB/steam-arm-install.sh"
+# Steam ARM installed by its script (package steam-arm-setup absent): installed copy of that installer
+SA_SCRIPT=/usr/local/share/steam-arm/steam-arm-install.sh
+[ -f "$NATIVE" ] || [ ! -f "$SA_SCRIPT" ] || NATIVE="$SA_SCRIPT"
+EMULATED="$LIB/h96-steam-fex-install.sh"
+# driver archive for gpu-in-emulation, bundled so install works offline and before its download exists
+PROVIDER="$LIB/steam-arm-fex-mesa-26.1.8-x86_64-i386.tar.zst"
+SA_CONF=/etc/steam-arm/steam-arm.conf
+SA_VER=$(sed -n 's/^SA_VERSION=//p' "$NATIVE" 2>/dev/null | head -1)
+SA_VER=${SA_VER:-?}
+# image files that --replace-other would retire (H96 Steam ARM 1.2 names); put back after the retire
+IMAGE_KEEP="/etc/udev/rules.d/60-h96-gamepad-hidraw.rules /etc/udev/rules.d/71-h96-xpad-dedup.rules
+/usr/sbin/h96-xpad-dedup /etc/sysctl.d/zz-h96-steam.conf"
+# components the image already provides (pad rules, pad dedup, map count): left out of --defaults
+IMAGE_SKIP=pad-hidraw,xpad-dedup,map-count
+
+die() { echo "h96-steam: $*" >&2; exit 1; }
+
+usage() {
+  cat <<EOF
+
+  h96-steam install [OPTIONS]            install the native ARM64 client (default)
+  h96-steam install emulated [OPTIONS]   install the x86-64 client under FEX-Emu
+  h96-steam status                       what is installed and what is running
+  h96-steam --help
+
+  --defaults          no checklist, install the default selection; native route
+                      leaves out ${IMAGE_SKIP//,/, } (image already provides them)
+  --keep              no checklist, components and account of last run (native)
+  --select a,b,c      install exactly these optional components
+  --skip a,b          defaults minus these
+  --list              print the optional components and exit
+
+Native route is Steam ARM ${SA_VER} (${NATIVE}). In terminal,
+without options, it opens Steam ARM settings menu (steam-arm-config). All its options:
+sudo h96-steam install --help
+
+Examples
+
+  sudo h96-steam install                 native client, settings menu
+  sudo h96-steam install --defaults      native client, no questions
+  sudo h96-steam install emulated --list what the emulated route can install
+
+After installing, start the client from the application menu ("Steam" for the emulated
+route, "Steam ARM" for the native one) or from a terminal with steam-fex / steam-arm.
+
+This project is not affiliated with, endorsed by or sponsored by Valve Corporation.
+Steam, Proton and Steam Deck are trademarks of Valve Corporation.
+EOF
+}
+
+status() {
+  echo "Native ARM64 client (Steam ARM):"
+  if [ -x /usr/local/bin/steam-arm ] && [ -f "$SA_CONF" ]; then
+    local home ver
+    home=$(sed -n 's/^ARMHOME_DIR=//p' "$SA_CONF" | tail -1); ver=$(sed -n 's/^VERSION=//p' "$SA_CONF" | tail -1)
+    echo "  installed          Steam ARM ${ver:-?}, launcher /usr/local/bin/steam-arm, client home ${home:-.local/share/steam-arm}"
+    echo "  running            $(pgrep -f 'steam -deckard' >/dev/null 2>&1 && echo yes || echo no)"
+    echo "  settings           steam-arm-config (menu), steam-arm-config --help"
+  elif grep -qs /etc/h96/steam-arm.conf /usr/local/bin/steam-arm; then
+    echo "  installed          earlier H96 Steam ARM 1.2; sudo h96-steam install --keep --replace-other moves it to Steam ARM ${SA_VER}"
+  else
+    echo "  not installed      sudo h96-steam install"
+  fi
+  echo "Emulated x86-64 client:"
+  if [ -x /usr/local/bin/steam-fex ]; then
+    echo "  installed          launcher /usr/local/bin/steam-fex, RootFS /opt/fex-rootfs/Ubuntu_24_04"
+    echo "  running            $(pgrep -f 'ubuntu12_32/steam ' >/dev/null 2>&1 && echo yes || echo no)"
+  else
+    echo "  not installed      sudo h96-steam install emulated"
+  fi
+  echo "Shared components:"
+  printf '  %-18s %s\n' "GL context copy" "$([ -f /usr/lib/aarch64-linux-gnu/libGLX_steamarmlax.so.0 ] || [ -f /usr/lib/aarch64-linux-gnu/libGLX_h96lax.so.0 ] && echo present || echo absent)"
+  printf '  %-18s %s\n' "Vulkan layer" "$([ -f /usr/lib/aarch64-linux-gnu/libVkLayer_steam_arm_spoof.so ] || [ -f /usr/lib/aarch64-linux-gnu/libVkLayer_h96_spoof.so ] && echo present || echo absent)"
+  printf '  %-18s %s\n' "map count" "$(cat /proc/sys/vm/max_map_count 2>/dev/null || echo unknown)"
+  local pad u
+  for u in steam-arm-pad-xbox h96-pad-xbox; do
+    # is-enabled prints its state (not-found included) and exits non-zero for anything but enabled
+    pad=$(systemctl is-enabled "$u" 2>/dev/null)
+    case "$pad" in ""|not-found) pad="";; *) break;; esac
+  done
+  printf '  %-18s %s\n' "pad as Xbox pad" "${pad:-not installed}"
+}
+
+ROUTE=""; ACTION="${1:-}"
+case "$ACTION" in
+  ""|-h|--help|help) usage; exit 0;;
+  status)            status; exit 0;;
+  install)           shift;;
+  *)                 echo "h96-steam: unknown command: $ACTION (see --help)" >&2; exit 2;;
+esac
+
+case "${1:-}" in
+  native)   ROUTE=native; shift;;
+  emulated) ROUTE=emulated; shift;;
+  "")       ROUTE=native;;
+  -*)       ROUTE=native;;
+  *)        echo "h96-steam: unknown route: $1 (native or emulated)" >&2; exit 2;;
+esac
+
+SCRIPT=$([ "$ROUTE" = native ] && echo "$NATIVE" || echo "$EMULATED")
+[ -f "$SCRIPT" ] || die "$SCRIPT is missing; it comes with the image (native route also from the Steam ARM release)"
+# information options print and exit inside the installer: no root, no banner
+for a in "$@"; do
+  case "$a" in --list|--help|-h|--detect) exec bash "$SCRIPT" "$@";; esac
+done
+[ "$(id -u)" = 0 ] || die "run as root: sudo h96-steam install ${ROUTE}"
+
+h96_banner "S T E A M"
+echo "h96-steam: route $ROUTE ($SCRIPT)"
+echo "h96-steam: not affiliated with Valve Corporation; Steam is a trademark of Valve Corporation."
+# bundled archive in place of its download, unless a custom driver archive is saved or given
+if [ "$ROUTE" = native ] && [ -f "$PROVIDER" ] && [ -z "${STEAM_ARM_PROVIDER_TARBALL:-}" ] \
+   && { ! grep -qs '^PROVIDER_CUSTOM_SHA256=.' "$SA_CONF" || printf '%s\n' "$@" | grep -qx -- --provider-default; }; then
+  export STEAM_ARM_PROVIDER_TARBALL="$PROVIDER"
+fi
+[ "$ROUTE" = native ] || exec bash "$SCRIPT" "$@"
+
+# --defaults: components the image already provides stay out (pad rules, pad dedup, map count)
+skip=""
+[ -f /etc/udev/rules.d/60-h96-gamepad-hidraw.rules ] && skip="$skip,pad-hidraw"
+[ -f /etc/udev/rules.d/71-h96-xpad-dedup.rules ] && skip="$skip,xpad-dedup"
+[ -f /etc/sysctl.d/zz-h96-steam.conf ] && skip="$skip,map-count"
+args=(); replace=0
+for a in "$@"; do
+  if [ "$a" = --defaults ] && [ -n "$skip" ]; then
+    args+=(--skip "${skip#,}"); echo "h96-steam: --defaults without ${skip#,} (image provides them)"
+  else
+    args+=("$a")
+  fi
+  [ "$a" = --replace-other ] && replace=1
+done
+[ "$replace" = 1 ] || exec bash "$SCRIPT" "${args[@]}"
+
+# --replace-other retires H96 Steam ARM 1.2 files, some of which are image files: put those back afterwards
+keep=$(mktemp -d) || die "no temporary folder"
+for f in $IMAGE_KEEP; do
+  [ -f "$f" ] && mkdir -p "$keep$(dirname "$f")" && cp -a "$f" "$keep$f"
+done
+bash "$SCRIPT" "${args[@]}"; rc=$?
+back=0
+for f in $IMAGE_KEEP; do
+  [ -f "$keep$f" ] && [ ! -e "$f" ] && cp -a "$keep$f" "$f" && back=$((back + 1))
+done
+rm -rf "$keep"
+if [ "$back" -gt 0 ]; then
+  echo "h96-steam: $back image file(s) put back after the retire"
+  udevadm control --reload-rules 2>/dev/null || true
+  sysctl -q -p /etc/sysctl.d/zz-h96-steam.conf 2>/dev/null || true
+fi
+exit "$rc"

@@ -1,0 +1,78 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Scrumpper <190908034+Scrumpper@users.noreply.github.com>
+Date: Tue, 20 Oct 2026 07:20:27 -0700
+Subject: [PATCH 38/59] drm/rockchip: dw_hdmi_qp: no gaming VRR when the mode
+ refresh is at or below the sink minimum
+
+Gaming VRR stretches the vertical front porch from the mode's vtotal
+up to vtotal * vrefresh / min_refresh. With a mode at or below the
+sink's minimum (24p or 48 Hz mode on a 48-120 Hz sink) that target is
+at or below the base vtotal, and the vsync handler would program a
+shorter frame than the mode: a refresh above the mode, outside what
+the sink accepts.
+
+Use the gaming range only when the sink lists one and the mode refresh
+is above its minimum, in atomic_check and in the vrr_enable callback;
+otherwise leave the CRTC range at 0 (VOP2 then keeps the base timing)
+and keep the VTEM packet off.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01P6itje71iKPFBX7YKkfvRo
+---
+ .../gpu/drm/rockchip/dw_hdmi_qp-rockchip.c    | 20 ++++++++++++++++---
+ 1 file changed, 17 insertions(+), 3 deletions(-)
+
+diff --git a/drivers/gpu/drm/rockchip/dw_hdmi_qp-rockchip.c b/drivers/gpu/drm/rockchip/dw_hdmi_qp-rockchip.c
+index 299f7fa48..f23a311db 100644
+--- a/drivers/gpu/drm/rockchip/dw_hdmi_qp-rockchip.c
++++ b/drivers/gpu/drm/rockchip/dw_hdmi_qp-rockchip.c
+@@ -1849,21 +1849,31 @@ static int dw_hdmi_rockchip_encoder_loader_protect(struct rockchip_drm_sub_dev *
+ 	return 0;
+ }
+ 
++/* gaming VRR only stretches frames: the sink minimum must be below the mode refresh */
++static bool dw_hdmi_rockchip_vrr_usable(struct rockchip_dw_hdmi_qp *hdmi,
++					const struct drm_display_mode *mode)
++{
++	return hdmi->vrr_cap.gaming_vrr_rate_max &&
++	       drm_mode_vrefresh(mode) > hdmi->vrr_cap.gaming_vrr_rate_min;
++}
++
+ static void dw_hdmi_rockchip_vrr_enable(struct rockchip_drm_sub_dev *sub_dev,
+ 					struct drm_crtc_state *crtc_state)
+ {
+ 	struct rockchip_dw_hdmi_qp *hdmi =
+ 		container_of(sub_dev, struct rockchip_dw_hdmi_qp, sub_dev);
+ 	struct rockchip_crtc_state *s = to_rockchip_crtc_state(crtc_state);
++	bool on = crtc_state->vrr_enabled &&
++		  dw_hdmi_rockchip_vrr_usable(hdmi, &crtc_state->adjusted_mode);
+ 
+ 	if (crtc_state->vrr_enabled && hdmi->next_tfr_val) {
+ 		DRM_WARN("qms-vrr is enabled, can't set gaming vrr\n");
+ 		return;
+ 	}
+ 
+-	dw_hdmi_qp_set_gaming_vrr_enable(hdmi->hdmi_qp, crtc_state->vrr_enabled);
++	dw_hdmi_qp_set_gaming_vrr_enable(hdmi->hdmi_qp, on);
+ 
+-	if (crtc_state->vrr_enabled) {
++	if (on) {
+ 		s->vrr_mode = ROCKCHIP_VRR_VFP_MODE;
+ 		s->max_refresh_rate = hdmi->vrr_cap.gaming_vrr_rate_max;
+ 		s->min_refresh_rate = hdmi->vrr_cap.gaming_vrr_rate_min;
+@@ -2722,10 +2732,14 @@ static int dw_hdmi_rockchip_encoder_atomic_check(struct drm_encoder *encoder,
+ 		s->max_refresh_rate = hdmi->vrr_cap.gaming_vrr_rate_max;
+ 		s->min_refresh_rate = hdmi->vrr_cap.gaming_vrr_rate_min;
+ 		s->hdmi_vrr.refresh_rate_ready_to_change = true;
+-	} else if (crtc_state->vrr_enabled) {
++	} else if (crtc_state->vrr_enabled &&
++		   dw_hdmi_rockchip_vrr_usable(hdmi, &crtc_state->mode)) {
+ 		s->vrr_mode = ROCKCHIP_VRR_VFP_MODE;
+ 		s->max_refresh_rate = hdmi->vrr_cap.gaming_vrr_rate_max;
+ 		s->min_refresh_rate = hdmi->vrr_cap.gaming_vrr_rate_min;
++	} else if (crtc_state->vrr_enabled) {
++		s->max_refresh_rate = 0;
++		s->min_refresh_rate = 0;
+ 	}
+ 
+ 	s->hdmi_vrr.fva_factor_m1_val = hdmi->fva_factor_m1_val;

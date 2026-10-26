@@ -1,0 +1,37 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: H96 build <builder@h96-build>
+Date: Fri, 16 Oct 2026 00:00:00 +0000
+Subject: [PATCH 08/59] drm/bridge: dw-hdmi-qp: re-add affected planes on
+ output format change
+
+On the no-modeset path a colour format change left planes with a stale
+r2y CSC. dw_hdmi_connector_atomic_check() adds the CRTC's planes to
+the state when the output state changed, so they redo their CSC.
+
+H96 series: d2df7dee9 / e3b9f405e.
+---
+ drivers/gpu/drm/bridge/synopsys/dw-hdmi-qp.c | 6 ++++++
+ 1 file changed, 6 insertions(+)
+
+diff --git a/drivers/gpu/drm/bridge/synopsys/dw-hdmi-qp.c b/drivers/gpu/drm/bridge/synopsys/dw-hdmi-qp.c
+index a4fae1b90..b9e0f0459 100644
+--- a/drivers/gpu/drm/bridge/synopsys/dw-hdmi-qp.c
++++ b/drivers/gpu/drm/bridge/synopsys/dw-hdmi-qp.c
+@@ -3900,11 +3900,17 @@ static int dw_hdmi_connector_atomic_check(struct drm_connector *connector,
+ 
+ 	if (dw_hdmi_qp_state_changed(hdmi, connector, state) || hdmi->logo_plug_out) {
+ 		u32 mtmdsclk;
++		int ret;
+ 
+ 		crtc_state = drm_atomic_get_crtc_state(state, crtc);
+ 		if (IS_ERR(crtc_state))
+ 			return PTR_ERR(crtc_state);
+ 
++		/* planes redo their r2y csc for the new output format on the no-modeset path */
++		ret = drm_atomic_add_affected_planes(state, crtc);
++		if (ret)
++			return ret;
++
+ 		mtmdsclk = hdmi_get_tmdsclock(hdmi, mode.clock);
+ 		if (hdmi_bus_fmt_is_yuv420(hdmi->hdmi_data.enc_out_bus_format))
+ 			mtmdsclk /= 2;
