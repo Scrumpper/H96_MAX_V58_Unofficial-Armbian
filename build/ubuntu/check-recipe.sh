@@ -9,7 +9,8 @@ ok "bash -n: $n scripts"
 n=0; for f in "$H"/*.py "$R"/build/userland/*.py "$R"/build/kernel/*.py; do [ -f "$f" ] || continue; python3 -I -c 'import ast,sys; ast.parse(open(sys.argv[1]).read())' "$f" && n=$((n + 1)) || bad "parse $f"; done
 ok "python parse: $n scripts"
 if command -v shellcheck >/dev/null; then (cd "$H" && shellcheck -S warning -e SC1090,SC1091 ./*.sh) >/dev/null && ok "shellcheck -S warning clean (build/ubuntu)" || bad "shellcheck build/ubuntu"; fi
-awk -F'\t' 'NR>1 && (NF!=5 || $3 !~ /^[0-9a-f]{64}$/)' "$TSV" | grep -q . && bad "ubuntu-inputs.tsv rows not 5 columns with sha256" || ok "ubuntu-inputs.tsv: $(($(wc -l < "$TSV") - 1)) rows, 5 columns, sha256 format"
+# output rows may hold PENDING-8.0-FINAL until final build; input rows need sha256
+awk -F'\t' 'NR>1 && (NF!=5 || ($3 !~ /^[0-9a-f]{64}$/ && !($3 == "PENDING-8.0-FINAL" && $5 ~ /^output:/)))' "$TSV" | grep -q . && bad "ubuntu-inputs.tsv rows not 5 columns with sha256" || ok "ubuntu-inputs.tsv: $(($(wc -l < "$TSV") - 1)) rows, 5 columns, sha256 format ($(grep -c PENDING-8.0-FINAL "$TSV") output rows pending)"
 s=$(grep -vc '^#' "$H/inputs.src"); p=$(grep -c . "$H/inputs.sha256")
 [ "$s" = "$p" ] && ok "inputs.src rows = inputs.sha256 rows ($p)" || bad "inputs.src $s rows, inputs.sha256 $p"
 m=0; while read -r h f; do awk -F'\t' -v f="$f" -v h="$h" '$1==f && $3==h {x=1} END {exit !x}' "$TSV" && m=$((m + 1)) || bad "pin $f $h not in ubuntu-inputs.tsv"; done < "$H/inputs.sha256"

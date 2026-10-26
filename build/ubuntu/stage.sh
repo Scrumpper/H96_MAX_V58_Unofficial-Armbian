@@ -24,7 +24,7 @@ BASEPKG=${H96_BASE_PACKAGES:-/nonexistent}; BASEPKGSHA=639fe1c864d0b9fe5f1d9d2d6
 R9REPO=${H96_REPO_NOADDS_REF:-/nonexistent}
 ADDS=${H96_REPO_ADDS:-/nonexistent}
 KEYRING=$REPO/keys/offline-repo-public.gpg
-SA_SHA=0662920439f3cd0b1ea366a131b9e3c9e98ee41636d56cba3c23e0d157e04200
+SA_SHA=1fe5be36e13600fb7a01e994e930b6f849d753e0ea40d5a15bca765571e90acb
 # H96-built adds (Maintainer MAINT): pinned to their build output instead of Ubuntu index provenance
 H96ADDPIN="h96-vulkan-wsi_8.0.0~r25_arm64.deb 6988458bc26d9e71fa3f6f0863b4f8a67fd7fe18f00f98ca3d439502649f5828"
 UIDX=${H96_UBUNTU_IDX:-/nonexistent}

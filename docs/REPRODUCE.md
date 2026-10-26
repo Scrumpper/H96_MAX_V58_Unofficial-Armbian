@@ -76,6 +76,8 @@ build/userland/build-userland-debs.sh --out /work/debs
 
 Built by `build/ubuntu/stage.sh dryrun` (`repo-build.py`, `repo-sign.py`): v7.2 image index (`/opt/h96-pkgs/Packages`, sha256 `639fe1c8...`) minus libmali, plus add debs (pin table role "offline-repo add"). Ubuntu adds download from ports.ubuntu.com (URL per row); `h96-vulkan-wsi_8.0.0~r25_arm64.deb` and all adds except `libxss1` and `x11-common` (already in base index) are present in published image under `/opt/h96-pkgs/`.
 
+Values marked `PENDING-8.0-FINAL` follow final v8.0 build (Steam ARM 3.1 deb `1fe5be36...` changes image, image xz, zip and release docs). Offline repo files do not depend on Steam ARM deb (base index plus adds; final build stage holds same five files).
+
 | File | sha256 |
 |---|---|
 | Packages | `d544313e9c0c3d368a0384e599de0ab1abccc3e5517cb6089c2b61e0c6cae43f` |
@@ -141,26 +143,30 @@ cp "/work/zip/PRODUCTION/Unofficial Armbian v8.0/CHANGELOG-v8.0.md" "/work/zip/U
 python3 -I build/ubuntu/zip-times.py Unofficial.Armbian.v8.0.zip "/work/zip/PRODUCTION/Unofficial Armbian v8.0"
 python3 -I build/ubuntu/zip-times.py Unofficial.Armbian.v8.0.zip /work/zip/rel --partial
 H96_UPLOAD_ROOT=/work/zip/PRODUCTION H96_RELEASE_DIR=/work/zip/rel python3 -I build/ubuntu/stage-and-zip.py 8.0
-sha256sum "/work/zip/PRODUCTION/Unofficial Armbian v8.0.zip"      # 1a70b287...
+sha256sum "/work/zip/PRODUCTION/Unofficial Armbian v8.0.zip"      # PENDING-8.0-FINAL
 ```
 
 `zip-times.py` copies member mtimes and modes from published zip; run it and `stage-and-zip.py` under one TZ. `stage-and-zip.py` gates docs (clinical style, version strings), zips sorted members with ZIP_STORED and reads image back out of finished zip.
 
+Values marked `PENDING-8.0-FINAL` follow final v8.0 build (Steam ARM 3.1 deb `1fe5be36...` changes image, image xz, zip and release docs).
+
 | Zip member | sha256 |
 |---|---|
-| CHANGELOG-v8.0.md | `855cc95cefdc67d48473803d9cd0df1ee80d04835a3103e934c37be1a3af2f3c` |
-| CHANGELOG.md | `741618bb494f38cfbc9dd3e80d3e9de034b64d5f1f9a472107dae21a5ace8dc4` |
-| COMMANDS.md | `bcbc51339480135b645439999c78371696f6d5dfa56427ac116316c8aa1868c5` |
+| CHANGELOG-v8.0.md | `PENDING-8.0-FINAL` |
+| CHANGELOG.md | `PENDING-8.0-FINAL` |
+| COMMANDS.md | `PENDING-8.0-FINAL` |
 | FLASHER-SHA256SUMS.txt | `d4d03439d0e9ac4e1d4b6f48f0598d693f6ead34c415637100cd8f704c7a1043` |
-| FLASHING.md | `b29e2422f186ee725f6454f75c1a93f67b1b805b579c9db706f8805ff7ded2b8` |
-| KERNEL-COMPARISON.md | `9038857febbd128b7de0bac18dbc2567e82e8258a48044d5f8cc6b354628653a` |
+| FLASHING.md | `PENDING-8.0-FINAL` |
+| KERNEL-COMPARISON.md | `PENDING-8.0-FINAL` |
 | MiniLoaderAll.bin | `95325cba73b2de46f160da2df970199c7ecf1bb1d47d6584936ec4cd1e88140e` |
-| ON-DEMAND-LIBRARIES.md | `9621ba9e9cdd00d1454abb3f7a735a10d242892c720da236c6e34e8eb56b3cae` |
-| README.md | `1a55f2cd8084f75821c717b8dd3d94d8793f59c08698f318c52df17b3650ed3f` |
-| UNDERVOLT_README.md | `ed442d6bafe2e20ac85ea70f7832b7cc6dd59fc6f42a4e741289963b227d11df` |
+| ON-DEMAND-LIBRARIES.md | `PENDING-8.0-FINAL` |
+| README.md | `PENDING-8.0-FINAL` |
+| UNDERVOLT_README.md | `PENDING-8.0-FINAL` |
 | flash.py | `f51730d3a614c3bf55a2e1f2e10915069b34090acc0a6706389016967c97d778` |
 
 ## Expected sha256
+
+Values marked `PENDING-8.0-FINAL` follow final v8.0 build (Steam ARM 3.1 deb `1fe5be36...` changes image, image xz, zip and release docs).
 
 | Artefact | sha256 | Size (B) |
 |---|---|---|
@@ -177,9 +183,9 @@ sha256sum "/work/zip/PRODUCTION/Unofficial Armbian v8.0.zip"      # 1a70b287...
 | h96-media_8.0.0~r39_arm64.deb | `ff5982c7da7ab68b65e7bedce957d76c274fda0c849b9d02a38c51426e4de64e` | |
 | h96-net_8.0.0~r39_all.deb | `7446d68962dab0f735539588d01b80ce4a485af6ac7d6dec6e6432e38912a122` | |
 | h96-tools_8.0.0~r39_arm64.deb | `fad05c113654021b1a0b7bb542ed936a53f10f221a52400d829ec5b51062209c` | |
-| H96-MAX-V58_Unofficial-Armbian_v8.0.img | `4198ce5993617001386a565dc6ae406ced137773c92bcc2f6f451314379acf40` | 3699376128 |
-| H96-MAX-V58_Unofficial-Armbian_v8.0.img.xz | `8c62f7c2b523ca4029f75cc2dc74924dd5a2ec51b6aa63530bbe23e84ae664a7` | 1044926568 |
-| Unofficial.Armbian.v8.0.zip | `1a70b287683f2452470bc6ee936787997268243e5f09126196353ebe8cc000a0` | 1045894655 |
+| H96-MAX-V58_Unofficial-Armbian_v8.0.img | `PENDING-8.0-FINAL` | |
+| H96-MAX-V58_Unofficial-Armbian_v8.0.img.xz | `PENDING-8.0-FINAL` | |
+| Unofficial.Armbian.v8.0.zip | `PENDING-8.0-FINAL` | |
 
 Deb version strings (`8.0.0~rN`) are Debian package versions of published files, not release names.
 
