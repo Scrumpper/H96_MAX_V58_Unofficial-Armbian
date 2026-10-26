@@ -13,7 +13,7 @@ default kernel `6.12.69-h96v58-8.0` and fallback kernel `6.1.172-h96v58-8.0`.
 5. [Files written](#files-written)
 6. [Refusals](#refusals)
 7. [Power loss](#power-loss)
-8. [DTB handling: owner decision](#dtb-handling-owner-decision)
+8. [DTB handling](#dtb-handling)
 9. [h96-undervolt](#h96-undervolt)
 10. [Limits](#limits)
 11. [Tests](#tests)
@@ -76,8 +76,8 @@ links to current `Image-<krel>` and `uInitrd-<krel>` plus DTB copy, `h96ks/cur` 
 U-Boot side: `ext4fs_find_file1` in U-Boot 2017.09 (`fs/ext4/ext4_common.c`) resolves relative link targets from
 directory holding link, walks directory parts and `..` entries, and allows 8 nested links per lookup (counter
 reset per file). Layout above needs 2 per file, 3 for DTB when `dtb` itself links to `dtb-<krel>`. Plain-name
-`Image` and `uInitrd` links boot on hardware every day; links with directory parts have not booted yet (owner
-bench).
+v8.0 images boot `Image`, `uInitrd` and DTB through `h96ks/cur` links; trial boot of fallback kernel and return to
+default without `confirm` have run on hardware.
 
 ## Commands
 
@@ -193,17 +193,17 @@ Record comes before every link move; one rename decides boot set; guard finishes
 Unfinished `commit` found by `rollback` in running system (killed process): `rollback` refuses and names
 `h96-kernel-switch guard`, which completes it.
 
-## DTB handling: owner decision
+## DTB handling
 
 Current behaviour: DTB joins generation switch when staged DTB differs from board DTB; first such `try` turns
 `dtb/<fdtfile>` into link to `h96ks/cur/fdt`. Kernel and DTB then always change together. Cost: link inside
-`dtb/rockchip/` (relative path with `..` parts) relies on U-Boot link handling not yet booted on this board.
+`dtb/rockchip/` (relative path with `..` parts) relies on U-Boot link handling above, which v8.0 images boot through.
 
 Alternative: `--keep-dtb` on every `try`. `dtb/<fdtfile>` stays plain file and is never written; only Image and
 uInitrd switch. Cost: new kernel boots with old DTB, so DTB changes (8.0 overlay result, for example) need
 separate step outside tool.
 
-Both paths are in tool now; default stays first one until owner bench decides. Identical DTB needs no link in
+Both paths are in tool; first one is default on v8.0 images. Identical DTB needs no link in
 either case. `dtb-plain` returns managed layout to plain DTB file; later `try` with `--keep-dtb` keeps it plain.
 
 ## h96-undervolt
@@ -236,7 +236,7 @@ Design choice. Three designs were compared:
    adds second kind of trial with its own power-loss cases. Rejected.
 2. `--keep-dtb` as default: DTB stays plain file and undervolt works unchanged, but kernel and DTB no longer change
    together by default; new kernel boots earlier DTB, and outdated stock backup after separate DTB update is not
-   caught. Changes owner DTB decision. Rejected.
+   caught. Changes DTB default above. Rejected.
 3. Each tool writes only own names; mutual refusal allows single boot trial; `dtb-plain` gives plain layout
    back on request. No generation is ever written by `h96-undervolt`, and no undervolt file by kernel switch.
    Chosen: smallest change to both tools, every conflicting state ends in refusal with next step named.
@@ -245,10 +245,9 @@ Design choice. Three designs were compared:
 
 - Failure ahead of boot guard (early panic, initramfs failure, root not mounted) repeats trial boot, because
   `h96ks/cur` still names trial generation at that point. Watchdog reset then loops on trial kernel; recovery
-  needs rescue media or reflash. Bench test with owner present is required before release.
+  needs rescue media or reflash.
 - Trial and previous kernel need different release strings; `try` rejects kernel in use and Image that embeds
   release asked for.
-- Links with directory parts in `/boot` have not booted on hardware yet.
 - `systemctl preset-all` between `try` and reboot disables guard; trial then boots without fallback. Run `try`
   again after `rollback`, or `systemctl enable h96-kernel-switch-guard.service`, before rebooting.
 - Purge of `h96-kernel-switch` leaves `h96ks` layout in place; links stay valid.
