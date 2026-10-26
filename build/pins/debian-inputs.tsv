@@ -23,7 +23,7 @@ debs/h96-kernel-6.12.69-h96v58-8.0_8.0.0~r23_arm64.deb	built: build/kernel (not 
 debs/h96-dtb-6.1.172-h96v58-8.0_8.0.0~r12_arm64.deb	built: build/kernel (not public as file)	a62b4d0d5cd10ec2b305fbd5e167d6aa0e4dd5cd751cf5d9ff842a3a6bb6ba50	31280	kernel deb
 debs/h96-dtb-6.12.69-h96v58-8.0_8.0.0~r23_arm64.deb	built: build/kernel (not public as file)	b42bca1ce3b65b058172633c0cca4facc39baa0d199ceaac4376212db9965e26	35132	kernel deb
 debs/h96-kernel-switch_8.0.0~r17_all.deb	built: build/build-kernel-switch-deb.sh (not public as file)	64d308377692df6f63064f24dca6883a682121d75e0032c2d29829bcd0d5027e	21156	kernel switch deb
-debs/steam-arm-setup_3.1_arm64.deb	release asset: Steam ARM 3.1 (draft, not public yet)	1fe5be36e13600fb7a01e994e930b6f849d753e0ea40d5a15bca765571e90acb	321076	Steam ARM installer deb
+debs/steam-arm-setup_3.1_arm64.deb	release asset: Steam ARM 3.1	1fe5be36e13600fb7a01e994e930b6f849d753e0ea40d5a15bca765571e90acb	321076	Steam ARM installer deb
 debs/steam-arm-setup_3.0_arm64.deb	release asset: Steam ARM 3.0	e7c3ac53ba3732881e050252c6c7c68b2410c64ef52e8b819237b44d310d80f2	259058	repo closure input only (repo.sh)
 debs/wireplumber_0.5.18-1~h96.1+deb13.1_arm64.deb	built: build/debian/wp (not public as file)	3dd6778c73d2a4bcb8d81344a2142a1357bc92c8663e0bf3e698281d51328bbf	121656	WirePlumber trixie rebuild (offline repo)
 debs/libwireplumber-0.5-0_0.5.18-1~h96.1+deb13.1_arm64.deb	built: build/debian/wp (not public as file)	399d540bece97fcb8a67cbdf4c02f9c6592bc349561f82c29d0f441abb068386	294760	WirePlumber trixie rebuild (offline repo)

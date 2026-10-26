@@ -44,6 +44,6 @@ preflight_check.py	repo: build/ubuntu/preflight_check.py	113908b30102ba54fbdca00
 MiniLoaderAll.bin	https://github.com/Scrumpper/H96_MAX_V58_Unofficial-Armbian/releases (v8.0 release asset, inside release zip)	95325cba73b2de46f160da2df970199c7ecf1bb1d47d6584936ec4cd1e88140e	448960	USB loader, release zip member
 flash.py	https://github.com/Scrumpper/H96_MAX_V58_Unofficial-Armbian/releases (v8.0 release asset, inside release zip)	f51730d3a614c3bf55a2e1f2e10915069b34090acc0a6706389016967c97d778	67381	flasher, release zip member
 offline-repo-public.gpg	repo: keys/offline-repo-public.gpg (fingerprint 97E5DA90A046ECDC7CE5637131869ED166A6D9EC)	9f22ed8821cc2abb37b5161fc8e54f64d7ad60e4d6fa1ba817479cb800059f82	233	offline-repo signing public key
-H96-MAX-V58_Unofficial-Armbian_v8.0.img	derived: xz -dc of v8.0 .img.xz	PENDING-8.0-FINAL	-	output: v8.0 Ubuntu image
-H96-MAX-V58_Unofficial-Armbian_v8.0.img.xz	https://github.com/Scrumpper/H96_MAX_V58_Unofficial-Armbian/releases (v8.0 release asset, inside release zip)	PENDING-8.0-FINAL	-	output: v8.0 Ubuntu image, xz
-Unofficial.Armbian.v8.0.zip	https://github.com/Scrumpper/H96_MAX_V58_Unofficial-Armbian/releases (v8.0 release asset)	PENDING-8.0-FINAL	-	output: v8.0 Ubuntu release zip
+H96-MAX-V58_Unofficial-Armbian_v8.0.img	derived: xz -dc of v8.0 .img.xz	8d7903bb225336bb3cb1d5de499a5ac8585ab77f3c8122b5d072418c9deb1317	-	output: v8.0 Ubuntu image
+H96-MAX-V58_Unofficial-Armbian_v8.0.img.xz	https://github.com/Scrumpper/H96_MAX_V58_Unofficial-Armbian/releases (v8.0 release asset, inside release zip)	2141887975144d6a660735ee3c1b5e2f3edd76b733347536a18e8e42f24fbedc	-	output: v8.0 Ubuntu image, xz
+Unofficial.Armbian.v8.0.zip	https://github.com/Scrumpper/H96_MAX_V58_Unofficial-Armbian/releases (v8.0 release asset)	7f42cb249f08b3b6de7f15a7bb40500c70b6350c25cf3d3c86f4b9893a0c5951	-	output: v8.0 Ubuntu release zip

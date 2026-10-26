@@ -4,13 +4,11 @@ Steps below rebuild Unofficial Armbian v8.0 Debian Edition image and its release
 
 ## Published artefacts
 
-Values marked `PENDING-8.0-FINAL` follow final v8.0 Debian Edition build; every other sha256 stays.
-
 | File | sha256 | Size (bytes) |
 |---|---|---|
-| `Unofficial.Armbian.v8.0.Debian.Edition.zip` (release asset) | `PENDING-8.0-FINAL` | `PENDING-8.0-FINAL` |
-| `H96-MAX-V58_Unofficial-Armbian_v8.0-debian.img.xz` (in zip) | `PENDING-8.0-FINAL` | `PENDING-8.0-FINAL` |
-| `H96-MAX-V58_Unofficial-Armbian_v8.0-debian.img` (`xz -dc`) | `PENDING-8.0-FINAL` | 3699376128 |
+| `Unofficial.Armbian.v8.0.Debian.Edition.zip` (release asset) | `98dd35fa046e8a08cd7b9b7f9ea90dede2689923461caae5eba60c8b14885eb7` | 653489886 |
+| `H96-MAX-V58_Unofficial-Armbian_v8.0-debian.img.xz` (in zip) | `029ed5699d37dac93a9cbee1844df9ff588feeedc82efb3885c75ae9cae9f0b0` | 652500288 |
+| `H96-MAX-V58_Unofficial-Armbian_v8.0-debian.img` (`xz -dc`) | `84ce3d58fd25cc89354a0a244df075b628faa2c4e0d2e66ebf3b1584aeab79ef` | 3699376128 |
 | `MiniLoaderAll.bin` (in zip) | `95325cba73b2de46f160da2df970199c7ecf1bb1d47d6584936ec4cd1e88140e` | 448960 |
 | `flash.py` (in zip) | `f51730d3a614c3bf55a2e1f2e10915069b34090acc0a6706389016967c97d778` | 67381 |
 
@@ -101,24 +99,22 @@ Raw areas compared byte for byte; partitions compared as inventories (path, type
 
 ## Expected sha256 per artefact
 
-Values marked `PENDING-8.0-FINAL` follow final v8.0 Debian Edition build.
-
 | Artefact | sha256 | Byte-reproducible |
 |---|---|---|
 | `trixie-rootfs.tar.zst` (`base.sh`) | `44bb41f28584360f82c45fec36e5acdd2c3c615e2f90218c0259800c3e4ee92d` | expected (pinned image, fixed mtime, sorted), not checked |
 | `prep-rootfs.tar.zst` (`prep.sh`) | `44c469e413a8a9dff22b19451b8b38a6cecdfd87563035242fcd7f70668f1d54` | no |
-| offline repo `Packages` | `PENDING-8.0-FINAL` | yes (checked against pinned debs) |
-| offline repo `Packages.gz` | `PENDING-8.0-FINAL` | yes (checked against pinned debs) |
-| offline repo `Release` | `PENDING-8.0-FINAL` | yes (checked against pinned debs) |
-| offline repo `InRelease` | `PENDING-8.0-FINAL` | published file reused |
-| offline repo `Release.gpg` | `PENDING-8.0-FINAL` | published file reused |
+| offline repo `Packages` | `56f0f6d3bc00e58ff36d9f8e33dcf076119208d63a2ab061657948ff48627455` | yes (checked against pinned debs) |
+| offline repo `Packages.gz` | `39f004b292f3f1e191f4424b54b98ff07debbc00af9862144a9e084070770946` | yes (checked against pinned debs) |
+| offline repo `Release` | `b213edf7c1e77a17fc8015abb0741d303e873fb2f11525e0773743639c8005db` | yes (checked against pinned debs) |
+| offline repo `InRelease` | `02790cd75a0ea5824bfae5524cc1abcf22510a9b7231864ecf752ec1055dd760` | published file reused |
+| offline repo `Release.gpg` | `fcc5462a08fe8d422aad74dd4ab3a3ad164432bc3d03dc02149d2eba657cc3f9` | published file reused |
 | `stage/` (`dryrun.sh`) | file by file equal to production stage of same inputs (checked) | yes, given pinned inputs |
-| `built-rootfs.tar.zst` (`build.sh`) | `PENDING-8.0-FINAL` | no |
-| assembled image (before loader step) | `PENDING-8.0-FINAL` | no |
-| bytes past sector 32767 of final image | `PENDING-8.0-FINAL` | no |
-| final image | `PENDING-8.0-FINAL` | no |
-| image `.xz` | `PENDING-8.0-FINAL` | no (follows image) |
-| release zip | `PENDING-8.0-FINAL` | no (follows image) |
+| `built-rootfs.tar.zst` (`build.sh`) | `aa6de0ef3ed68f6648ca62e2b70af71b4b5dc3b453b3f00f004c43f228254001` | no |
+| assembled image (before loader step) | `822c5309b46475f4565c5b3db039a1eccb2f169694f1bdc2cf236b5ddae80ac2` | no |
+| bytes past sector 32767 of final image | `40831fee929d129eb4c6b0b18b7ba4580ad532541337e53c2d20aaa36cd898df` | no |
+| final image | `84ce3d58fd25cc89354a0a244df075b628faa2c4e0d2e66ebf3b1584aeab79ef` | no |
+| image `.xz` | `029ed5699d37dac93a9cbee1844df9ff588feeedc82efb3885c75ae9cae9f0b0` | no (follows image) |
+| release zip | `98dd35fa046e8a08cd7b9b7f9ea90dede2689923461caae5eba60c8b14885eb7` | no (follows image) |
 | userland debs, kernel debs, kernel switch deb | sha256 in pins file | userland: two builds equal; kernel: [REPRODUCE.md](REPRODUCE.md) |
 
 ## Not byte-reproducible
