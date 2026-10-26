@@ -1,0 +1,199 @@
+--- a/tools/check-content.py
++++ b/tools/check-content.py
+@@ -8,6 +8,9 @@
+ from deltas import BUILD, DELTAS, EXTRA, MODE_755, STRIP, STRIP_CMD, WRAP_MOVES, extra_bytes, moves, transform  # noqa: E402
+ 
+ WORK, DEBS, LIST = sys.argv[1:4]
++ED = None
++if os.environ.get("H96_EDITION") == "debian":
++    import edition_debian as ED  # noqa: E402
+ SEED_DIR = "/usr/lib/h96/seed/"
+ os.makedirs(LIST, exist_ok=True)
+ img = {l.split("\t")[0]: l.rstrip("\n").split("\t") for l in open(f"{WORK}/v72-rootfs.tsv", errors="surrogateescape")}
+@@ -36,7 +39,12 @@
+                     continue
+                 if path in EXTRA:
+                     mode = oct(os.stat(full).st_mode & 0o7777)
+-                    if open(full, "rb").read() == extra_bytes(path) and mode == EXTRA[path][1] and p == EXTRA[path][0]:
++                    want = extra_bytes(path)
++                    if ED is not None and path in ED.BYTES:  # Debian edition rebuilt binary (MPRIS plugin)
++                        want = ED.deb_bytes(path, want)
++                    elif ED is not None and path in ED.TEXT:
++                        want = ED.deb_text(path, want.decode()).encode()
++                    if open(full, "rb").read() == want and mode == EXTRA[path][1] and p == EXTRA[path][0]:
+                         added += 1
+                         print("ADDED", p, path, mode, "|", EXTRA[path][4])
+                     else:
+@@ -72,6 +80,9 @@
+                 else:
+                     want = transform(src, raw.decode(), MV).encode()
+                     why = DELTAS[src][1] if src in DELTAS else "FHS path rewrite or unit Documentation key"
++                if ED is not None and (path in ED.TEXT or path in ED.BYTES):
++                    want = ED.deb_bytes(path, want) if path in ED.BYTES else ED.deb_text(path, want.decode()).encode()
++                    why = "Debian edition override (tools/edition_debian.py)"
+                 mode = oct(os.stat(full).st_mode & 0o7777)
+                 wmode = "0o755" if src in MODE_755 else img[src][2]
+                 if path.startswith(SEED_DIR) and wmode not in ("0o644", "0o755"):
+--- a/tools/deltas.py
++++ b/tools/deltas.py
+@@ -685,8 +685,8 @@
+     "/usr/local/sbin/h96-dm-handoff": (_dm_handoff, "r8: package install time from dpkg-query db-fsys:Last-Modified, not dpkg info file"),
+     "/usr/local/bin/h96-game-mode": (lambda t: fx25.game_mode(xd80.game_mode(_game_mode(t))), "r8: DXVK and env root /usr/lib/h96/gaming, wine root /opt/h96-gaming; r16: status read-only (was taken as game path and started Wine download), missing game path refused before Wine download; r25: patched ICD kept when h96-vulkan-wsi on in Wayland session and Mesa equals pin"),
+     "/usr/local/bin/h96-dxvk-install": (_dxvk_install, "r8: DXVK root /usr/lib/h96/gaming, wine root /opt/h96-gaming"),
+-    "/usr/local/share/h96/COMMANDS.md": (lambda t: fx39.commands(fx37.commands(fx36.commands(fx35.commands(fx33.commands(fx32.commands(fx31.commands(fx29.commands(fx28.commands(fx27.commands(fx26.commands(fx25.commands(fx24.commands(fx23.commands(fx22.commands(fx21.commands(fx20.commands(fx19.commands(hp80.commands(xd80.commands(_commands_r14(_commands_r13(_commands(t))))))))))))))))))))))),"r8: command locations after FHS move, panthor-revert path, h96-panthor-setup row dropped; r13: h96-wol, undervolt and kernel switch rules, restore wol category; r14: h96-wol status line, boot unit on eth0 device; r16: display lookup helper, h96-scale Wayland, h96-display revert on Wayland, h96-game-mode status, steam-arm-setup recommended; r17: h96-hdmi-hotplug section, hotplug unit row; r19: h96-vrr section and code line; r20: h96-cec on by default, TV input, turn off, key map, unit rows; r21: merged with PRODUCTION v8.0 COMMANDS.md (tools/repo-fixes/COMMANDS.md); r22: wake wait, h96-wol addresses, waydroid status row; r24: Plasma Wayland session option; r25: h96-vulkan-wsi section, kernel-switch same release sentence, Wayland range limitation; r26: modules-load, rpc_pipefs and lxc-net notes; r27: rpc_pipefs unmasked, module tree mismatch note; r28: CEC media keys through MPRIS; r29: no round labels, generation reuse, h96-cec keys, h96-vrr wording; r31: box session text (seek, EDID switch, VRR, vulkan-wsi caution); r32: panthor timeout note in Gaming and Wayland session; r33: MPRIS loader; r35: EDID switch TV resync note; r39: Steam ARM 3.1"),
+-    "/etc/skel/Desktop/COMMANDS.md": (lambda t: fx39.commands(fx37.commands(fx36.commands(fx35.commands(fx33.commands(fx32.commands(fx31.commands(fx29.commands(fx28.commands(fx27.commands(fx26.commands(fx25.commands(fx24.commands(fx23.commands(fx22.commands(fx21.commands(fx20.commands(fx19.commands(hp80.commands(xd80.commands(_commands_r14(_commands_r13(_commands(t))))))))))))))))))))))),"r8: same as /usr/share/doc/h96-base/COMMANDS.md; r20: h96-cec section; r21: merged copy; r24; r25; r26; r27; r28; r29; r31; r32; r33; r35; r39"),
++    "/usr/local/share/h96/COMMANDS.md": (lambda t: fx39.commands(fx37.commands(fx36.commands(fx35.commands(fx33.commands(fx32.commands(fx31.commands(fx29.commands(fx28.commands(fx27.commands(fx26.commands(fx25.commands(fx24.commands(fx23.commands(fx22.commands(fx21.commands(fx20.commands(fx19.commands(hp80.commands(xd80.commands(_commands_r14(_commands_r13(_commands(t))))))))))))))))))))))), "r8: command locations after FHS move, panthor-revert path, h96-panthor-setup row dropped; r13: h96-wol, undervolt and kernel switch rules, restore wol category; r14: h96-wol status line, boot unit on eth0 device; r16: display lookup helper, h96-scale Wayland, h96-display revert on Wayland, h96-game-mode status, steam-arm-setup recommended; r17: h96-hdmi-hotplug section, hotplug unit row; r19: h96-vrr section and code line; r20: h96-cec on by default, TV input, turn off, key map, unit rows; r21: merged with PRODUCTION v8.0 COMMANDS.md (tools/repo-fixes/COMMANDS.md); r22: wake wait, h96-wol addresses, waydroid status row; r24: Plasma Wayland session option; r25: h96-vulkan-wsi section, kernel-switch same release sentence, Wayland range limitation; r26: modules-load, rpc_pipefs and lxc-net notes; r27: rpc_pipefs unmasked, module tree mismatch note; r28: CEC media keys through MPRIS; r29: no round labels, generation reuse, h96-cec keys, h96-vrr wording; r31: box session text (seek, EDID switch, VRR, vulkan-wsi caution); r32: panthor timeout note in Gaming and Wayland session; r33: MPRIS loader; r35: EDID switch TV resync note; r39: Steam ARM 3.1"),
++    "/etc/skel/Desktop/COMMANDS.md": (lambda t: fx39.commands(fx37.commands(fx36.commands(fx35.commands(fx33.commands(fx32.commands(fx31.commands(fx29.commands(fx28.commands(fx27.commands(fx26.commands(fx25.commands(fx24.commands(fx23.commands(fx22.commands(fx21.commands(fx20.commands(fx19.commands(hp80.commands(xd80.commands(_commands_r14(_commands_r13(_commands(t))))))))))))))))))))))), "r8: same as /usr/share/doc/h96-base/COMMANDS.md; r20: h96-cec section; r21: merged copy; r24; r25; r26; r27; r28; r29; r31; r32; r33; r35; r39"),
+     "/usr/lib/systemd/system/h96-undervolt-trial.service": (undervolt_80.unit, undervolt_80.UNIT_WHY),
+     "/usr/local/sbin/h96-undervolt": (undervolt_80.undervolt, undervolt_80.UV_WHY),
+     "/usr/local/share/h96-undervolt-README.md": (undervolt_80.readme, undervolt_80.README_WHY),
+--- a/tools/gen-pkgs.py
++++ b/tools/gen-pkgs.py
+@@ -36,6 +36,14 @@
+ R14, R13, R12, R11, R10, R9, R8 = "8.0.0~r14", "8.0.0~r13", "8.0.0~r12", "8.0.0~r11", "8.0.0~r10", "8.0.0~r9", "8.0.0~r8"
+ ALPHA2, PREV = "8.0.0~alpha2", "8.0.0~alpha1"
+ DIST = "resolute"
++# H96_EDITION=debian: Debian 13 build of this round (tools/edition_debian.py); default ubuntu output unchanged
++EDITION = os.environ.get("H96_EDITION", "ubuntu")
++if EDITION not in ("ubuntu", "debian"):
++    sys.exit(f"H96_EDITION {EDITION}: ubuntu or debian")
++UBU_VERSION = VERSION
++if EDITION == "debian":
++    import edition_debian as ED
++    VERSION = ED.DEB_VERSION
+ MAINT = "Scrumpper <190908034+Scrumpper@users.noreply.github.com>"  # owner decision 2
+ MAINT_OLD = "H96 MAX V58 Unofficial Armbian <h96-max-v58@noreply.invalid>"
+ DATE = "Tue, 27 Oct 2026 00:00:00 +0000"
+@@ -570,6 +578,8 @@
+ STD_MODES = ("0o644", "0o755")
+ CMDS = transform("/usr/local/share/h96/COMMANDS.md", open(ROOTFS + "/usr/local/share/h96/COMMANDS.md").read(), MV)
+ assert CMDS == transform("/etc/skel/Desktop/COMMANDS.md", open(ROOTFS + "/etc/skel/Desktop/COMMANDS.md").read(), MV)
++if EDITION == "debian":  # manual pages read Debian COMMANDS text
++    CMDS = ED.deb_text("/usr/share/doc/h96-base/COMMANDS.md", CMDS)
+ MAN_DESC = {"play-with-mpv": "Opens a URL or file in mpv; browser hand-off target.",
+             "fex-emu": "Entry point of FEX x86 emulator; link into its portable install.",
+             "h96-xpad-dedup": "Unbinds xpad from duplicate headset interface of third-party pads; idempotent."}
+@@ -640,16 +650,29 @@
+             with open(srcf, "rb") as fh:
+                 raw = fh.read()
+         if src.startswith("EXTRA:"):
+-            pass
++            if EDITION == "debian" and dst in ED.TEXT:
++                with open(out, "w") as fh:
++                    fh.write(ED.deb_text(dst, raw.decode()))
++            elif EDITION == "debian" and dst in ED.BYTES:
++                with open(out, "wb") as fh:
++                    fh.write(ED.deb_bytes(dst, raw))
+         elif src in BUILD:
++            data = BUILD[src][0]()
++            if EDITION == "debian":
++                data = ED.deb_bytes(dst, data)
+             with open(out, "wb") as fh:
+-                fh.write(BUILD[src][0]())
++                fh.write(data)
+         elif raw.startswith(ELF) or b"\0" in raw[:8192]:
+             shutil.copyfile(srcf, out)
++            if EDITION == "debian" and ED.deb_bytes(dst, raw) is not raw:
++                with open(out, "wb") as fh:
++                    fh.write(ED.deb_bytes(dst, raw))
+             if src in STRIP:
+                 subprocess.run(STRIP_CMD + [out], check=True)
+         else:
+             txt = transform(src, raw.decode(), MV)
++            if EDITION == "debian":
++                txt = ED.deb_text(dst, txt)
+             if txt.encode() != raw:
+                 v72sum[dst] = hashlib.sha256(raw).hexdigest()
+             with open(out, "w") as fh:
+@@ -689,6 +712,8 @@
+     arch = "arm64" if has_elf else "all"
+     dep = [] if name == "h96-base" else [f"h96-base (= {VERSION})"]
+     dep += EXTRA_DEPENDS.get(name, [])
++    if EDITION == "debian" and name == "h96-media":
++        dep = [f"libc6 (>= {ED.MEDIA_LIBC})" if d == "libc6" else d for d in dep]
+     if any(s.startswith("python3") for s in shebangs) and "python3" not in dep:
+         dep.append("python3")
+     for s in sorted(shebangs):
+@@ -704,8 +729,12 @@
+             + f"Description: {short}\n{longtxt}\n")
+     open(os.path.join(deb, "control"), "w").write(ctrl)
+     entry = lambda cs: "".join("  * " + "\n    ".join(textwrap.wrap(c, 70, break_on_hyphens=False)) + "\n" for c in cs)
++    top = ""
++    if EDITION == "debian":
++        top = (f"{name} ({VERSION}) {ED.DEB_DIST}; urgency=medium\n\n"
++               + entry(ED.DEB_CHANGES_COMMON + ED.DEB_CHANGES.get(name, [])) + f"\n -- {MAINT}  {ED.DEB_DATE}\n\n")
+     open(os.path.join(deb, "changelog"), "w").write(
+-        f"{name} ({VERSION}) {DIST}; urgency=medium\n\n"
++        top + f"{name} ({UBU_VERSION}) {DIST}; urgency=medium\n\n"
+         + entry(fx39.CHANGES.get(name, [fx39.BUMP]))
+         + f"\n -- {MAINT}  {DATE}\n\n"
+         f"{name} ({R38}) {DIST}; urgency=medium\n\n"
+@@ -994,3 +1023,5 @@
+ if unresolved:
+     print("UNRESOLVED links:", *unresolved, sep="\n  ")
+     sys.exit(1)
++if EDITION == "debian":
++    ED.check_all_used()
+--- a/tools/test-dpkg-root.sh
++++ b/tools/test-dpkg-root.sh
+@@ -80,7 +80,9 @@
+ # r10: run-time rewritten files are seeds, outside dpkg -V
+ R10S="/etc/h96-issue /etc/h96-issue.net /etc/alsa-card-profile/mixer/profile-sets/h96-hdmi.conf /etc/wireplumber/wireplumber.conf.d/51-h96-iec958.conf /usr/lib/firmware/edid/h96-sink-audio.bin"
+ check "r10 seeds present, owned by no package" '( for f in $R10S; do [ -f "$R$f" ] && ! dpkg-query --admindir="$A" -S "$f" >/dev/null 2>&1 || exit 1; done )'
+-check "h96-issue seed names v8.0" 'grep -q "Unofficial Port v8.0)" "$R/etc/h96-issue" && ! grep -q beta "$R/etc/h96-issue"'
++# Debian edition banner adds " Debian Edition" (H96_EDITION=debian)
++if [ "${H96_EDITION:-ubuntu}" = debian ]; then ISSUE_TAIL="v8.0 Debian Edition)"; else ISSUE_TAIL="v8.0)"; fi
++check "h96-issue seed names $ISSUE_TAIL" 'grep -qF "Unofficial Port $ISSUE_TAIL" "$R/etc/h96-issue" && ! grep -q beta "$R/etc/h96-issue"'
+ for f in $R10S; do echo "# run-time rewrite" >> "$R$f"; done
+ check "dpkg -V clean after run-time rewrite of r10 seeds" '[ -z "$("${D[@]}" -V 2>&1)" ]'
+ check "saved v7.2 copies deleted at configure" '[ -z "$(find "$R" -name "*.h96-v72" | head -1)" ]'
+--- a/tools/test-release-kernel.py
++++ b/tools/test-release-kernel.py
+@@ -2,7 +2,7 @@
+ """/etc/h96-release kernel keys through each reader: migrate-kit preflight kv_file and check_boot, h96-backup
+ source_version, migrate-check kv_text, shell sed readers (H96_RELEASE), rc laptop.sh H96_KERNEL sed.
+ Usage: test-release-kernel.py ETC_H96_RELEASE PREFLIGHT MIGRATE_CHECK H96_BACKUP   (rc 1 on any FAIL)"""
+-import importlib.machinery, importlib.util, subprocess, sys, types
++import importlib.machinery, importlib.util, os, subprocess, sys, types
+ 
+ sys.dont_write_bytecode = True  # readers load from kit and package trees
+ 
+@@ -21,7 +21,9 @@
+ 
+ 
+ text = open(rel).read()
+-ok(text == "H96_RELEASE=v8.0\nH96_KERNEL=6.12.69-h96v58-8.0\nH96_KERNEL_FALLBACK=6.1.172-h96v58-8.0\n", "file: release, 6.12 default, 6.1 fallback")
++# Debian edition appends H96_EDITION=debian (H96_EDITION env of build)
++tail = "H96_EDITION=debian\n" if os.environ.get("H96_EDITION") == "debian" else ""
++ok(text == "H96_RELEASE=v8.0\nH96_KERNEL=6.12.69-h96v58-8.0\nH96_KERNEL_FALLBACK=6.1.172-h96v58-8.0\n" + tail, "file: release, 6.12 default, 6.1 fallback")
+ p = load("pre", pre)
+ kv = p.kv_file(rel)
+ ok(kv.get("H96_KERNEL") == "6.12.69-h96v58-8.0" and kv.get("H96_RELEASE") == "v8.0", "preflight kv_file: H96_KERNEL 6.12, extra key ignored by reader")
+--- a/tools/verify.sh
++++ b/tools/verify.sh
+@@ -130 +130,2 @@
+-  bash tools/test-edid-vrr.sh "$t/n/usr/lib/h96/edid_merge.py" "$t/o/usr/lib/h96/edid_merge.py" ../../hdmi-audio-edid/sony-tv-edid-ddc10.bin \
++  local e=../../hdmi-audio-edid; [ -d "$e" ] || e=../../../hdmi-audio-edid   # Debian edition tree sits one level deeper
++  bash tools/test-edid-vrr.sh "$t/n/usr/lib/h96/edid_merge.py" "$t/o/usr/lib/h96/edid_merge.py" "$e/sony-tv-edid-ddc10.bin" \
+@@ -153,0 +155,2 @@
++  # Debian edition: Ubuntu base and repo do not apply; closure checked by pipeline T8 and offline chroot ldd
++  if [ "${H96_EDITION:-ubuntu}" = debian ]; then echo "skipped: Debian edition (pipeline T8, offline chroot ldd)" > "$EV/mpv-closure.txt"; rm -rf "$t"; return 0; fi
+--- a/build-userland-debs.sh
++++ b/build-userland-debs.sh
+@@ -15,13 +15,14 @@
+ [ -n "$OUT" ] || { echo "usage: $0 --out DIR [PKG...]" >&2; exit 2; }
+ mkdir -p "$OUT"
+ OUT="$(cd "$OUT" && pwd)"
+-[ ${#PKGS[@]} -gt 0 ] || mapfile -t PKGS < <(cd "$HERE/pkgs" && ls -d h96-* | sort)
++PK="${H96_PKGS:-$HERE/pkgs}"   # pkgs tree; H96_PKGS: tree of other edition
++[ ${#PKGS[@]} -gt 0 ] || mapfile -t PKGS < <(cd "$PK" && ls -d h96-* | sort)
+ # fixed timestamps so repeated builds give identical debs
+ export SOURCE_DATE_EPOCH="${SOURCE_DATE_EPOCH:-1792152000}"
+ STAGE="$(mktemp -d)"
+ trap 'rm -rf "$STAGE"' EXIT
+ for p in "${PKGS[@]}"; do
+-  src="$HERE/pkgs/$p"
++  src="$PK/$p"
+   [ -d "$src/debian" ] || { echo "missing $src/debian" >&2; exit 1; }
+   d="$STAGE/$p"
+   cp -a "$src/root" "$d"

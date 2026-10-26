@@ -1,0 +1,17 @@
+# name<TAB>source glob relative to $IN (else repo root); highest Version wins on --repin (Debian edition)
+f5-rows-debian.sh	build/debian/pipeline/f5-rows-debian.sh
+h96-selftest.py	tools/h96-selftest.py
+h96-base	debs/h96-base_*+deb13.*_all.deb
+h96-boot	debs/h96-boot_*+deb13.*_all.deb
+h96-net	debs/h96-net_*+deb13.*_all.deb
+h96-audio	debs/h96-audio_*+deb13.*_all.deb
+h96-desktop	debs/h96-desktop_*+deb13.*_arm64.deb
+h96-media	debs/h96-media_*+deb13.*_arm64.deb
+h96-tools	debs/h96-tools_*+deb13.*_arm64.deb
+h96-gaming	debs/h96-gaming_*+deb13.*_all.deb
+steam-arm-setup	debs/steam-arm-setup_*_arm64.deb
+h96-kernel	debs/h96-kernel-6.12.69-h96v58-8.0_*_arm64.deb
+h96-dtb	debs/h96-dtb-6.12.69-h96v58-8.0_*_arm64.deb
+h96-kernel-fallback	debs/h96-kernel-6.1.172-h96v58-8.0_*_arm64.deb
+h96-dtb-fallback	debs/h96-dtb-6.1.172-h96v58-8.0_*_arm64.deb
+h96-kernel-switch	debs/h96-kernel-switch_*_all.deb
