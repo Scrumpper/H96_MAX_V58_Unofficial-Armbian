@@ -1,0 +1,174 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: H96 build <builder@h96-build>
+Date: Fri, 16 Oct 2026 00:00:00 +0000
+Subject: [PATCH 06/59] video: rockchip: rga3: bind iommu after the last
+ available node probed
+
+rga_init() called rga_iommu_bind() right after driver registration and
+unregistered the drivers on failure, so one deferred RGA node broke
+RGA. rga_try_bind() now binds once, under rga_bind_lock, when the
+number of probed schedulers reaches the count of available RGA2/RGA3
+DT nodes (rga_count_available_nodes()). The first open forces the bind
+with whatever has probed, so a node that never probes does not block
+the others; a scheduler probing after a forced bind attaches to the
+default mapping domain (rga_attach_late_scheduler()). Identical to
+upstream behaviour when nothing defers.
+
+H96 series: 91131c6c6 / 0d4c48f44.
+---
+ drivers/video/rockchip/rga3/rga_drv.c | 100 ++++++++++++++++++++++++--
+ 1 file changed, 93 insertions(+), 7 deletions(-)
+
+diff --git a/drivers/video/rockchip/rga3/rga_drv.c b/drivers/video/rockchip/rga3/rga_drv.c
+index 0a5d85243..55f0e7b77 100644
+--- a/drivers/video/rockchip/rga3/rga_drv.c
++++ b/drivers/video/rockchip/rga3/rga_drv.c
+@@ -18,6 +18,9 @@
+ #include "rga_debugger.h"
+ #include "rga_common.h"
+ 
++static bool rga_bound;
++static int rga_try_bind(bool force);
++
+ struct rga_drvdata_t *rga_drvdata;
+ 
+ /* set hrtimer */
+@@ -1186,6 +1189,14 @@ static int rga_debugger_remove(struct rga_debugger **debugger_p)
+ static int rga_open(struct inode *inode, struct file *file)
+ {
+ 	struct rga_session *session = NULL;
++	int ret;
++
++	/* a node that never probed must not block the ones that did */
++	if (!rga_bound) {
++		ret = rga_try_bind(true);
++		if (ret < 0)
++			return ret;
++	}
+ 
+ 	session = rga_session_init();
+ 	if (IS_ERR(session))
+@@ -1324,6 +1335,74 @@ static const struct of_device_id rga2_dt_ids[] = {
+ 	{},
+ };
+ 
++/* iommu bind runs once, after the last available rga node has probed */
++static DEFINE_MUTEX(rga_bind_lock);
++static unsigned int rga_expected_nodes;
++
++static unsigned int rga_count_available_nodes(void)
++{
++	const struct of_device_id *tables[] = { rga3_dt_ids, rga2_dt_ids };
++	struct device_node *np;
++	unsigned int n = 0;
++	int i;
++
++	for (i = 0; i < ARRAY_SIZE(tables); i++)
++		for_each_matching_node(np, tables[i])
++			if (of_device_is_available(np))
++				n++;
++
++	return n;
++}
++
++/* force: bind with whatever has probed (first open fallback) */
++static int rga_try_bind(bool force)
++{
++	int ret = 0;
++
++	mutex_lock(&rga_bind_lock);
++	if (rga_bound)
++		goto out;
++	if (!force && rga_drvdata->num_of_scheduler < rga_expected_nodes)
++		goto out;
++	if (rga_drvdata->num_of_scheduler == 0) {
++		ret = -ENODEV;
++		goto out;
++	}
++
++	ret = rga_iommu_bind();
++	if (ret < 0)
++		pr_err("rga iommu bind failed!\n");
++	else
++		rga_bound = true;
++out:
++	mutex_unlock(&rga_bind_lock);
++
++	return ret;
++}
++
++/* scheduler probed after a forced bind: share the default mapping domain */
++static void rga_attach_late_scheduler(struct rga_scheduler_t *scheduler)
++{
++	struct rga_iommu_info *main_iommu;
++	int idx;
++
++	mutex_lock(&rga_bind_lock);
++	idx = rga_drvdata->map_scheduler_index;
++	if (!rga_bound || idx < 0 || !scheduler->iommu_info ||
++	    scheduler->data->mmu != RGA_IOMMU)
++		goto out;
++
++	main_iommu = rga_drvdata->scheduler[idx]->iommu_info;
++	if (!main_iommu || main_iommu == scheduler->iommu_info)
++		goto out;
++
++	scheduler->iommu_info->domain = main_iommu->domain;
++	scheduler->iommu_info->default_dev = main_iommu->default_dev;
++	rga_iommu_attach(scheduler->iommu_info);
++out:
++	mutex_unlock(&rga_bind_lock);
++}
++
+ static int init_scheduler(struct rga_scheduler_t *scheduler,
+ 			  struct device *dev,
+ 			  const struct rga_match_data_t *match_data,
+@@ -1538,6 +1617,11 @@ static int rga_drv_probe(struct platform_device *pdev)
+ 	dev_info(dev, "probe successfully, irq = %d, hw_version:%s\n",
+ 		 scheduler->irq, scheduler->version.str);
+ 
++	if (rga_bound)
++		rga_attach_late_scheduler(scheduler);
++	else
++		rga_try_bind(false);
++
+ 	return 0;
+ 
+ #ifndef RGA_DISABLE_PM
+@@ -1619,6 +1703,10 @@ static int __init rga_init(void)
+ 	mutex_init(&rga_drvdata->lock);
+ 	init_rwsem(&rga_drvdata->rwsem);
+ 	rga_drvdata->shutdown = false;
++	rga_drvdata->map_scheduler_index = -1;
++
++	/* must precede driver registration: probes may bind from inside it */
++	rga_expected_nodes = rga_count_available_nodes();
+ 
+ 	ret = platform_driver_register(&rga3_driver);
+ 	if (ret != 0) {
+@@ -1631,11 +1719,11 @@ static int __init rga_init(void)
+ 		goto err_unregister_rga3;
+ 	}
+ 
+-	ret = rga_iommu_bind();
+-	if (ret < 0) {
+-		pr_err("rga iommu bind failed!\n");
+-		goto err_unregister_rga2;
+-	}
++	/* deferred probes bind later from probe or first open; keep drivers registered */
++	rga_try_bind(false);
++	if (!rga_bound)
++		pr_info("%d of %u rga node(s) probed, iommu bind deferred\n",
++			rga_drvdata->num_of_scheduler, rga_expected_nodes);
+ 
+ 	ret = misc_register(&rga_dev);
+ 	if (ret) {
+@@ -1690,8 +1778,6 @@ static int __init rga_init(void)
+ 
+ err_unbind_iommu:
+ 	rga_iommu_unbind();
+-
+-err_unregister_rga2:
+ 	platform_driver_unregister(&rga2_driver);
+ 
+ err_unregister_rga3:

@@ -1,0 +1,65 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Scrumpper <190908034+Scrumpper@users.noreply.github.com>
+Date: Mon, 19 Oct 2026 22:36:05 -0700
+Subject: [PATCH 27/59] PCI: rockchip: dw: defined Wi-Fi power state when
+ rfkill-wlan cannot answer
+
+rk_pcie_establish_link() and rockchip_dw_pcie_suspend() declare "power"
+uninitialised and ignore the return of rfkill_get_wifi_power_state().
+The function returns -1 without writing *power while rfkill-wlan has
+not probed, and the !IS_REACHABLE(CONFIG_RFKILL_RK) stub (RFKILL_RK=m
+with a built-in host driver) does the same. Each bcmdhd RESET then
+picks a branch from stack contents: skip L2, or hold PERST low.
+
+Start from power = 1 and use the value only when the call succeeds, so
+an unknown state takes the powered path (L2 handshake, normal PERST
+timing), the path 6.1 takes on success. 6.12 t6.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01P6itje71iKPFBX7YKkfvRo
+---
+ drivers/pci/controller/dwc/pcie-dw-rockchip.c | 10 ++++------
+ 1 file changed, 4 insertions(+), 6 deletions(-)
+
+diff --git a/drivers/pci/controller/dwc/pcie-dw-rockchip.c b/drivers/pci/controller/dwc/pcie-dw-rockchip.c
+index a80098fc9..9d7d67e00 100644
+--- a/drivers/pci/controller/dwc/pcie-dw-rockchip.c
++++ b/drivers/pci/controller/dwc/pcie-dw-rockchip.c
+@@ -550,7 +550,7 @@ static bool rk_pcie_check_keep_power_in_suspend(struct rk_pcie *rk_pcie)
+ 
+ static int rk_pcie_establish_link(struct dw_pcie *pci)
+ {
+-	int retries, power;
++	int retries, power = 1;
+ 	struct rk_pcie *rk_pcie = to_rk_pcie(pci);
+ 	int hw_retries = 0;
+ 	u32 ltssm;
+@@ -594,8 +594,7 @@ static int rk_pcie_establish_link(struct dw_pcie *pci)
+ 		 * work fine. If it doesn't, please add more in DT node by add rockchip,perst-inactive-ms.
+ 		 */
+ 		if (rk_pcie->in_suspend && rk_pcie->skip_scan_in_resume) {
+-			rfkill_get_wifi_power_state(&power);
+-			if (!power) {
++			if (!rfkill_get_wifi_power_state(&power) && !power) {
+ 				gpiod_set_value_cansleep(rk_pcie->rst_gpio, 1);
+ 				return 0;
+ 			}
+@@ -2214,7 +2213,7 @@ static void rk_pcie_downstream_dev_to_d0(struct rk_pcie *rk_pcie, bool enable)
+ static int __maybe_unused rockchip_dw_pcie_suspend(struct device *dev)
+ {
+ 	struct rk_pcie *rk_pcie = dev_get_drvdata(dev);
+-	int ret = 0, power;
++	int ret = 0, power = 1;
+ 	struct dw_pcie *pci = rk_pcie->pci;
+ 	u32 status;
+ 
+@@ -2248,8 +2247,7 @@ static int __maybe_unused rockchip_dw_pcie_suspend(struct device *dev)
+ 	 * must fail. Skip L2 routine.
+ 	 */
+ 	if (rk_pcie->skip_scan_in_resume) {
+-		rfkill_get_wifi_power_state(&power);
+-		if (!power)
++		if (!rfkill_get_wifi_power_state(&power) && !power)
+ 			goto no_l2;
+ 	}
+ 

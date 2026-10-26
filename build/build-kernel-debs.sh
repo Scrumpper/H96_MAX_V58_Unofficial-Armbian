@@ -3,7 +3,8 @@
 # Builds h96-kernel-<krel> and h96-dtb-<krel> debs from pinned kernel build outputs.
 # Payload stages into /usr/lib/h96-kernel/<krel>/ and /usr/lib/modules/<krel>/; nothing under /boot.
 # Usage: MAINT='Name <email>' IMAGE=.. SYSMAP=.. CONFIG=.. MODTAR=.. DTB=.. build-kernel-debs.sh [OUTDIR]
-# DTBO: optional colon-separated .dtbo files (paths may contain spaces), staged in dtb package under <FDTFILE dir>/overlay/ (not pinned).
+# DTBO: optional colon-separated .dtbo files (paths may contain spaces), staged in dtb package under <FDTFILE dir>/overlay/;
+# PIN=1 needs exactly the release's PIN_DTBOS (name=sha256, in order).
 # KCFLAGS: flags the kernel was compiled with; recorded in kernel package changelog only. Value other than
 # KCFLAGS_PIN needs PIN=0 and PKGVER above default, so no earlier version gets second content.
 # Re-runnable; output depends only on inputs and SOURCE_DATE_EPOCH.
@@ -12,22 +13,24 @@ set -euo pipefail
 KREL=${KREL:-6.1.172-h96v58-8.0}
 # pins per release: default versions and sha256 of pinned build outputs; PIN=0 skips pins for other inputs
 PINNED=1
+PIN_DTBOS=""
 case "$KREL" in
 6.1.172-h96v58-8.0)
-    PKGVER_DEF=8.0.0~r11; DTB_PKGVER_DEF=8.0.0~r10
+    PKGVER_DEF=8.0.0~r11; DTB_PKGVER_DEF=8.0.0~r12
     SHA_IMAGE=6fbe2fee96d1dbc920d7957877ccb2b140c32a927d647615d877a840af64e8bc
     SHA_SYSMAP=6d8e615f4e8376088bd9145a59c9ae3f48f3715a287826ae8ff19c7ce430f976
     SHA_CONFIG=b94f0167acfc532645470821d7acf56360aaf8a93c6fd513406328083f633e19
     SHA_MODTAR=a9c2f2c972697937d23a160daff70b021cc7e22c154ddd1a407d351babce3e49
-    SHA_DTB=4891450dbe1ffee7257e268ecca06c91857623a6025ff6a79ba02e31d2363253
+    SHA_DTB=c907578e168b8c85d7acab4922fc888a85c2b950801d619a5eb5c9d18bcc3234
     ;;
 6.12.69-h96v58-8.0)
-    PKGVER_DEF=8.0.0~r16; DTB_PKGVER_DEF=8.0.0~r16
-    SHA_IMAGE=4ef3a6e04dc3921542a9ac4310006bd69990f1aa2a2a433f94b77e772e41126b
-    SHA_SYSMAP=44cd801d40dc6ba9d5cf9ab3c1af51dca6597a540c8eeb987a61db908e52c49d
-    SHA_CONFIG=1ba08c2ac16c8abc1a83b4c09b8e88500537e237e24ad7d1374a16d5bd4cc780
-    SHA_MODTAR=ac9d95ee5016d5ab688bf296de721ae960a790366b31e504c4081a0f38acbcb8
-    SHA_DTB=c5dbeca93cc471ff890958bfa6ec11343130ea9279c6ce0960057d9fd768b8f0
+    PKGVER_DEF=8.0.0~r23; DTB_PKGVER_DEF=8.0.0~r23
+    SHA_IMAGE=95a659abd83d813b30b72a2358ac5102b603e257487f48d843def6d6b3a98533
+    SHA_SYSMAP=6fa8a2db3dd8c141929f5eae3f58129d9623b150218724f5c78efea058214a98
+    SHA_CONFIG=dfa4ee07098121c1c72a086a376108a4634904d2b8af1138db2d4485d8b4d2ac
+    SHA_MODTAR=063b6f057855f52b313389d66454daba6dc5ae8fc39b10c4e4d2f0721de51ed6
+    SHA_DTB=601c18fb00d3d24f0cd487131cc6422fafe6edc5f0767a125c81b29773ab1c92
+    PIN_DTBOS="rk3588-h96-usb-otg.dtbo=d13d6ba63e4b2faf2df07aa0fda6bf16872adb0e68e37065a9154e7116066f68"
     ;;
 *)
     # unpinned release: PIN=0 and explicit PKGVER
@@ -111,7 +114,14 @@ for o in "${DTBOS[@]}"; do
     [ -f "$o" ] || die "DTBO not found: $o"
     case "$(basename "$o")" in .*|*[!A-Za-z0-9._-]*) die "bad DTBO name: $o";; *.dtbo) ;; *) die "DTBO not .dtbo: $o";; esac
 done
-[ -z "$DTBO" ] || [ "$PIN" = 0 ] || die "DTBO is not pinned: set PIN=0 and new PKGVER"
+if [ "$PIN" = 1 ]; then
+    got_dtbos=""
+    for o in "${DTBOS[@]}"; do got_dtbos="$got_dtbos $(basename "$o")=$(sha256sum "$o" | cut -d' ' -f1)"; done
+    got_dtbos=${got_dtbos# }
+    [ -n "$PIN_DTBOS" ] || [ -z "$DTBO" ] || die "DTBO is not pinned for $KREL: set PIN=0 and new PKGVER"
+    [ "$got_dtbos" = "$PIN_DTBOS" ] || die "DTBO set '${got_dtbos:-none}' differs from pinned '$PIN_DTBOS'"
+    for o in $PIN_DTBOS; do echo "pin ok  DTBO $o"; done
+fi
 if [ "$PIN" = 1 ]; then
     [ "$PINNED" = 1 ] || die "no pins for KREL $KREL: set PIN=0 and new PKGVER"
     for v in IMAGE SYSMAP CONFIG MODTAR DTB; do

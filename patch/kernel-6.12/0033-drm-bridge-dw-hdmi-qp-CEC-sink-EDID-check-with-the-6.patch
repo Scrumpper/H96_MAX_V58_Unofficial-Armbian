@@ -1,0 +1,62 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Scrumpper <190908034+Scrumpper@users.noreply.github.com>
+Date: Mon, 19 Oct 2026 22:39:00 -0700
+Subject: [PATCH 33/59] drm/bridge: dw-hdmi-qp: CEC sink EDID check with the
+ 6.1 block rules
+
+The 6.12 port of the CEC hardening (series 0005) replaced
+drm_edid_block_valid(), static on 6.12, with a local check: perfect
+header on the base block and a zero checksum on every block. 6.1
+accepts more: a base header with at least 6 of 8 bytes right (repaired
+in place, drm edid_fixup default), a CTA extension whose checksum is
+wrong (switches and extenders mangle it), and it rejects all-zero
+blocks and base blocks with an EDID major version other than 1. A sink
+with a bad CTA checksum got its CEC physical address on 6.1 and none on
+6.12 t1-t5 (the cec_phys_addr parameter was the only way out).
+
+Apply the 6.1 rules in dw_hdmi_qp_edid_block_ok(). Override EDIDs are
+not read here, so the change affects only the sink's own EDID. 6.12 t6.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01P6itje71iKPFBX7YKkfvRo
+---
+ drivers/gpu/drm/bridge/synopsys/dw-hdmi-qp.c | 19 +++++++++++++++----
+ 1 file changed, 15 insertions(+), 4 deletions(-)
+
+diff --git a/drivers/gpu/drm/bridge/synopsys/dw-hdmi-qp.c b/drivers/gpu/drm/bridge/synopsys/dw-hdmi-qp.c
+index d2f2c566a..1e7bdafff 100644
+--- a/drivers/gpu/drm/bridge/synopsys/dw-hdmi-qp.c
++++ b/drivers/gpu/drm/bridge/synopsys/dw-hdmi-qp.c
+@@ -411,17 +411,28 @@ struct dw_hdmi_qp {
+ 	struct dentry *debugfs_compat;	/* /sys/kernel/debug/dw-hdmi%d symlink */
+ };
+ 
+-/* drm_edid_block_valid() is static on 6.12: header (base block) and checksum */
+-static bool dw_hdmi_qp_edid_block_ok(const u8 *block, int i)
++/* 6.1 drm_edid_block_valid() rules (static on 6.12): header fixup, CTA checksum tolerated */
++static bool dw_hdmi_qp_edid_block_ok(u8 *block, int i)
+ {
++	static const u8 header[8] = { 0x00, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x00 };
+ 	u8 sum = 0;
+ 	int n;
+ 
+-	if (!i && drm_edid_header_is_valid(block) != 8)
++	if (!memchr_inv(block, 0, EDID_LENGTH))
+ 		return false;
++	if (!i) {
++		/* drm edid_fixup default: 6 of 8 header bytes */
++		if (drm_edid_header_is_valid(block) < 6)
++			return false;
++		memcpy(block, header, sizeof(header));
++	}
+ 	for (n = 0; n < EDID_LENGTH; n++)
+ 		sum += block[n];
+-	return sum == 0;
++	if (sum)
++		/* CTA extension (tag 0x02): switches mangle its checksum */
++		return i && block[0] == 0x02;
++	/* base block: EDID major version 1 only */
++	return i || block[0x12] == 1;
+ }
+ 
+ /* CEC PA is assigned by the sink: read its own EDID, an override EDID carries another PA */

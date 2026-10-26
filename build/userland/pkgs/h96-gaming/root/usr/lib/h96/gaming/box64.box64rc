@@ -1,0 +1,66 @@
+# box64.box64rc: starter per-title dynarec tuning for H96 Max V58 (RK3588
+# Cortex-A76/A55, Mali-G610). Installed to /etc/box64.box64rc by the gaming
+# oneshot; box64 also reads ~/.box64rc (per-user overrides win).
+#
+# Format: [program.exe] sections keyed by process basename; [default] applies
+# to everything. Conservative known-good starting points; tune per title.
+
+[default]
+BOX64_DYNAREC=1
+BOX64_DYNAREC_BIGBLOCK=1
+BOX64_DYNAREC_STRONGMEM=1
+BOX64_DYNAREC_FASTNAN=1
+BOX64_DYNAREC_FASTROUND=1
+BOX64_DYNAREC_SAFEFLAGS=1
+BOX64_DYNAREC_CALLRET=1
+BOX64_DYNAREC_WEAKBARRIER=1
+# Steam Runtime 3 / Proton hints (harmless for non-Steam titles)
+BOX64_LOG=0
+
+# --- validation titles ---
+
+# Hades: D3D11 -> dxvk-2.7.1-stripped.
+[Hades.exe]
+BOX64_DYNAREC_BIGBLOCK=2
+BOX64_DYNAREC_STRONGMEM=1
+BOX64_DYNAREC_SAFEFLAGS=0
+
+# Celeste: D3D -> Sarek, low GPU load.
+[Celeste.exe]
+BOX64_DYNAREC_BIGBLOCK=1
+BOX64_DYNAREC_SAFEFLAGS=0
+
+# Dead Cells: 2D, D3D -> Sarek.
+[deadcells.exe]
+BOX64_DYNAREC_BIGBLOCK=1
+BOX64_DYNAREC_SAFEFLAGS=0
+
+# Portal 2 / Source engine: D3D9 -> Sarek (or stripped); gamepad path.
+[portal2.exe]
+BOX64_DYNAREC_STRONGMEM=1
+BOX64_DYNAREC_CALLRET=0
+[hl2.exe]
+BOX64_DYNAREC_STRONGMEM=1
+BOX64_DYNAREC_CALLRET=0
+
+# Portal: D3D9 -> Sarek.
+[portal.exe]
+BOX64_DYNAREC_STRONGMEM=1
+
+# Skyrim SE (stretch/stress): ~20fps at 720p low.
+[SkyrimSE.exe]
+BOX64_DYNAREC_BIGBLOCK=3
+BOX64_DYNAREC_STRONGMEM=1
+BOX64_DYNAREC_SAFEFLAGS=0
+BOX64_DYNAREC_FASTNAN=1
+
+# Dark Souls 2 (stretch): ~30fps at 720p.
+[DarkSoulsII.exe]
+BOX64_DYNAREC_BIGBLOCK=2
+BOX64_DYNAREC_SAFEFLAGS=1
+
+# Steam client (x86_64 under box64, second milestone): conservative settings.
+[steam.exe]
+BOX64_DYNAREC_STRONGMEM=1
+BOX64_DYNAREC_SAFEFLAGS=1
+BOX64_DYNAREC_BIGBLOCK=0

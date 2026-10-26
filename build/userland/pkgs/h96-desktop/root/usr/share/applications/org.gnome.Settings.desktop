@@ -1,0 +1,11 @@
+[Desktop Entry]
+Name=Settings
+Icon=org.gnome.Settings
+Exec=settings-launch
+DBusActivatable=false
+Terminal=false
+Type=Application
+StartupNotify=true
+Categories=GNOME;GTK;Settings;
+OnlyShowIn=GNOME;
+Keywords=Preferences;Settings;

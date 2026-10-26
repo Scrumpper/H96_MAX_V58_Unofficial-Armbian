@@ -1,0 +1,10 @@
+[Unit]
+Description=H96 armbian-update guard (keeps the ophub kernel updater off /boot)
+Documentation=file:/usr/share/doc/h96-base/COMMANDS.md
+
+[Service]
+Type=oneshot
+ExecStart=/usr/sbin/h96-armbian-update-guard
+
+[Install]
+WantedBy=multi-user.target

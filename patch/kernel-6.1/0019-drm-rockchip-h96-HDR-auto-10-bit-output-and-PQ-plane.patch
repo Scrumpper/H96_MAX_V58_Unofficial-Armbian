@@ -1,0 +1,97 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: H96 build <noreply@localhost>
+Date: Tue, 6 Oct 2026 12:00:00 +0000
+Subject: [PATCH 19/20] drm/rockchip: h96 HDR auto: 10-bit output and PQ plane
+ tag for HDR10
+
+An HDR EOTF the sink lists selects 10-bit output (DC_30 or YCbCr 4:2:2)
+whatever the color_depth property says. An untagged linear 10-bit YUV
+plane on a PQ CRTC is tagged PQ in plane check (eotf_auto, reset on
+every check); an EOTF set by userspace wins and readback stays SDR.
+Inert on SDR outputs.
+---
+ drivers/gpu/drm/rockchip/dw_hdmi_qp-rockchip.c | 15 ++++++++++-----
+ drivers/gpu/drm/rockchip/rockchip_drm_vop2.c   | 16 +++++++++++++++-
+ 2 files changed, 25 insertions(+), 6 deletions(-)
+
+diff --git a/drivers/gpu/drm/rockchip/dw_hdmi_qp-rockchip.c b/drivers/gpu/drm/rockchip/dw_hdmi_qp-rockchip.c
+index 12864870d..5cd60080a 100644
+--- a/drivers/gpu/drm/rockchip/dw_hdmi_qp-rockchip.c
++++ b/drivers/gpu/drm/rockchip/dw_hdmi_qp-rockchip.c
+@@ -2363,11 +2363,6 @@ dw_hdmi_rockchip_select_output(struct drm_connector_state *conn_state,
+ 	    info->hdmi.y420_dc_modes & DRM_EDID_YCBCR420_DC_30)
+ 		support_dc = true;
+ 
+-	if (hdmi->colordepth > 8 && support_dc)
+-		color_depth = 10;
+-	else
+-		color_depth = 8;
+-
+ 	*eotf = HDMI_EOTF_TRADITIONAL_GAMMA_SDR;
+ 	if (conn_state->hdr_output_metadata) {
+ 		hdr_metadata = (struct hdr_output_metadata *)conn_state->hdr_output_metadata->data;
+@@ -2377,6 +2372,16 @@ dw_hdmi_rockchip_select_output(struct drm_connector_state *conn_state,
+ 			*eotf = output_eotf;
+ 	}
+ 
++	/* h96: HDR the sink accepts runs at 10 bit (DC_30 or 4:2:2) whatever color_depth says */
++	if (*eotf > HDMI_EOTF_TRADITIONAL_GAMMA_SDR &&
++	    (conn_state->connector->hdr_sink_metadata.hdmi_type1.eotf & BIT(*eotf)) &&
++	    (support_dc || info->color_formats & DRM_COLOR_FORMAT_YCBCR422))
++		color_depth = 10;
++	else if (hdmi->colordepth > 8 && support_dc)
++		color_depth = 10;
++	else
++		color_depth = 8;
++
+ 	*enc_out_encoding = conn_state->colorspace;
+ 
+ 	hdmi->colorimetry =
+diff --git a/drivers/gpu/drm/rockchip/rockchip_drm_vop2.c b/drivers/gpu/drm/rockchip/rockchip_drm_vop2.c
+index 5d93c37cf..aa643a099 100644
+--- a/drivers/gpu/drm/rockchip/rockchip_drm_vop2.c
++++ b/drivers/gpu/drm/rockchip/rockchip_drm_vop2.c
+@@ -383,6 +383,7 @@ struct vop2_plane_state {
+ 	uint8_t afbc_half_block_en;
+ 	uint8_t tiled_en;
+ 	int eotf;
++	bool eotf_auto;	/* h96: eotf set by plane check, not userspace */
+ 	int global_alpha;
+ 	int blend_mode;
+ 	uint32_t background;
+@@ -7785,6 +7786,18 @@ static int vop2_plane_atomic_check(struct drm_plane *plane, struct drm_atomic_st
+ 	if (vpstate->format < 0)
+ 		return vpstate->format;
+ 
++	/* h96: untagged 10-bit linear YUV on a PQ output is the HDR10 video plane */
++	if (vpstate->eotf_auto) {
++		vpstate->eotf = HDMI_EOTF_TRADITIONAL_GAMMA_SDR;
++		vpstate->eotf_auto = false;
++	}
++	if (vpstate->eotf == HDMI_EOTF_TRADITIONAL_GAMMA_SDR &&
++	    vcstate->eotf == HDMI_EOTF_SMPTE_ST2084 &&
++	    is_linear_10bit_yuv(fb->format->format)) {
++		vpstate->eotf = HDMI_EOTF_SMPTE_ST2084;
++		vpstate->eotf_auto = true;
++	}
++
+ 	if (drm_rect_width(src) >> 16 < 4 || drm_rect_height(src) >> 16 < 4 ||
+ 	    drm_rect_width(dest) < 4 || drm_rect_height(dest) < 4) {
+ 		if (plane->type != DRM_PLANE_TYPE_CURSOR)
+@@ -9190,6 +9203,7 @@ static int vop2_atomic_plane_set_property(struct drm_plane *plane,
+ 
+ 	if (property == private->eotf_prop) {
+ 		vpstate->eotf = val;
++		vpstate->eotf_auto = false;
+ 		return 0;
+ 	}
+ 
+@@ -9258,7 +9272,7 @@ static int vop2_atomic_plane_get_property(struct drm_plane *plane,
+ 	struct vop2_win *win = to_vop2_win(plane);
+ 
+ 	if (property == private->eotf_prop) {
+-		*val = vpstate->eotf;
++		*val = vpstate->eotf_auto ? HDMI_EOTF_TRADITIONAL_GAMMA_SDR : vpstate->eotf;
+ 		return 0;
+ 	}
+ 

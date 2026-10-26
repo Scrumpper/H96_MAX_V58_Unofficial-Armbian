@@ -1,0 +1,10 @@
+[Desktop Entry]
+Name=Play in mpv (hardware video)
+Comment=Hardware-decoded video/YouTube via rkmpp (mpv.conf: zero-copy, copy-back fallback)
+Exec=h96-watch-mpv %U
+Terminal=false
+Type=Application
+Categories=AudioVideo;Player;
+MimeType=x-scheme-handler/mpv;text/html;
+Icon=mpv
+Keywords=video;player;youtube;

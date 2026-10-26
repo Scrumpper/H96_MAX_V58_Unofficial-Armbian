@@ -1,0 +1,103 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Scrumpper <190908034+Scrumpper@users.noreply.github.com>
+Date: Tue, 20 Oct 2026 07:05:44 -0700
+Subject: [PATCH 34/59] mmc: sdhci-of-dwcmshc: rk35xx: CQE enable and halt
+ order as mainline
+
+The vendor rk35xx CQE ops set CQHCI_ENABLE in .enable and clear it in
+.disable. cqhci_off() calls .disable before it writes CQHCI_HALT, so CQE
+is switched off before the halt request and the halt poll runs against a
+disabled engine; the recovery path (.disable with recovery=true) also
+clears CQHCI_ENABLE ahead of cqhci_recovery_finish(). .disable further
+calls cqe_wait_for_idle() from inside the cqhci core.
+
+Mainline commit fda1e0af7c28 ("mmc: sdhci-of-dwcmshc: Add command queue
+support for rockchip SOCs", co-developed by Rockchip) uses the
+pre_enable/post_disable hooks this cqhci core already has: CQHCI_ENABLE
+in .pre_enable, cleared in .post_disable after the halt, no idle wait in
+.disable. Use that order. The vendor send-status idle timer (CIT 0x100)
+stays in .enable, which runs on both the first enable and every re-enable.
+
+No effect while the board DTS deletes supports-cqe. 6.12 mmcq.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01P6itje71iKPFBX7YKkfvRo
+---
+ drivers/mmc/host/sdhci-of-dwcmshc.c | 31 ++++++++++++++++++++++-------
+ 1 file changed, 24 insertions(+), 7 deletions(-)
+
+diff --git a/drivers/mmc/host/sdhci-of-dwcmshc.c b/drivers/mmc/host/sdhci-of-dwcmshc.c
+index aa66fb45e..651f82d30 100644
+--- a/drivers/mmc/host/sdhci-of-dwcmshc.c
++++ b/drivers/mmc/host/sdhci-of-dwcmshc.c
+@@ -659,6 +659,19 @@ static void dwcmshc_sdhci_cqe_enable(struct mmc_host *mmc)
+ 	sdhci_writeb(host, ctrl, SDHCI_HOST_CONTROL);
+ }
+ 
++/* CQE back on after a halt: CQHCI_ENABLE before the core clears CQHCI_CTL, as mainline */
++static void rk35xx_sdhci_cqe_pre_enable(struct mmc_host *mmc)
++{
++	struct sdhci_host *host = mmc_priv(mmc);
++	struct sdhci_pltfm_host *pltfm_host = sdhci_priv(host);
++	struct dwcmshc_priv *dwc_priv = sdhci_pltfm_priv(pltfm_host);
++	u32 reg;
++
++	reg = sdhci_readl(host, dwc_priv->vendor_specific_area2 + CQHCI_CFG);
++	reg |= CQHCI_ENABLE;
++	sdhci_writel(host, reg, dwc_priv->vendor_specific_area2 + CQHCI_CFG);
++}
++
+ static void rk35xx_sdhci_cqe_enable(struct mmc_host *mmc)
+ {
+ 	struct sdhci_host *host = mmc_priv(mmc);
+@@ -671,10 +684,6 @@ static void rk35xx_sdhci_cqe_enable(struct mmc_host *mmc)
+ 	reg = (reg & ~CQHCI_SSC1_CIT_MASK) | 0x0100;
+ 	sdhci_writel(host, reg, dwc_priv->vendor_specific_area2 + CQHCI_SSC1);
+ 
+-	reg = sdhci_readl(host, dwc_priv->vendor_specific_area2 + CQHCI_CFG);
+-	reg |= CQHCI_ENABLE;
+-	sdhci_writel(host, reg, dwc_priv->vendor_specific_area2 + CQHCI_CFG);
+-
+ 	reg = sdhci_readl(host, SDHCI_PRESENT_STATE);
+ 	while (reg & SDHCI_DATA_AVAILABLE) {
+ 		sdhci_readl(host, SDHCI_BUFFER);
+@@ -691,12 +700,9 @@ static void rk35xx_sdhci_cqe_enable(struct mmc_host *mmc)
+ static void rk35xx_sdhci_cqe_disabled(struct mmc_host *mmc, bool recovery)
+ {
+ 	struct sdhci_host *host = mmc_priv(mmc);
+-	struct sdhci_pltfm_host *pltfm_host = sdhci_priv(host);
+-	struct dwcmshc_priv *dwc_priv = sdhci_pltfm_priv(pltfm_host);
+ 	unsigned long flags;
+ 	u32 ctrl;
+ 
+-	mmc->cqe_ops->cqe_wait_for_idle(mmc);
+ 	spin_lock_irqsave(&host->lock, flags);
+ 
+ 	/*
+@@ -713,6 +719,15 @@ static void rk35xx_sdhci_cqe_disabled(struct mmc_host *mmc, bool recovery)
+ 	spin_unlock_irqrestore(&host->lock, flags);
+ 
+ 	sdhci_cqe_disable(mmc, recovery);
++}
++
++/* CQHCI_ENABLE off only after the core has halted CQE, as mainline */
++static void rk35xx_sdhci_cqe_post_disable(struct mmc_host *mmc)
++{
++	struct sdhci_host *host = mmc_priv(mmc);
++	struct sdhci_pltfm_host *pltfm_host = sdhci_priv(host);
++	struct dwcmshc_priv *dwc_priv = sdhci_pltfm_priv(pltfm_host);
++	u32 ctrl;
+ 
+ 	ctrl = sdhci_readl(host, dwc_priv->vendor_specific_area2 + CQHCI_CFG);
+ 	ctrl &= ~CQHCI_ENABLE;
+@@ -1510,8 +1525,10 @@ static const struct cqhci_host_ops dwcmshc_cqhci_ops = {
+ };
+ 
+ static const struct cqhci_host_ops rk35xx_cqhci_ops = {
++	.pre_enable	= rk35xx_sdhci_cqe_pre_enable,
+ 	.enable		= rk35xx_sdhci_cqe_enable,
+ 	.disable	= rk35xx_sdhci_cqe_disabled,
++	.post_disable	= rk35xx_sdhci_cqe_post_disable,
+ 	.dumpregs	= dwcmshc_cqhci_dumpregs,
+ 	.set_tran_desc	= dwcmshc_set_tran_desc,
+ };

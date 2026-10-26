@@ -1,0 +1,16 @@
+[Unit]
+Documentation=file:/usr/share/doc/h96-base/COMMANDS.md
+Description=H96 Max V58 First Boot Setup (runs once)
+After=armbian-firstrun.service local-fs.target
+Wants=armbian-firstrun.service
+ConditionPathExists=!/var/lib/h96-firstboot-done
+
+[Service]
+Type=oneshot
+ExecStart=/usr/lib/h96/h96-firstboot.sh
+RemainAfterExit=yes
+StandardOutput=journal+console
+StandardError=journal+console
+
+[Install]
+WantedBy=multi-user.target

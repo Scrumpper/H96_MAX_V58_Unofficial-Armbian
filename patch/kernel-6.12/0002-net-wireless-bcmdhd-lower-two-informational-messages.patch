@@ -1,0 +1,42 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: H96 build <builder@h96-build>
+Date: Fri, 16 Oct 2026 00:00:00 +0000
+Subject: [PATCH 02/59] net: wireless: bcmdhd: lower two informational messages
+ to info level
+
+The module init banner and the static buffer STATIC-MSG trace are
+informational but printed at KERN_ERR, which puts them into every
+boot error scan. Print them at KERN_INFO.
+
+H96 series: originally part of dd237965b / 32202d751.
+---
+ drivers/net/wireless/rockchip_wlan/rkwifi/bcmdhd/dhd_linux.c    | 2 +-
+ .../net/wireless/rockchip_wlan/rkwifi/bcmdhd/dhd_static_buf.c   | 2 +-
+ 2 files changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/drivers/net/wireless/rockchip_wlan/rkwifi/bcmdhd/dhd_linux.c b/drivers/net/wireless/rockchip_wlan/rkwifi/bcmdhd/dhd_linux.c
+index d4f547375..31bd8c160 100755
+--- a/drivers/net/wireless/rockchip_wlan/rkwifi/bcmdhd/dhd_linux.c
++++ b/drivers/net/wireless/rockchip_wlan/rkwifi/bcmdhd/dhd_linux.c
+@@ -14801,7 +14801,7 @@ _dhd_module_init(void)
+ 	int err;
+ 	int retry = POWERUP_MAX_RETRY;
+ 
+-	printk(KERN_ERR PERCENT_S DHD_LOG_PREFIXS "%s: in %s\n",
++	printk(KERN_INFO PERCENT_S DHD_LOG_PREFIXS "%s: in %s\n",
+ 		PRINTF_SYSTEM_TIME, __FUNCTION__, dhd_version);
+ 	if (ANDROID_VERSION > 0)
+ 		printf("ANDROID_VERSION = %d\n", ANDROID_VERSION);
+diff --git a/drivers/net/wireless/rockchip_wlan/rkwifi/bcmdhd/dhd_static_buf.c b/drivers/net/wireless/rockchip_wlan/rkwifi/bcmdhd/dhd_static_buf.c
+index 91c68e996..bb9a809df 100755
+--- a/drivers/net/wireless/rockchip_wlan/rkwifi/bcmdhd/dhd_static_buf.c
++++ b/drivers/net/wireless/rockchip_wlan/rkwifi/bcmdhd/dhd_static_buf.c
+@@ -15,7 +15,7 @@ uint static_msg_level = STATIC_ERROR_LEVEL | STATIC_MSG_LEVEL;
+ #define DHD_STATIC_MSG(x, args...) \
+ do { \
+ 	if (static_msg_level & STATIC_MSG_LEVEL) { \
+-		pr_err("[dhd] STATIC-MSG) %s : " x, __func__, ## args); \
++		pr_info("[dhd] STATIC-MSG) %s : " x, __func__, ## args); \
+ 	} \
+ } while (0)
+ #define DHD_STATIC_ERROR(x, args...) \

@@ -1,0 +1,16 @@
+Source: h96-gaming
+Section: misc
+Priority: optional
+Maintainer: Scrumpper <190908034+Scrumpper@users.noreply.github.com>
+Rules-Requires-Root: no
+Standards-Version: 4.7.0
+
+Package: h96-gaming
+Architecture: all
+Multi-Arch: foreign
+Depends: h96-base (= 8.0.0~r39), python3
+Recommends: whiptail, steam-arm-setup (>= 3.0)
+Description: H96 MAX V58 gaming integration: pad rules, DXVK, box64, Steam ARM wrapper
+ Gamepad hidraw and xpad rules, gaming setup unit, DXVK builds, box64 fallback,
+ Waydroid and emulator helpers, h96-steam wrapper. Steam ARM itself is provided
+ by its own package and is not part of this one.

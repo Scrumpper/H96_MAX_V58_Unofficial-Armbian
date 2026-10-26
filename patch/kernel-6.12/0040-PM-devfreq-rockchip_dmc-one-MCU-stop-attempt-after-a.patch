@@ -1,0 +1,41 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Scrumpper <190908034+Scrumpper@users.noreply.github.com>
+Date: Tue, 20 Oct 2026 07:08:53 -0700
+Subject: [PATCH 40/59] PM / devfreq: rockchip_dmc: one MCU stop attempt after
+ a rate change timeout
+
+rockchip_dmcfreq_wait_complete() on 6.12 jumps back to its out: label
+when the DRAM_POST_SET_RATE call that stops the DDR MCU fails. The
+label sits above the timeout check, wait_flag is still set, so the
+function calls POST_SET_RATE again, without delay and with an
+unlimited pr_err, and never returns: a CPU spins with the complete IRQ
+enabled and CPU latency QoS at 0 until the soft lockup detector panics.
+The MCU_START failure path reaches the same loop. 6.1 makes one
+attempt, logs the error and returns.
+
+Keep the 6.12 return code (-1 on failure) and make one attempt, as on
+6.1. Only the timeout path changes; a rate change that completes in
+time is unaffected. Matters once DDR DVFS is on (dmc enabled in the
+board DTS), on BL31 v1.28 whose ddr_m0 halt reset arrived in v1.29.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01P6itje71iKPFBX7YKkfvRo
+---
+ drivers/devfreq/rockchip_dmc.c | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/drivers/devfreq/rockchip_dmc.c b/drivers/devfreq/rockchip_dmc.c
+index f687290bf..dc32d4e36 100644
+--- a/drivers/devfreq/rockchip_dmc.c
++++ b/drivers/devfreq/rockchip_dmc.c
+@@ -1202,9 +1202,9 @@ int rockchip_dmcfreq_wait_complete(void)
+ 		pr_err_ratelimited("%s: waiting for wait_ctrl.complt_irq times out.\n", __func__);
+ 		res = sip_smc_dram(SHARE_PAGE_TYPE_DDR, 0, ROCKCHIP_SIP_CONFIG_DRAM_POST_SET_RATE);
+ 		if (res.a0) {
++			/* one stop attempt; jumping back to out would retry forever */
+ 			pr_err("%s: dram post set rate error:%lx\n", __func__, res.a0);
+ 			ret = -1;
+-			goto out;
+ 		}
+ 	}
+ 

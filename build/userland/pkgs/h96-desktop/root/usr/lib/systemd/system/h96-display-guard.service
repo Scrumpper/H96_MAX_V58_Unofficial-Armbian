@@ -1,0 +1,11 @@
+[Unit]
+Documentation=file:/usr/share/doc/h96-base/COMMANDS.md
+Description=H96 display boot-once auto-revert guard
+After=local-fs.target
+Before=display-manager.service getty@tty1.service
+ConditionPathExists=/boot/h96-display.trial
+[Service]
+Type=oneshot
+ExecStart=/usr/lib/h96/h96-display-guard.sh
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,150 @@
+#!/bin/sh
+# shellcheck disable=SC2034,SC2012  # H96_XD_* read by callers; xauth_* names hold no spaces
+# h96-xdisplay: display and auth of active seat0 desktop session (X11 or Wayland with Xwayland)
+#
+# Sourced: h96_xdisplay sets H96_XD_* variables, rc 0 when an X display or Wayland socket is found.
+# Run: prints H96_XD_*=value lines (rc 1, no lines: none found).
+# Run with --exec CMD...: exports session DISPLAY, XAUTHORITY, WAYLAND_DISPLAY, XDG_RUNTIME_DIR,
+# DBUS_SESSION_BUS_ADDRESS when found (current environment kept otherwise), then runs CMD.
+#
+#   H96_XD_TYPE        x11 | wayland
+#   H96_XD_DISPLAY     X display (:N); Xwayland display in a Wayland session
+#   H96_XD_XAUTH       X auth for this caller (root: LightDM server auth when present)
+#   H96_XD_USER_XAUTH  X auth readable by session user
+#   H96_XD_WAYLAND     Wayland socket name (Wayland session only)
+#   H96_XD_CLASS       logind session class: user | greeter
+#   H96_XD_USER, H96_XD_UID, H96_XD_RUNTIME, H96_XD_DBUS
+
+_hxd_env() {  # $1 pid, $2 key: value from process environment
+  tr '\0' '\n' < "/proc/$1/environ" 2>/dev/null | sed -n "s/^$2=//p" | head -n 1
+}
+
+_hxd_pid() {  # $1 uid, $2.. process names in preference order: first matching pid
+  _u="$1"; shift
+  for _n in "$@"; do
+    for _d in /proc/[0-9]*; do
+      { read -r _c < "$_d/comm"; } 2>/dev/null || continue
+      [ "$_c" = "$_n" ] || continue
+      [ "$(stat -c %u "$_d" 2>/dev/null)" = "$_u" ] || continue
+      echo "${_d#/proc/}"; return 0
+    done
+  done
+  return 1
+}
+
+_hxd_xwl() {  # $1 pid of Xwayland: sets _xd and _xa from its command line
+  _xd=""; _xa=""; _next=""
+  for _a in $(tr '\0' ' ' < "/proc/$1/cmdline" 2>/dev/null); do
+    [ "$_next" = auth ] && { _xa="$_a"; _next=""; continue; }
+    case "$_a" in
+      -auth) _next=auth ;;
+      :[0-9]*) _xd="$_a" ;;
+    esac
+  done
+}
+
+_hxd_sock() {  # X display with a server socket: prefers one with LightDM server auth
+  _first=""
+  for _s in /tmp/.X11-unix/X[0-9]*; do
+    [ -e "$_s" ] || continue
+    _n=":${_s##*/X}"
+    [ -f "/var/run/lightdm/root/$_n" ] && { echo "$_n"; return 0; }
+    [ -n "$_first" ] || _first="$_n"
+  done
+  [ -n "$_first" ] && echo "$_first"
+}
+
+h96_xdisplay() {
+  H96_XD_TYPE=""; H96_XD_DISPLAY=""; H96_XD_XAUTH=""; H96_XD_USER_XAUTH=""; H96_XD_WAYLAND=""
+  H96_XD_CLASS=""; H96_XD_USER=""; H96_XD_UID=""; H96_XD_RUNTIME=""; H96_XD_DBUS=""
+  _me="$(id -u)"; _home=""; _p=""
+  _s="$(loginctl show-seat seat0 -p ActiveSession --value 2>/dev/null)"
+  _t=""
+  if [ -n "$_s" ]; then
+    _t="$(loginctl show-session "$_s" -p Type --value 2>/dev/null)"
+    H96_XD_CLASS="$(loginctl show-session "$_s" -p Class --value 2>/dev/null)"
+    H96_XD_UID="$(loginctl show-session "$_s" -p User --value 2>/dev/null)"
+    H96_XD_USER="$(loginctl show-session "$_s" -p Name --value 2>/dev/null)"
+    H96_XD_DISPLAY="$(loginctl show-session "$_s" -p Display --value 2>/dev/null)"
+  fi
+  if [ -n "$H96_XD_UID" ]; then
+    _home="$(getent passwd "$H96_XD_UID" | cut -d: -f6)"
+    H96_XD_RUNTIME="/run/user/$H96_XD_UID"
+    _p="$(_hxd_pid "$H96_XD_UID" plasmashell ksmserver kwin_wayland kwin_x11 gnome-shell startplasma-x11 startplasma-wayland)" || _p=""
+  fi
+  case "$_t" in
+    wayland)
+      H96_XD_TYPE=wayland
+      if [ -n "$_p" ]; then
+        H96_XD_WAYLAND="$(_hxd_env "$_p" WAYLAND_DISPLAY)"
+        H96_XD_DISPLAY="$(_hxd_env "$_p" DISPLAY)"
+        H96_XD_USER_XAUTH="$(_hxd_env "$_p" XAUTHORITY)"
+        H96_XD_DBUS="$(_hxd_env "$_p" DBUS_SESSION_BUS_ADDRESS)"
+        _r="$(_hxd_env "$_p" XDG_RUNTIME_DIR)"; [ -n "$_r" ] && H96_XD_RUNTIME="$_r"
+      fi
+      if [ -z "$H96_XD_DISPLAY" ] || [ -z "$H96_XD_USER_XAUTH" ]; then
+        _x="$(_hxd_pid "$H96_XD_UID" Xwayland)" && _hxd_xwl "$_x"
+        [ -n "$H96_XD_DISPLAY" ] || H96_XD_DISPLAY="${_xd:-}"
+        [ -n "$H96_XD_USER_XAUTH" ] || H96_XD_USER_XAUTH="${_xa:-}"
+      fi
+      if [ -z "$H96_XD_USER_XAUTH" ]; then
+        H96_XD_USER_XAUTH="$(ls -t "$H96_XD_RUNTIME"/xauth_* 2>/dev/null | head -n 1)"
+      fi
+      if [ -z "$H96_XD_WAYLAND" ] && [ -e "$H96_XD_RUNTIME/wayland-0" ]; then H96_XD_WAYLAND=wayland-0; fi
+      H96_XD_XAUTH="$H96_XD_USER_XAUTH"
+      ;;
+    *)
+      # x11 session, greeter, or no session: X server socket decides
+      [ -n "$H96_XD_DISPLAY" ] || H96_XD_DISPLAY="$(_hxd_sock)"
+      [ -n "$H96_XD_DISPLAY" ] || { H96_XD_TYPE=""; return 1; }
+      H96_XD_TYPE=x11
+      [ -n "$_p" ] && [ "$(_hxd_env "$_p" DISPLAY)" = "$H96_XD_DISPLAY" ] && H96_XD_USER_XAUTH="$(_hxd_env "$_p" XAUTHORITY)"
+      [ -n "$_p" ] && H96_XD_DBUS="$(_hxd_env "$_p" DBUS_SESSION_BUS_ADDRESS)"
+      if [ -z "$H96_XD_USER_XAUTH" ] && [ -n "$_home" ] && [ -f "$_home/.Xauthority" ]; then
+        H96_XD_USER_XAUTH="$_home/.Xauthority"
+      fi
+      if [ "$_me" = 0 ] && [ -f "/var/run/lightdm/root/$H96_XD_DISPLAY" ]; then
+        H96_XD_XAUTH="/var/run/lightdm/root/$H96_XD_DISPLAY"
+      else
+        H96_XD_XAUTH="$H96_XD_USER_XAUTH"
+      fi
+      ;;
+  esac
+  [ -n "$H96_XD_DBUS" ] || { [ -n "$H96_XD_RUNTIME" ] && H96_XD_DBUS="unix:path=$H96_XD_RUNTIME/bus"; }
+  [ -n "$H96_XD_DISPLAY" ] || [ -n "$H96_XD_WAYLAND" ]
+}
+
+# h96_session_run CMD...: CMD as session user with session display env (call h96_xdisplay first);
+# Wayland adds Qt Wayland platform so kscreen-doctor uses KWin output management
+h96_session_run() {
+  [ -n "$H96_XD_USER" ] || return 1
+  set -- env DISPLAY="$H96_XD_DISPLAY" XAUTHORITY="$H96_XD_USER_XAUTH" XDG_RUNTIME_DIR="$H96_XD_RUNTIME" \
+    DBUS_SESSION_BUS_ADDRESS="$H96_XD_DBUS" ${H96_XD_WAYLAND:+WAYLAND_DISPLAY=$H96_XD_WAYLAND QT_QPA_PLATFORM=wayland XDG_SESSION_TYPE=wayland} "$@"
+  if [ "$(id -un)" = "$H96_XD_USER" ]; then "$@"; else runuser -u "$H96_XD_USER" -- "$@"; fi
+}
+
+case "${0##*/}" in
+  h96-xdisplay)
+    if [ "${1:-}" = --exec ]; then
+      shift
+      [ $# -gt 0 ] || { echo "usage: h96-xdisplay --exec CMD [ARG...]" >&2; exit 2; }
+      if h96_xdisplay; then
+        [ -n "$H96_XD_DISPLAY" ] && export DISPLAY="$H96_XD_DISPLAY"
+        [ -n "$H96_XD_USER_XAUTH" ] && export XAUTHORITY="$H96_XD_USER_XAUTH"
+        [ -n "$H96_XD_WAYLAND" ] && export WAYLAND_DISPLAY="$H96_XD_WAYLAND"
+        [ -n "$H96_XD_RUNTIME" ] && export XDG_RUNTIME_DIR="$H96_XD_RUNTIME"
+        [ -n "$H96_XD_DBUS" ] && export DBUS_SESSION_BUS_ADDRESS="$H96_XD_DBUS"
+      fi
+      exec "$@"
+    fi
+    case "${1:-}" in
+      -h|--help) sed -n '3,17p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+      "") ;;
+      *) echo "h96-xdisplay: unknown argument '$1' (try --help)" >&2; exit 2 ;;
+    esac
+    h96_xdisplay || exit 1
+    for _k in TYPE DISPLAY XAUTH USER_XAUTH WAYLAND CLASS USER UID RUNTIME DBUS; do
+      eval "printf 'H96_XD_%s=%s\n' \"\$_k\" \"\$H96_XD_$_k\""
+    done
+    ;;
+esac

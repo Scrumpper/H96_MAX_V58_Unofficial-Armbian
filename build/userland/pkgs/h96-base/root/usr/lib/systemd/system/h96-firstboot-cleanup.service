@@ -1,0 +1,18 @@
+
+[Unit]
+Documentation=file:/usr/share/doc/h96-base/COMMANDS.md
+Description=H96 Max V58 first-boot setup
+Wants=network-online.target
+After=network-online.target
+ConditionPathExists=!/var/lib/h96-firstboot-cleanup-done
+
+[Service]
+Type=oneshot
+ExecStart=/bin/bash /usr/lib/h96/h96-firstboot-cleanup.sh
+StandardOutput=journal+console
+StandardError=journal+console
+RemainAfterExit=yes
+TimeoutStartSec=600
+
+[Install]
+WantedBy=multi-user.target

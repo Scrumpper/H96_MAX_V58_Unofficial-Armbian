@@ -1,0 +1,263 @@
+h96-tools (8.0.0~r39) resolute; urgency=medium
+
+  * Version bump with h96-audio and h96-base changes; files unchanged
+    apart from version in manual pages.
+
+ -- Scrumpper <190908034+Scrumpper@users.noreply.github.com>  Tue, 27 Oct 2026 00:00:00 +0000
+
+h96-tools (8.0.0~r38) resolute; urgency=medium
+
+  * Version bump with h96-base change; files unchanged apart from version.
+
+ -- Scrumpper <190908034+Scrumpper@users.noreply.github.com>  Mon, 26 Oct 2026 18:00:00 +0000
+
+h96-tools (8.0.0~r37) resolute; urgency=medium
+
+  * Version bump with h96-base change; files unchanged apart from version.
+
+ -- Scrumpper <190908034+Scrumpper@users.noreply.github.com>  Mon, 26 Oct 2026 12:00:00 +0000
+
+h96-tools (8.0.0~r36) resolute; urgency=medium
+
+  * h96-perf: profile read and set through busctl
+    (net.hadess.PowerProfiles) when powerprofilesctl is absent; Debian
+    trixie has no powerprofilesctl, status printed unknown and set exited
+    1.
+
+ -- Scrumpper <190908034+Scrumpper@users.noreply.github.com>  Mon, 26 Oct 2026 06:00:00 +0000
+
+h96-tools (8.0.0~r35) resolute; urgency=medium
+
+  * Version bump with h96-base documentation change; files unchanged apart
+    from version.
+
+ -- Scrumpper <190908034+Scrumpper@users.noreply.github.com>  Mon, 26 Oct 2026 00:00:00 +0000
+
+h96-tools (8.0.0~r34) resolute; urgency=medium
+
+  * h96-vm --gui passes session user's bus address to qemu window (was
+    caller's).
+
+ -- Scrumpper <190908034+Scrumpper@users.noreply.github.com>  Sun, 25 Oct 2026 18:00:00 +0000
+
+h96-tools (8.0.0~r33) resolute; urgency=medium
+
+  * Version bump with h96-media and h96-base changes; files unchanged
+    apart from version.
+
+ -- Scrumpper <190908034+Scrumpper@users.noreply.github.com>  Sun, 25 Oct 2026 12:00:00 +0000
+
+h96-tools (8.0.0~r32) resolute; urgency=medium
+
+  * Version bump with h96-base documentation change; files unchanged apart
+    from version.
+
+ -- Scrumpper <190908034+Scrumpper@users.noreply.github.com>  Sun, 25 Oct 2026 06:00:00 +0000
+
+h96-tools (8.0.0~r31) resolute; urgency=medium
+
+  * Version bump with h96-base documentation change; files unchanged apart
+    from version.
+
+ -- Scrumpper <190908034+Scrumpper@users.noreply.github.com>  Sun, 25 Oct 2026 00:00:00 +0000
+
+h96-tools (8.0.0~r30) resolute; urgency=medium
+
+  * Version bump with h96-audio change; files unchanged apart from
+    version.
+
+ -- Scrumpper <190908034+Scrumpper@users.noreply.github.com>  Sat, 24 Oct 2026 18:00:00 +0000
+
+h96-tools (8.0.0~r29) resolute; urgency=medium
+
+  * Manual page headers name public release 8.0 instead of package
+    version.
+
+ -- Scrumpper <190908034+Scrumpper@users.noreply.github.com>  Sat, 24 Oct 2026 12:00:00 +0000
+
+h96-tools (8.0.0~r28) resolute; urgency=medium
+
+  * Version bump with h96-media, h96-audio and h96-base changes; files
+    unchanged apart from version in manual pages.
+
+ -- Scrumpper <190908034+Scrumpper@users.noreply.github.com>  Sat, 24 Oct 2026 06:00:00 +0000
+
+h96-tools (8.0.0~r27) resolute; urgency=medium
+
+  * Version bump with h96-base change; files unchanged apart from version
+    in manual pages.
+
+ -- Scrumpper <190908034+Scrumpper@users.noreply.github.com>  Fri, 23 Oct 2026 20:00:00 +0000
+
+h96-tools (8.0.0~r26) resolute; urgency=medium
+
+  * Version bump with h96-net, h96-base and h96-gaming changes; files
+    unchanged apart from version in manual pages.
+
+ -- Scrumpper <190908034+Scrumpper@users.noreply.github.com>  Fri, 23 Oct 2026 15:00:00 +0000
+
+h96-tools (8.0.0~r25) resolute; urgency=medium
+
+  * Version bump with h96-base, h96-gaming and h96-desktop changes;
+    version aligned with h96-vulkan-wsi 8.0.0~r25; files unchanged apart
+    from version in manual pages.
+
+ -- Scrumpper <190908034+Scrumpper@users.noreply.github.com>  Fri, 23 Oct 2026 09:00:00 +0000
+
+h96-tools (8.0.0~r24) resolute; urgency=medium
+
+  * Version bump with h96-desktop, h96-media, h96-audio, h96-gaming and
+    h96-base changes; files unchanged apart from version in manual pages.
+
+ -- Scrumpper <190908034+Scrumpper@users.noreply.github.com>  Fri, 23 Oct 2026 03:00:00 +0000
+
+h96-tools (8.0.0~r23) resolute; urgency=medium
+
+  * Version bump with h96-desktop, h96-media and h96-base changes; files
+    unchanged apart from version in manual pages.
+
+ -- Scrumpper <190908034+Scrumpper@users.noreply.github.com>  Thu, 22 Oct 2026 21:00:00 +0000
+
+h96-tools (8.0.0~r22) resolute; urgency=medium
+
+  * Upgrade restarts running h96-vfd daemon.
+
+ -- Scrumpper <190908034+Scrumpper@users.noreply.github.com>  Thu, 22 Oct 2026 18:00:00 +0000
+
+h96-tools (8.0.0~r21) resolute; urgency=medium
+
+  * Version bump with h96-desktop and h96-base changes; files unchanged
+    apart from version in manual pages.
+
+ -- Scrumpper <190908034+Scrumpper@users.noreply.github.com>  Thu, 22 Oct 2026 12:00:00 +0000
+
+h96-tools (8.0.0~r20) resolute; urgency=medium
+
+  * Version bump with h96-media and h96-base changes; files unchanged
+    apart from version in manual pages.
+
+ -- Scrumpper <190908034+Scrumpper@users.noreply.github.com>  Thu, 22 Oct 2026 09:00:00 +0000
+
+h96-tools (8.0.0~r19) resolute; urgency=medium
+
+  * Version bump with h96-desktop, h96-audio, h96-media and h96-base
+    changes; files unchanged apart from version in manual pages.
+
+ -- Scrumpper <190908034+Scrumpper@users.noreply.github.com>  Thu, 22 Oct 2026 06:00:00 +0000
+
+h96-tools (8.0.0~r18) resolute; urgency=medium
+
+  * Version bump with h96-media change; files unchanged apart from version
+    in manual pages.
+
+ -- Scrumpper <190908034+Scrumpper@users.noreply.github.com>  Thu, 22 Oct 2026 03:00:00 +0000
+
+h96-tools (8.0.0~r17) resolute; urgency=medium
+
+  * Version bump with h96-audio, h96-desktop and h96-base changes; files
+    unchanged apart from version in manual pages.
+
+ -- Scrumpper <190908034+Scrumpper@users.noreply.github.com>  Wed, 21 Oct 2026 23:30:00 +0000
+
+h96-tools (8.0.0~r16) resolute; urgency=medium
+
+  * h96-vm --gui runs on display of active user session, X11 or Wayland
+    through Xwayland.
+
+ -- Scrumpper <190908034+Scrumpper@users.noreply.github.com>  Wed, 21 Oct 2026 22:00:00 +0000
+
+h96-tools (8.0.0~r15) resolute; urgency=medium
+
+  * h96-backup-gui Restore tab: row checkbox aligned with first line of
+    wrapped details (was centred).
+  * Changelog of previous version completed with Restore tab change.
+
+ -- Scrumpper <190908034+Scrumpper@users.noreply.github.com>  Sun, 18 Oct 2026 23:45:00 +0000
+
+h96-tools (8.0.0~r14) resolute; urgency=medium
+
+  * h96-backup records wake-on-LAN from "wol:" line of h96-wol status; WoL
+    on was recorded off since h96-wol status printed no NetworkManager
+    magic value for in-memory profile. Output of earlier h96-wol still
+    parsed.
+  * h96-backup-gui Restore tab: hint and archive note share one line, row
+    details wrap to row width, category rows scroll only when window
+    height runs out.
+  * Manual page DESCRIPTION holds whole COMMANDS.md paragraph (was cut at
+    first line).
+
+ -- Scrumpper <190908034+Scrumpper@users.noreply.github.com>  Sun, 18 Oct 2026 23:30:00 +0000
+
+h96-tools (8.0.0~r13) resolute; urgency=medium
+
+  * h96-restore applies wake-on-LAN only through category wol named in
+    --only; system category no longer runs h96-wol.
+  * h96-backup-gui opens at most 1000x700, stays resizable, sends no
+    maximize request; restore tab lists Wake-on-LAN row, never ticked by
+    archive load or All.
+  * Undervolt README boot trial sentence reworded.
+
+ -- Scrumpper <190908034+Scrumpper@users.noreply.github.com>  Sun, 18 Oct 2026 23:00:00 +0000
+
+h96-tools (8.0.0~r12) resolute; urgency=medium
+
+  * h96-undervolt writes plain DTB files only: set, oc and revert refuse
+    while boot DTB links into h96-kernel-switch generation; set and oc
+    refuse during kernel trial and when DTB differs from stock backup with
+    no change recorded (revert then needs --force). DTB and stock backup
+    written through temp name and rename; trial guard runs after
+    h96-kernel-switch-guard.
+
+ -- Scrumpper <190908034+Scrumpper@users.noreply.github.com>  Sun, 18 Oct 2026 22:00:00 +0000
+
+h96-tools (8.0.0~r11) resolute; urgency=medium
+
+  * Depends on python3-tk: h96-backup-gui opens without online install.
+
+ -- Scrumpper <190908034+Scrumpper@users.noreply.github.com>  Sun, 18 Oct 2026 18:00:00 +0000
+
+h96-tools (8.0.0~r10) resolute; urgency=medium
+
+  * h96-restore on 8.0 rewrites program paths of earlier releases in
+    restored ~/.config text files to 8.0 package paths, only where 8.0
+    file exists and old one does not; restore refuses targets under /usr,
+    /opt, /bin, /sbin and /lib.
+
+ -- Scrumpper <190908034+Scrumpper@users.noreply.github.com>  Sun, 18 Oct 2026 12:00:00 +0000
+
+h96-tools (8.0.0~r9) resolute; urgency=medium
+
+  * h96-bench reads GPU load from devfreq.
+  * Fresh install warns about locally modified copies left in
+    /usr/local/bin or /usr/local/sbin; they precede packaged commands in
+    PATH.
+
+ -- Scrumpper <190908034+Scrumpper@users.noreply.github.com>  Sat, 17 Oct 2026 22:00:00 +0000
+
+h96-tools (8.0.0~r8) resolute; urgency=medium
+
+  * Packaged files moved out of /usr/local and /opt: commands to /usr/bin
+    and /usr/sbin, helpers and payloads to /usr/lib/h96, data to
+    /usr/share/h96, units to /usr/lib/systemd/system, udev rules to
+    /usr/lib/udev/rules.d; every reference rewritten. Fresh install over
+    an image that holds the old copies moves exact old copies aside and
+    deletes them at configure; a failed install restores them.
+  * Manual pages for each command; Documentation key on each unit.
+  * Undervolt trial unit ordered before shutdown.target; prebuilt VFD
+    helper stripped; undervolt README in /usr/share/doc/h96-tools.
+
+ -- Scrumpper <190908034+Scrumpper@users.noreply.github.com>  Sat, 17 Oct 2026 18:00:00 +0000
+
+h96-tools (8.0.0~alpha2) resolute; urgency=medium
+
+  * Version bump with h96-base, h96-gaming and h96-audio changes; payload
+    unchanged.
+
+ -- H96 MAX V58 Unofficial Armbian <h96-max-v58@noreply.invalid>  Sat, 17 Oct 2026 12:00:00 +0000
+
+h96-tools (8.0.0~alpha1) resolute; urgency=medium
+
+  * Initial packaging of v7.2 h96 userland; files kept at v7.2 paths,
+    /usr/local kept; enablement as on v7.2.
+
+ -- H96 MAX V58 Unofficial Armbian <h96-max-v58@noreply.invalid>  Fri, 16 Oct 2026 12:00:00 +0000

@@ -1,0 +1,9 @@
+[Unit]
+Description=H96 armbian-update guard (armbian-sync replaces the refusing stub)
+
+[Path]
+PathChanged=/usr/sbin/armbian-update
+Unit=h96-armbian-update-guard.service
+
+[Install]
+WantedBy=multi-user.target

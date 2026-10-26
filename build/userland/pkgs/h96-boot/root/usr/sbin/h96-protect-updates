@@ -1,0 +1,125 @@
+#!/bin/bash
+# h96-protect-updates: local dpkg diversions keep H96 firmware and the rkmpp video stack across package installs/upgrades.
+# Package copies of these paths land under /usr/lib/h96-distrib/<path>; the H96 files stay in place.
+# Usage: h96-protect-updates [--add|--remove|--status]   (default --add; idempotent)
+set -u
+DISTRIB=/usr/lib/h96-distrib
+LIB=/usr/lib/aarch64-linux-gnu
+
+# armbian-firmware installs /lib/firmware/...; /usr/lib aliases cover a future usr/lib layout
+FIRMWARE=(
+  /lib/firmware/arm/mali/arch10.8/mali_csffw.bin
+  /lib/firmware/brcm/BCM4362A2.hcd
+  /lib/firmware/brcm/fw_bcm43752a2_pcie_ag.bin
+  /lib/firmware/brcm/clm_bcm43752a2_pcie_ag.blob
+  /lib/firmware/brcm/nvram_ap6275p.txt
+  /usr/lib/firmware/arm/mali/arch10.8/mali_csffw.bin
+  /usr/lib/firmware/brcm/BCM4362A2.hcd
+  /usr/lib/firmware/brcm/fw_bcm43752a2_pcie_ag.bin
+  /usr/lib/firmware/brcm/clm_bcm43752a2_pcie_ag.blob
+  /usr/lib/firmware/brcm/nvram_ap6275p.txt
+)
+# H96 video files that mpv, libmpv2, libmpv-dev, ffmpeg or librockchip-mpp1 also contain
+VIDEO=(
+  /usr/bin/mpv
+  /usr/bin/ffmpeg
+  /usr/bin/ffprobe
+  $LIB/libmpv.so.2.5.0
+  $LIB/libmpv.so.2
+  $LIB/libmpv.so
+  $LIB/librockchip_mpp.so.0
+  # mpv conffile: confold keeps the H96 file, but purging mpv would delete it
+  /etc/mpv/mpv.conf
+)
+PATHS=("${FIRMWARE[@]}" "${VIDEO[@]}")
+
+log() { echo "h96-protect-updates: $*"; }
+
+# dpkg-divert takes the dpkg lock; retry while apt/dpkg runs
+divert() {
+  local i err rc=1
+  err=$(mktemp) || return 1
+  for i in $(seq 1 60); do
+    dpkg-divert "$@" >/dev/null 2>"$err" && { rc=0; break; }
+    grep -q -i lock "$err" || { cat "$err" >&2; break; }
+    sleep 5
+  done
+  rm -f "$err"
+  return $rc
+}
+
+add() {
+  local p owner rc=0
+  for p in "${PATHS[@]}"; do
+    owner=$(dpkg-divert --listpackage "$p")
+    if [ "$owner" = "LOCAL" ] && [ "$(dpkg-divert --truename "$p")" = "$DISTRIB$p" ]; then
+      continue
+    elif [ -n "$owner" ]; then
+      log "skip $p (already diverted by $owner)"; continue
+    fi
+    mkdir -p "$DISTRIB$(dirname "$p")"
+    if divert --local --no-rename --divert "$DISTRIB$p" --add "$p"; then
+      log "diverted $p"
+    else
+      log "FAILED $p"; rc=1
+    fi
+  done
+  return $rc
+}
+
+remove() {
+  local p rc=0
+  for p in "${PATHS[@]}"; do
+    [ "$(dpkg-divert --listpackage "$p")" = "LOCAL" ] || continue
+    [ "$(dpkg-divert --truename "$p")" = "$DISTRIB$p" ] || continue
+    # no-rename: the H96 file stays; the parked package copy is dropped
+    if divert --local --no-rename --remove "$p"; then
+      rm -f "$DISTRIB$p"; log "removed diversion $p"
+    else
+      log "FAILED $p"; rc=1
+    fi
+  done
+  [ -d "$DISTRIB" ] && find "$DISTRIB" -depth -type d -empty -delete
+  return $rc
+}
+
+status() {
+  local p t
+  for p in "${PATHS[@]}"; do
+    t=$(dpkg-divert --truename "$p")
+    if [ "$t" = "$DISTRIB$p" ]; then
+      printf 'protected  %s%s\n' "$p" "$([ -e "$t" ] || [ -L "$t" ] && echo "  (package copy parked)")"
+    else
+      printf 'OPEN       %s\n' "$p"
+    fi
+  done
+}
+
+usage() {
+  cat <<'EOF'
+h96-protect-updates: keep H96 firmware and video stack across package upgrades
+
+  sudo h96-protect-updates            same as --add (runs at every boot)
+  sudo h96-protect-updates --add      divert protected paths (idempotent)
+  sudo h96-protect-updates --remove   remove diversions (H96 files stay, parked
+                                      package copies are deleted)
+  sudo h96-protect-updates --status   list each path: protected or OPEN
+  h96-protect-updates --help
+
+Package copies of protected paths land under /usr/lib/h96-distrib/<path>.
+h96-protect-updates.service runs --add at every boot; disable it to keep
+diversions removed.
+EOF
+}
+
+case "${1:-}" in
+  -h|--help|help) usage; exit 0 ;;
+  ""|--add|--remove|--status) ;;
+  *) echo "h96-protect-updates: unknown option '$1' (try --help)" >&2; exit 2 ;;
+esac
+[ "$(id -u)" = 0 ] || { echo "run as root" >&2; exit 1; }
+case "${1:---add}" in
+  --add) add ;;
+  --remove) remove ;;
+  --status) status ;;
+esac

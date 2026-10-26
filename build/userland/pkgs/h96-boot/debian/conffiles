@@ -1,0 +1,4 @@
+/etc/apt/preferences.d/00-h96-protect-boot
+/etc/initramfs-tools/hooks/h96-edid
+/etc/sysctl.d/zz-h96-hang.conf
+/etc/systemd/system.conf.d/zz-h96-watchdog.conf

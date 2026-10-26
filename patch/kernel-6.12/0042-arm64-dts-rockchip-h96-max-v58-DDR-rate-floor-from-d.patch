@@ -1,0 +1,50 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Scrumpper <190908034+Scrumpper@users.noreply.github.com>
+Date: Tue, 20 Oct 2026 07:09:33 -0700
+Subject: [PATCH 42/59] arm64: dts: rockchip: h96-max-v58: DDR rate floor from
+ display bandwidth
+
+No RK3588 board in the vendor tree sets vop-bw-dmc-level or
+vop-frame-bw-dmc-level, so the dmc prints "failed to get vop bandwidth
+to dmc rate" (t2) and the display gets a floor only for a YUV plane
+wider or taller than 2560 (video_4k_rate). An RGB desktop or a GL
+video player at 4K60 or 1440p144 then runs on the 528 MHz idle rate
+until the DFI load passes 40 % at the next 50 ms poll.
+
+The VOP2 driver computes, on every commit, the overlapped line
+bandwidth and the frame bandwidth in MB/s (vop2_crtc_bandwidth). One
+ARGB8888 plane: 1080p60 497, 1080p144 1194, 1440p60 884, 1440p144
+2123, 4K60 1990 (AFBC halves each). Floor table for both values:
+900 MB/s and up -> mid-high level (1560 MHz), 3000 and up -> high level
+(2112 MHz). 1080p60 desktop keeps the full range down to 528 MHz.
+A raise applies in the same commit; a lower floor applies at the next
+poll. 6.12 dvfs.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01P6itje71iKPFBX7YKkfvRo
+---
+ arch/arm64/boot/dts/rockchip/rk3588-h96-max-v58.dts | 11 +++++++++++
+ 1 file changed, 11 insertions(+)
+
+diff --git a/arch/arm64/boot/dts/rockchip/rk3588-h96-max-v58.dts b/arch/arm64/boot/dts/rockchip/rk3588-h96-max-v58.dts
+index 21ec425b4..4db8a6d60 100644
+--- a/arch/arm64/boot/dts/rockchip/rk3588-h96-max-v58.dts
++++ b/arch/arm64/boot/dts/rockchip/rk3588-h96-max-v58.dts
+@@ -530,6 +530,17 @@ &vop {
+ /* DDR DVFS (dfi + dmc okay from rk3588-android.dtsi); loader rate held for 30 s after probe */
+ &dmc {
+ 	delayed-freq-scaling;
++	/* scanout floor in MB/s: 1440p60, 1080p144, 4K60 and up get mid-high, two full 4K60 planes get high */
++	vop-bw-dmc-level = <
++		/* min	max	level */
++		900	2999	DMC_FREQ_LEVEL_MID_HIGH
++		3000	99999	DMC_FREQ_LEVEL_HIGH
++	>;
++	vop-frame-bw-dmc-level = <
++		/* min	max	level */
++		900	2999	DMC_FREQ_LEVEL_MID_HIGH
++		3000	99999	DMC_FREQ_LEVEL_HIGH
++	>;
+ };
+ 
+ /* AV1 decoder and its IOMMU */

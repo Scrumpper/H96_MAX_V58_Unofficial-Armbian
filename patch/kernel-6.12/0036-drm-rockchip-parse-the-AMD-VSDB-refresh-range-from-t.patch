@@ -1,0 +1,96 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Scrumpper <190908034+Scrumpper@users.noreply.github.com>
+Date: Tue, 20 Oct 2026 07:20:26 -0700
+Subject: [PATCH 36/59] drm/rockchip: parse the AMD VSDB refresh range from the
+ CTA extension
+
+FreeSync over HDMI sinks announce their variable refresh range in a
+vendor data block with the AMD OUI 00-00-1A, not in the HDMI Forum
+VSDB. The LG UltraGear on the test bench lists 48-144 Hz there and no
+VRR bytes in its HF-VSDB, so the 6.12 driver saw no VRR range at all.
+
+Read the AMD VSDB (payload after the OUI: version, flags, min Hz,
+max Hz) in rockchip_drm_parse_cea_ext() and keep the range in
+rockchip_drm_vrr_cap. A range with min 0 or max <= min is ignored.
+Data only; the HDMI glue decides whether to use it.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01P6itje71iKPFBX7YKkfvRo
+---
+ drivers/gpu/drm/rockchip/rockchip_drm_drv.c | 33 +++++++++++++++++++++
+ drivers/gpu/drm/rockchip/rockchip_drm_drv.h |  4 +++
+ 2 files changed, 37 insertions(+)
+
+diff --git a/drivers/gpu/drm/rockchip/rockchip_drm_drv.c b/drivers/gpu/drm/rockchip/rockchip_drm_drv.c
+index d171a4fad..6fb2abcfb 100644
+--- a/drivers/gpu/drm/rockchip/rockchip_drm_drv.c
++++ b/drivers/gpu/drm/rockchip/rockchip_drm_drv.c
+@@ -1130,6 +1130,23 @@ static bool cea_db_is_hdmi_forum_vsdb(const u8 *db)
+ 	return oui == HDMI_FORUM_IEEE_OUI;
+ }
+ 
++#define AMD_IEEE_OUI			0x00001a
++
++static bool cea_db_is_amd_vsdb(const u8 *db)
++{
++	unsigned int oui;
++
++	if (cea_db_tag(db) != 0x03)
++		return false;
++
++	if (cea_db_payload_len(db) < 7)
++		return false;
++
++	oui = db[3] << 16 | db[2] << 8 | db[1];
++
++	return oui == AMD_IEEE_OUI;
++}
++
+ #define CTA_DB_EXTENDED_TAG		7
+ 
+ static bool cea_db_is_extended_tag(const u8 *db, int tag)
+@@ -1572,6 +1589,20 @@ static void parse_hdmi_forum_scds(struct rockchip_drm_hdmi21_data *hdmi21_data,
+ 	}
+ }
+ 
++/* AMD VSDB payload after the OUI: version, flags, min Hz, max Hz */
++static void parse_amd_vsdb(struct rockchip_drm_hdmi21_data *hdmi21_data,
++			   const u8 *db)
++{
++	u8 fs_min = db[6], fs_max = db[7];
++
++	if (!fs_min || fs_max <= fs_min)
++		return;
++
++	hdmi21_data->vrr_cap.freesync = true;
++	hdmi21_data->vrr_cap.fs_min = fs_min;
++	hdmi21_data->vrr_cap.fs_max = fs_max;
++}
++
+ static
+ int parse_dovi_block(u8 *sink_data, const u8 *dovi_db)
+ {
+@@ -1606,6 +1637,8 @@ int rockchip_drm_parse_cea_ext(struct rockchip_drm_hdmi21_data *hdmi21_data,
+ 
+ 			if (cea_db_is_hdmi_forum_vsdb(db) || cea_db_is_hdmi_forum_scdb(db))
+ 				parse_hdmi_forum_scds(hdmi21_data, db);
++			else if (cea_db_is_amd_vsdb(db))
++				parse_amd_vsdb(hdmi21_data, db);
+ 		}
+ 	}
+ 
+diff --git a/drivers/gpu/drm/rockchip/rockchip_drm_drv.h b/drivers/gpu/drm/rockchip/rockchip_drm_drv.h
+index 2a2da5fe5..8c4682d59 100644
+--- a/drivers/gpu/drm/rockchip/rockchip_drm_drv.h
++++ b/drivers/gpu/drm/rockchip/rockchip_drm_drv.h
+@@ -907,6 +907,10 @@ struct rockchip_drm_vrr_cap {
+ 	bool qms_tfr_min;
+ 	u8 vrr_min;
+ 	u16 vrr_max;
++	/* FreeSync over HDMI range from the AMD VSDB */
++	bool freesync;
++	u8 fs_min;
++	u8 fs_max;
+ };
+ 
+ struct rockchip_drm_hdmi21_data {

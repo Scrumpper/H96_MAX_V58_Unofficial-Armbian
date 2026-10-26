@@ -1,0 +1,30 @@
+#!/bin/sh
+# divert v7.2-edited files of other packages before unpack
+set -e
+dpkg-maintscript-helper rm_conffile /etc/modules-load.d/h96-bcmdhd.conf 8.0.0~r26~ h96-net -- "$@"
+case "$1" in
+install|upgrade)
+  dpkg-divert --package h96-net --add --rename --divert /etc/udev/rules.d/10-wifi-disable-powermanagement.rules.distrib /etc/udev/rules.d/10-wifi-disable-powermanagement.rules
+  dpkg-divert --package h96-net --add --rename --divert /lib/firmware/brcm/BCM4362A2.hcd.distrib /lib/firmware/brcm/BCM4362A2.hcd
+  dpkg-divert --package h96-net --add --no-rename --divert /usr/lib/firmware/brcm/BCM4362A2.hcd.distrib /usr/lib/firmware/brcm/BCM4362A2.hcd
+  ;;
+esac
+R="${DPKG_ROOT:-}"
+if [ "$1" = install ] && [ -z "${2:-}" ]; then
+  while read -r k v p; do
+    if [ "$k" = f ] && [ -f "$R$p" ] && [ ! -L "$R$p" ] && [ "$(sha256sum < "$R$p" | cut -d" " -f1)" = "$v" ]; then
+      mv -f "$R$p" "$R$p.h96-v72"
+    elif [ "$k" = l ] && [ -L "$R$p" ] && [ "$(readlink "$R$p")" = "$v" ]; then
+      mv -f "$R$p" "$R$p.h96-v72"
+    fi
+  done <<'EOF'
+f 61c4d7ef6ac39336edeae68f65e9b7a762f9ac3f87548f20914c97d81731f68c /etc/modules-load.d/h96-bcmdhd.conf
+f 62394ee76938d7bc6038d1414955acac8dfca08a5c27b327b0815bee29180388 /etc/systemd/system/h96-hotspot-repair.service
+l /etc/systemd/system/h96-hotspot-repair.service /etc/systemd/system/multi-user.target.wants/h96-hotspot-repair.service
+f 8f482ff2f3c45304de21169d3f3b486c090d38e9804bf93097903c08a97f1c1c /usr/local/bin/h96-hotspot
+f 5de68cb5f5995a2b4d71fbf98b16b447e0e1bbadc76da7e15844ab926603c0cd /usr/local/bin/h96-wifi-connect
+f 73383fc4086c89757acc102f86a4ae8426729f07979f18fefbf76f6b89445f57 /usr/local/bin/h96-wifi-diag
+f 67a6a40d5beac76021959bb3970d8b00c3187eb55c23490b94231398464ce91e /usr/local/bin/h96-wol
+EOF
+fi
+exit 0

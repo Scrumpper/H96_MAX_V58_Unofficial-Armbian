@@ -1,0 +1,13 @@
+# Generic seat rule for every input device; no vendor or product match, so no modalias to declare.
+h96-gaming: appstream-metadata-missing-modalias-provide usr/lib/udev/rules.d/70-h96-input-seat.rules
+# Signing keys of packaged box64 and box86 sources, referenced by their Signed-By lines.
+h96-gaming: package-installs-apt-keyring [etc/apt/trusted.gpg.d/box64-debs-archive-keyring.gpg]
+h96-gaming: package-installs-apt-keyring [etc/apt/trusted.gpg.d/box86-debs-archive-keyring.gpg]
+# Release apt policy: pins protect boot chain, offline repo and box64 versions; no other mechanism sets a pin.
+h96-gaming: package-installs-apt-preferences [etc/apt/preferences.d/03-h96-box64]
+# Release apt sources (offline repo, box64, box86); deb822 file is the only way to add a source.
+h96-gaming: package-installs-apt-sources [etc/apt/sources.list.d/box64.sources]
+h96-gaming: package-installs-apt-sources [etc/apt/sources.list.d/box86.sources]
+# Script probes dpkg lock files with fuser to wait for a running package manager; database not read.
+h96-gaming: uses-dpkg-database-directly [usr/lib/h96/h96-gaming-setup.sh]
+h96-gaming: uses-dpkg-database-directly [usr/lib/h96/steam/h96-steam-fex-install.sh]

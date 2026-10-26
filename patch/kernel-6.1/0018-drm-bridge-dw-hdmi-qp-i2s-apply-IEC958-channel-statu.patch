@@ -1,0 +1,52 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: H96 build <noreply@localhost>
+Date: Sat, 3 Oct 2026 12:00:00 +0000
+Subject: [PATCH 18/20] drm/bridge: dw-hdmi-qp-i2s: apply IEC958 channel status
+ at prepare
+
+alsa-lib "hdmi:" PCMs write the "IEC958 Playback Default" control from a
+ctl_elems hook that runs after the slave hw_params. hdmi-codec copies
+the control into hparms->iec.status in hw_params, so the channel status
+override registers keep the previous value and the non-audio bit
+(AES0 bit 1) never reaches the audio sample packets: AC-3/DTS
+bitstream plays as PCM noise.
+
+hdmi-codec re-reads the control in prepare and calls ops->prepare.
+Implement it and rewrite the channel status there, as mainline
+dw-hdmi-qp does (all audio setup in hdmi_audio_prepare).
+---
+ .../gpu/drm/bridge/synopsys/dw-hdmi-qp-i2s-audio.c | 14 ++++++++++++++
+ 1 file changed, 14 insertions(+)
+
+diff --git a/drivers/gpu/drm/bridge/synopsys/dw-hdmi-qp-i2s-audio.c b/drivers/gpu/drm/bridge/synopsys/dw-hdmi-qp-i2s-audio.c
+index 3e9593001..3de8fce20 100644
+--- a/drivers/gpu/drm/bridge/synopsys/dw-hdmi-qp-i2s-audio.c
++++ b/drivers/gpu/drm/bridge/synopsys/dw-hdmi-qp-i2s-audio.c
+@@ -68,6 +68,19 @@ static int dw_hdmi_qp_i2s_hw_params(struct device *dev, void *data,
+ 	return 0;
+ }
+ 
++static int dw_hdmi_qp_i2s_prepare(struct device *dev, void *data,
++				  struct hdmi_codec_daifmt *fmt,
++				  struct hdmi_codec_params *hparms)
++{
++	struct dw_hdmi_qp_i2s_audio_data *audio = data;
++
++	/* alsa-lib ctl_elems hooks write IEC958 status after hw_params */
++	dw_hdmi_qp_set_channel_status(audio->hdmi, hparms->iec.status,
++				      fmt->bit_fmt == SNDRV_PCM_FORMAT_IEC958_SUBFRAME_LE);
++
++	return 0;
++}
++
+ static int dw_hdmi_qp_i2s_audio_startup(struct device *dev, void *data)
+ {
+ 	struct dw_hdmi_qp_i2s_audio_data *audio = data;
+@@ -128,6 +141,7 @@ static int dw_hdmi_qp_i2s_hook_plugged_cb(struct device *dev, void *data,
+ 
+ static struct hdmi_codec_ops dw_hdmi_qp_i2s_ops = {
+ 	.hw_params	= dw_hdmi_qp_i2s_hw_params,
++	.prepare	= dw_hdmi_qp_i2s_prepare,
+ 	.audio_startup  = dw_hdmi_qp_i2s_audio_startup,
+ 	.audio_shutdown	= dw_hdmi_qp_i2s_audio_shutdown,
+ 	.get_eld	= dw_hdmi_qp_i2s_get_eld,

@@ -1,0 +1,18 @@
+# H96 Max V58: apt never installs or upgrades boot-chain packages.
+# H96 kernel and DTB are h96-kernel and h96-dtb packages staged in /usr/lib/h96-kernel; boot step, not apt,
+# copies them to /boot. Amlogic/ODROID-N2 kernel, DTB, U-Boot and BSP
+# packages from base rootfs repoint /boot links on install or upgrade; next boot then needs Maskrom reflash.
+# Explicit version request (apt install <package>=<version>) overrides this pin.
+Package: linux-image-* linux-dtb-* linux-u-boot-* armbian-bsp-*
+Pin: release *
+Pin-Priority: -1
+
+# u-boot-menu writes /boot/extlinux/extlinux.conf, which vendor U-Boot reads before boot.scr
+Package: u-boot-menu
+Pin: release *
+Pin-Priority: -1
+
+# flash-kernel copies a kernel, initrd and DTB into /boot and writes boot.scr; piboot-try provides flash-kernel
+Package: flash-kernel piboot-try flash-kernel-piboot
+Pin: release *
+Pin-Priority: -1

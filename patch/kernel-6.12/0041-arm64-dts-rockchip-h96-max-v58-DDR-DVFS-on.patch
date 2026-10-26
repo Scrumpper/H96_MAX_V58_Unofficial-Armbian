@@ -1,0 +1,51 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Scrumpper <190908034+Scrumpper@users.noreply.github.com>
+Date: Tue, 20 Oct 2026 07:09:12 -0700
+Subject: [PATCH 41/59] arm64: dts: rockchip: h96-max-v58: DDR DVFS on
+
+t3 disabled &dfi and &dmc to rule DDR DVFS out as the 6.12 freeze
+cause. The freeze proved to be the Wi-Fi power GPIO (t5), and t3 froze
+with both nodes off, so DDR DVFS is cleared. On 6.12 the dfi gets its
+four pclk_ddr_mon clocks and the dmc probes on the box BL31 v1.28 (t2
+journal: current ATF version 0x100, get_stall_time unsupported, rates
+528/1560/2112 MHz from the DDR v1.08 frequency table).
+
+Drop the two disabled overrides; rk3588-android.dtsi sets both okay
+with center-supply vdd_ddr_s0 and mem-supply vdd_log_s0, and the SoC
+dtsi keeps the vendor dmc_ondemand setup (auto-freq-en, upthreshold 40,
+downdifferential 20, system-status levels). With auto-freq-en the idle
+floor is the lowest rate; load above 40 % of DFI capacity selects the
+top rate; the input boost raises it for 500 ms on key and button
+events. Add delayed-freq-scaling: the dmc holds the loader rate for
+30 s after probe, so no rate change falls into boot or the
+h96-kernel-switch guard window.
+
+Runtime off switch without reboot: performance governor on
+/sys/class/devfreq/dmc. 6.12 dvfs.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01P6itje71iKPFBX7YKkfvRo
+---
+ arch/arm64/boot/dts/rockchip/rk3588-h96-max-v58.dts | 8 ++------
+ 1 file changed, 2 insertions(+), 6 deletions(-)
+
+diff --git a/arch/arm64/boot/dts/rockchip/rk3588-h96-max-v58.dts b/arch/arm64/boot/dts/rockchip/rk3588-h96-max-v58.dts
+index e1a9b40e2..21ec425b4 100644
+--- a/arch/arm64/boot/dts/rockchip/rk3588-h96-max-v58.dts
++++ b/arch/arm64/boot/dts/rockchip/rk3588-h96-max-v58.dts
+@@ -527,13 +527,9 @@ &vop {
+ 	/delete-property/ vop-supply;
+ };
+ 
+-/* DDR DVFS off: on 6.1 dfi fails (no pclk_ddr_mon_ch0) and dmc never probes, DDR rate stays as set by loader */
+-&dfi {
+-	status = "disabled";
+-};
+-
++/* DDR DVFS (dfi + dmc okay from rk3588-android.dtsi); loader rate held for 30 s after probe */
+ &dmc {
+-	status = "disabled";
++	delayed-freq-scaling;
+ };
+ 
+ /* AV1 decoder and its IOMMU */

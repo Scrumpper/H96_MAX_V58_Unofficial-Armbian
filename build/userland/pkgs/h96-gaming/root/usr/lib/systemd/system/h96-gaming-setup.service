@@ -1,0 +1,21 @@
+[Unit]
+Documentation=file:/usr/share/doc/h96-base/COMMANDS.md
+Description=H96 Max V58 Gaming Stack Setup (first boot, online)
+# Ordering: after network-online and after the first-boot/video-stack done-flags (avoids a dpkg-lock race); not ordered after h96-panthor-setup.service since that unit already declares After= this one, and reversing it would cycle.
+After=h96-firstboot.service network-online.target h96-video-setup.service
+Wants=network-online.target
+ConditionPathExists=!/var/lib/h96-gaming-setup-done
+
+[Service]
+Type=oneshot
+ExecStart=/usr/lib/h96/h96-gaming-setup.sh
+RemainAfterExit=yes
+TimeoutStartSec=1800
+# Hard crash gets one delayed retry this boot (a clean incomplete run omits the done-flag and exits 0); otherwise ConditionPathExists re-runs the unit next boot.
+Restart=on-failure
+RestartSec=300
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

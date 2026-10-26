@@ -1,0 +1,34 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: H96 build <builder@h96-build>
+Date: Fri, 16 Oct 2026 00:00:00 +0000
+Subject: [PATCH 02/20] Input: xpad: add 8BitDo Ultimate 2C Wireless and 8BitDo
+ vendor match
+
+Adds 2dc8:310a to the device table and XPAD_XBOX360_VENDOR(0x2dc8)
+so 8BitDo pads and 2.4G dongles in X-input mode bind to xpad.
+
+H96 series: originally part of dd237965b / 32202d751.
+---
+ drivers/input/joystick/xpad.c | 2 ++
+ 1 file changed, 2 insertions(+)
+
+diff --git a/drivers/input/joystick/xpad.c b/drivers/input/joystick/xpad.c
+index c2eb312b6..260e0a199 100644
+--- a/drivers/input/joystick/xpad.c
++++ b/drivers/input/joystick/xpad.c
+@@ -374,6 +374,7 @@ static const struct xpad_device {
+ 	{ 0x31e3, 0x1300, "Wooting 60HE (AVR)", 0, XTYPE_XBOX360 },
+ 	{ 0x31e3, 0x1310, "Wooting 60HE (ARM)", 0, XTYPE_XBOX360 },
+ 	{ 0x3285, 0x0607, "Nacon GC-100", 0, XTYPE_XBOX360 },
++	{ 0x2dc8, 0x310a, "8BitDo Ultimate 2C Wireless", 0, XTYPE_XBOX360 },
+ 	{ 0x3767, 0x0101, "Fanatec Speedster 3 Forceshock Wheel", 0, XTYPE_XBOX },
+ 	{ 0xffff, 0xffff, "Chinese-made Xbox Controller", 0, XTYPE_XBOX },
+ 	{ 0x0000, 0x0000, "Generic X-Box pad", 0, XTYPE_UNKNOWN }
+@@ -510,6 +511,7 @@ static const struct usb_device_id xpad_table[] = {
+ 	XPAD_XBOX360_VENDOR(0x2f24),		/* GameSir Controllers */
+ 	XPAD_XBOX360_VENDOR(0x31e3),		/* Wooting Keyboards */
+ 	XPAD_XBOX360_VENDOR(0x3285),		/* Nacon GC-100 */
++	XPAD_XBOX360_VENDOR(0x2dc8),		/* 8BitDo controllers + 2.4G dongles (X-input) */
+ 	{ }
+ };
+ 

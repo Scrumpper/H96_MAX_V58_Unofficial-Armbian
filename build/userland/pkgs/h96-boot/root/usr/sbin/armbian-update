@@ -1,0 +1,5 @@
+#!/bin/sh
+# ophub kernel updater disabled: it would write an ophub kernel into /boot over the H96 kernel
+echo "armbian-update is disabled on H96 Max V58: it replaces the H96 kernel in /boot with an ophub kernel." >&2
+echo "Kernel updates arrive with H96 releases. Packages update with: sudo armbian-upgrade" >&2
+exit 1

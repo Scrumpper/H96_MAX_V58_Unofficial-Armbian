@@ -1,0 +1,3 @@
+[default-nodes]
+default.configured.audio.sink=alsa_output.platform-hdmi0-sound.hdmi-stereo
+default.configured.audio.sink.0=alsa_output.platform-spdif-tx0-sound.stereo-fallback

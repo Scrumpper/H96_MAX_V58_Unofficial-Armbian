@@ -1,0 +1,4 @@
+Types: deb
+URIs: https://ryanfortner.github.io/box64-debs/debian/
+Suites: ./
+Signed-By: /etc/apt/trusted.gpg.d/box64-debs-archive-keyring.gpg

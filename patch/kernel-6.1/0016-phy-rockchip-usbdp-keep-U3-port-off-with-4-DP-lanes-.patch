@@ -1,0 +1,40 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: H96 build <builder@h96-build>
+Date: Fri, 16 Oct 2026 00:00:00 +0000
+Subject: [PATCH 16/20] phy: rockchip: usbdp: keep U3 port off with 4 DP lanes,
+ honour maximum-speed
+
+When rockchip,dp-lane-mux assigns all four lanes to DP no lane is left
+for USB3: do not enable UDPHY_MODE_USB for the u3-port. A
+maximum-speed property on the u3-port child (legacy DTs) other than
+super-speed selects high-speed only. Restores rkr5.1 and mainline
+behaviour; fixes a dead USB port on usb@fc400000 with the board DTB.
+
+Gated by DT content.
+
+H96 series: ff042f9d1.
+---
+ drivers/phy/rockchip/phy-rockchip-usbdp.c | 10 +++++++++-
+ 1 file changed, 9 insertions(+), 1 deletion(-)
+
+diff --git a/drivers/phy/rockchip/phy-rockchip-usbdp.c b/drivers/phy/rockchip/phy-rockchip-usbdp.c
+index 135221238..7b8fa286b 100644
+--- a/drivers/phy/rockchip/phy-rockchip-usbdp.c
++++ b/drivers/phy/rockchip/phy-rockchip-usbdp.c
+@@ -1670,7 +1670,15 @@ static int rockchip_udphy_probe(struct platform_device *pdev)
+ 			phy_set_bus_width(phy, udphy->dp_lanes);
+ 			phy->attrs.max_link_rate = udphy_dp_get_max_link_rate(udphy, child_np);
+ 		} else if (of_node_name_eq(child_np, "u3-port")) {
+-			udphy->mode |= UDPHY_MODE_USB;
++			const char *speed;
++
++			/* a 4-lane DP mux leaves no lane for USB3: keep the U3 port disabled */
++			if (udphy->dp_lanes < 4)
++				udphy->mode |= UDPHY_MODE_USB;
++			/* legacy DTs put maximum-speed on the u3-port child */
++			if (!of_property_read_string(child_np, "maximum-speed", &speed) &&
++			    !strstr(speed, "super-speed"))
++				udphy->hs = true;
+ 			phy = devm_phy_create(dev, child_np, &rockchip_u3phy_ops);
+ 			if (IS_ERR(phy)) {
+ 				dev_err(dev, "failed to create usb phy: %pOFn\n", child_np);

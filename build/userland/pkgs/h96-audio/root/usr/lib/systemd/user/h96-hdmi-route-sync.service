@@ -1,0 +1,12 @@
+[Unit]
+Description=H96 HDMI route codecs follow the advertised list (51-h96-iec958.conf)
+Documentation=file:/usr/share/doc/h96-base/COMMANDS.md
+After=wireplumber.service
+ConditionPathExists=/etc/wireplumber/wireplumber.conf.d/51-h96-iec958.conf
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/h96-audio-passthrough route-sync
+
+[Install]
+WantedBy=wireplumber.service

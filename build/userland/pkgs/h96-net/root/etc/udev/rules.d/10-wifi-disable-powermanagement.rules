@@ -1,0 +1,8 @@
+# v3.2.2: confirmed this is not a startup race — "iw ... set power_save off"
+# fails with EIO on this vendor bcmdhd driver even run manually against a
+# fully-up, already-associated wlan0 minutes after boot. The driver simply
+# doesn't implement the standard nl80211 power-save toggle. Wrapped in a
+# shell so udev doesn't log a "Process ... failed with exit code" line for a
+# command that can never succeed on this hardware; the attempt is harmless
+# and left in place in case a future driver update ever supports it.
+KERNEL=="wlan*", ACTION=="add", RUN+="/bin/sh -c '/sbin/iw dev %k set power_save off || true'"

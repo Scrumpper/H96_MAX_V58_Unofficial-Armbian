@@ -1,0 +1,19 @@
+[Unit]
+Description=H96 Max V58 hardware transcode node (rkmpp VPU watch folder)
+Documentation=file:/usr/share/doc/h96-base/COMMANDS.md
+After=network.target local-fs.target
+Wants=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/h96-transcode-server daemon
+Restart=on-failure
+RestartSec=5
+# Encode is on the VPU, not the CPU, so keep the daemon low priority.
+Nice=5
+# Do not add DeviceAllow=: it switches systemd to a device whitelist and blocks /dev/dma_heap/* and /dev/dri/renderD12x that rkmpp hwaccel needs; leave device access at the default (all).
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,126 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Scrumpper <190908034+Scrumpper@users.noreply.github.com>
+Date: Tue, 20 Oct 2026 07:20:27 -0700
+Subject: [PATCH 37/59] drm/bridge: dw-hdmi-qp: AMD FreeSync SPD infoframe
+
+FreeSync over HDMI monitors switch to variable refresh only when the
+source sends the AMD FreeSync SPD infoframe (OUI 00-00-1A in an SPD
+packet, PB6 bits supported/enabled/active, PB7-8 range in Hz); the HDMI
+2.1 VTEM packet the driver sends for gaming VRR is not read by them.
+
+Add PKTSCHED_SPDI_TX_EN (bit 14, same as mainline dw-hdmi-qp.h) and
+dw_hdmi_qp_set_freesync(), which writes the v1 infoframe into the
+SPD packet slot (header and body layout as mainline
+dw_hdmi_qp_write_infoframe) and turns its transmission on, or off when
+disabled. Nothing calls it yet. The SPD slot had no user in this driver.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01P6itje71iKPFBX7YKkfvRo
+---
+ drivers/gpu/drm/bridge/synopsys/dw-hdmi-qp.c | 53 ++++++++++++++++++++
+ drivers/gpu/drm/bridge/synopsys/dw-hdmi-qp.h |  1 +
+ include/drm/bridge/dw_hdmi.h                 |  1 +
+ 3 files changed, 55 insertions(+)
+
+diff --git a/drivers/gpu/drm/bridge/synopsys/dw-hdmi-qp.c b/drivers/gpu/drm/bridge/synopsys/dw-hdmi-qp.c
+index 1e7bdafff..3bc4f24ee 100644
+--- a/drivers/gpu/drm/bridge/synopsys/dw-hdmi-qp.c
++++ b/drivers/gpu/drm/bridge/synopsys/dw-hdmi-qp.c
+@@ -337,6 +337,9 @@ struct dw_hdmi_qp {
+ 	bool cec_enable;
+ 	bool allm_enable;
+ 	bool gaming_vrr_enable;
++	bool freesync_enable;
++	u8 freesync_min;
++	u8 freesync_max;
+ 	bool support_hdmi;
+ 	bool skip_connector;
+ 	bool force_kernel_output;	/* force kernel hdmi output specific resolution */
+@@ -2150,6 +2153,43 @@ static void dw_hdmi_qp_config_vtem(struct dw_hdmi_qp *hdmi)
+ 	}
+ }
+ 
++/* AMD FreeSync SPD infoframe v1: OUI 00-00-1A, PB6 supported/enabled/active, PB7-8 range */
++static void dw_hdmi_qp_config_freesync_spd(struct dw_hdmi_qp *hdmi)
++{
++	u8 pb[9] = { 0 };
++	u8 sum;
++	int i;
++
++	if (hdmi->disabled || !hdmi->dclk_en)
++		return;
++
++	hdmi_modb(hdmi, 0, PKTSCHED_SPDI_TX_EN, PKTSCHED_PKT_EN);
++	if (!hdmi->freesync_enable)
++		return;
++
++	pb[1] = 0x1a;
++	pb[6] = BIT(0) | BIT(1) | BIT(2);
++	pb[7] = hdmi->freesync_min;
++	pb[8] = hdmi->freesync_max;
++
++	sum = HDMI_INFOFRAME_TYPE_SPD + 0x01 + 0x08;
++	for (i = 1; i < ARRAY_SIZE(pb); i++)
++		sum += pb[i];
++	pb[0] = 0x100 - sum;
++
++	/* header in lanes 1-2, body from PB0 at CONTENTS1 */
++	hdmi_writel(hdmi, 0x01 << 8 | 0x08 << 16, PKT_SPDI_CONTENTS0);
++	hdmi_writel(hdmi, pb[0] | pb[1] << 8 | pb[2] << 16 | pb[3] << 24,
++		    PKT_SPDI_CONTENTS1);
++	hdmi_writel(hdmi, pb[4] | pb[5] << 8 | pb[6] << 16 | pb[7] << 24,
++		    PKT_SPDI_CONTENTS2);
++	hdmi_writel(hdmi, pb[8], PKT_SPDI_CONTENTS3);
++	for (i = PKT_SPDI_CONTENTS4; i <= PKT_SPDI_CONTENTS7; i += 4)
++		hdmi_writel(hdmi, 0, i);
++
++	hdmi_modb(hdmi, PKTSCHED_SPDI_TX_EN, PKTSCHED_SPDI_TX_EN, PKTSCHED_PKT_EN);
++}
++
+ static void hdmi_config_drm_infoframe(struct dw_hdmi_qp *hdmi,
+ 				      const struct drm_connector *connector)
+ {
+@@ -3464,6 +3504,19 @@ void dw_hdmi_qp_set_gaming_vrr_enable(struct dw_hdmi_qp *hdmi, bool enable)
+ }
+ EXPORT_SYMBOL_GPL(dw_hdmi_qp_set_gaming_vrr_enable);
+ 
++void dw_hdmi_qp_set_freesync(struct dw_hdmi_qp *hdmi, bool enable, u8 min_hz, u8 max_hz)
++{
++	if (!hdmi)
++		return;
++
++	hdmi->freesync_enable = enable;
++	hdmi->freesync_min = min_hz;
++	hdmi->freesync_max = max_hz;
++
++	dw_hdmi_qp_config_freesync_spd(hdmi);
++}
++EXPORT_SYMBOL_GPL(dw_hdmi_qp_set_freesync);
++
+ void dw_hdmi_qp_set_qms(struct dw_hdmi_qp *hdmi, u8 next_tfr, u8 m_const)
+ {
+ 	if (!hdmi)
+diff --git a/drivers/gpu/drm/bridge/synopsys/dw-hdmi-qp.h b/drivers/gpu/drm/bridge/synopsys/dw-hdmi-qp.h
+index 1141e9adb..f9bbcf4be 100644
+--- a/drivers/gpu/drm/bridge/synopsys/dw-hdmi-qp.h
++++ b/drivers/gpu/drm/bridge/synopsys/dw-hdmi-qp.h
+@@ -221,6 +221,7 @@
+ #define PKTSCHED_PKT_EN					0xaa8
+ #define PKTSCHED_DRMI_TX_EN				BIT(17)
+ #define PKTSCHED_AUDI_TX_EN				BIT(15)
++#define PKTSCHED_SPDI_TX_EN				BIT(14)
+ #define PKTSCHED_AVI_TX_EN				BIT(13)
+ #define PKTSCHED_VSI_TX_EN				BIT(12)
+ #define PKTSCHED_EMP_EXTMEM_TX_EN                       BIT(11)
+diff --git a/include/drm/bridge/dw_hdmi.h b/include/drm/bridge/dw_hdmi.h
+index f36628479..2c63d2a6f 100644
+--- a/include/drm/bridge/dw_hdmi.h
++++ b/include/drm/bridge/dw_hdmi.h
+@@ -391,6 +391,7 @@ void dw_hdmi_qp_set_allm_enable(struct dw_hdmi_qp *hdmi_qp, struct drm_connector
+ 				bool enable);
+ void dw_hdmi_qp_handle_hpd(struct dw_hdmi_qp *hdmi, bool enable);
+ void dw_hdmi_qp_set_gaming_vrr_enable(struct dw_hdmi_qp *hdmi_qp, bool enable);
++void dw_hdmi_qp_set_freesync(struct dw_hdmi_qp *hdmi_qp, bool enable, u8 min_hz, u8 max_hz);
+ void dw_hdmi_qp_set_qms(struct dw_hdmi_qp *hdmi, u8 next_tfr, u8 m_const);
+ u8 dw_hdmi_qp_get_next_tfr(struct dw_hdmi_qp *hdmi);
+ void dw_hdmi_qp_set_fva_factor_m1(struct dw_hdmi_qp *hdmi, u8 fva_factor_m1);

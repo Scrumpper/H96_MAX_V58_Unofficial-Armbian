@@ -1,0 +1,16 @@
+[Unit]
+Documentation=file:/usr/share/doc/h96-base/COMMANDS.md
+Description=H96 route Bluetooth SCO audio over HCI (Broadcom VSC 0xFC1C)
+After=h96-bt.service bluetooth.service
+Wants=h96-bt.service
+# restart of h96-bt (new hci0) re-applies the route
+PartOf=h96-bt.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+TimeoutStartSec=120
+ExecStart=/usr/lib/h96/h96-bt-sco.py --wait 90
+
+[Install]
+WantedBy=multi-user.target

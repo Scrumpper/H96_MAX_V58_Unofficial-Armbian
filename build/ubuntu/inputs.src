@@ -1,0 +1,17 @@
+# name<TAB>source glob relative to H96_INPUTS (@REPO@/ = repo root); highest Version wins on --repin; @KREL@ = H96_RC_KREL, @FBKREL@ = H96_RC_FBKREL; *-fb rows skipped when none
+f5-rows.sh	@REPO@/build/userland/f5-rows.sh
+h96-selftest.py	@REPO@/tools/h96-selftest.py
+h96-base	h96-base_*_all.deb
+h96-boot	h96-boot_*_all.deb
+h96-net	h96-net_*_all.deb
+h96-audio	h96-audio_*_all.deb
+h96-desktop	h96-desktop_*_arm64.deb
+h96-media	h96-media_*_arm64.deb
+h96-tools	h96-tools_*_arm64.deb
+h96-gaming	h96-gaming_*_all.deb
+steam-arm-setup	steam-arm-setup_3.1_arm64.deb
+h96-kernel	h96-kernel-@KREL@_*_arm64.deb
+h96-dtb	h96-dtb-@KREL@_*_arm64.deb
+h96-kernel-fb	h96-kernel-@FBKREL@_*_arm64.deb
+h96-dtb-fb	h96-dtb-@FBKREL@_*_arm64.deb
+h96-kernel-switch	h96-kernel-switch_*_all.deb

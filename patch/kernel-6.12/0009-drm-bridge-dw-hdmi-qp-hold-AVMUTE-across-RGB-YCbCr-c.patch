@@ -1,0 +1,175 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: H96 build <builder@h96-build>
+Date: Fri, 16 Oct 2026 00:00:00 +0000
+Subject: [PATCH 09/59] drm/bridge: dw-hdmi-qp: hold AVMUTE across RGB/YCbCr
+ class switches
+
+Sinks keep showing the old colour space for a moment after an RGB <->
+YCbCr switch (green flash). The bridge records the colour class the
+sink last received (seeded from the loader format) and, on a class
+change, keeps AVMUTE set and clears it fmt_switch_mute_ms later from a
+delayed work. Module parameter fmt_switch_mute_ms, default 1000,
+0 = off. The work is cancelled on disable and remove.
+
+H96 series: 69f26a76a / 62b6908ed.
+---
+ drivers/gpu/drm/bridge/synopsys/dw-hdmi-qp.c | 71 +++++++++++++++++++-
+ 1 file changed, 68 insertions(+), 3 deletions(-)
+
+diff --git a/drivers/gpu/drm/bridge/synopsys/dw-hdmi-qp.c b/drivers/gpu/drm/bridge/synopsys/dw-hdmi-qp.c
+index b9e0f0459..183372911 100644
+--- a/drivers/gpu/drm/bridge/synopsys/dw-hdmi-qp.c
++++ b/drivers/gpu/drm/bridge/synopsys/dw-hdmi-qp.c
+@@ -53,6 +53,11 @@ static ushort cec_phys_addr;
+ module_param(cec_phys_addr, ushort, 0644);
+ MODULE_PARM_DESC(cec_phys_addr, "CEC physical address override, 0x1000 = 1.0.0.0 (0 = from the sink EDID)");
+ 
++/* sinks keep the old colour space for a moment after an RGB <-> YCbCr switch */
++static uint fmt_switch_mute_ms = 1000;
++module_param(fmt_switch_mute_ms, uint, 0644);
++MODULE_PARM_DESC(fmt_switch_mute_ms, "AVMUTE hold after an RGB/YCbCr output switch, ms (0 = off)");
++
+ #define DDC_CI_ADDR		0x37
+ #define DDC_SEGMENT_ADDR	0x30
+ 
+@@ -395,6 +400,10 @@ struct dw_hdmi_qp {
+ 	struct workqueue_struct *workqueue;
+ 	struct notifier_block hdcp2_nb;
+ 
++	struct delayed_work unmute_work;
++	bool sink_fmt_known;		/* sink_yuv = colour class the sink last received */
++	bool sink_yuv;
++
+ 	bool cec_sink_pa_read;		/* cec_sink_pa cached until the next HPD event */
+ 	u16 cec_sink_pa;
+ };
+@@ -1063,6 +1072,41 @@ static bool hdmi_bus_fmt_is_rgb(unsigned int bus_format)
+ 	}
+ }
+ 
++/* record the output colour class; true if it differs from what the sink had */
++static bool dw_hdmi_qp_fmt_switch(struct dw_hdmi_qp *hdmi, unsigned long bus_format)
++{
++	bool yuv = !hdmi_bus_fmt_is_rgb(bus_format);
++	bool changed = hdmi->sink_fmt_known && hdmi->sink_yuv != yuv;
++
++	hdmi->sink_fmt_known = true;
++	hdmi->sink_yuv = yuv;
++
++	return changed && fmt_switch_mute_ms;
++}
++
++static void dw_hdmi_qp_set_avmute(struct dw_hdmi_qp *hdmi, bool mute)
++{
++	hdmi_writel(hdmi, mute ? 1 : 2, PKTSCHED_PKT_CONTROL0);
++	hdmi_modb(hdmi, PKTSCHED_GCP_TX_EN, PKTSCHED_GCP_TX_EN, PKTSCHED_PKT_EN);
++}
++
++static void dw_hdmi_qp_unmute_work(struct work_struct *work)
++{
++	struct dw_hdmi_qp *hdmi = container_of(to_delayed_work(work),
++					       struct dw_hdmi_qp, unmute_work);
++
++	mutex_lock(&hdmi->mutex);
++	if (!hdmi->disabled)
++		dw_hdmi_qp_set_avmute(hdmi, false);
++	mutex_unlock(&hdmi->mutex);
++}
++
++static void dw_hdmi_qp_unmute_later(struct dw_hdmi_qp *hdmi)
++{
++	mod_delayed_work(system_wq, &hdmi->unmute_work,
++			 msecs_to_jiffies(fmt_switch_mute_ms));
++}
++
+ static bool hdmi_bus_fmt_is_yuv444(unsigned int bus_format)
+ {
+ 	switch (bus_format) {
+@@ -3579,6 +3623,8 @@ static void dw_hdmi_attach_properties(struct dw_hdmi_qp *hdmi)
+ 	if ((connect_status == connector_status_connected) &&
+ 	    hdmi->initialized) {
+ 		color = dw_hdmi_qp_get_color_fmt(hdmi);
++		/* sink is showing the loader's format */
++		dw_hdmi_qp_fmt_switch(hdmi, color);
+ 
+ 		val = (hdmi_readl(hdmi, PKT_VSI_CONTENTS1) >> 8) & 0xffffff;
+ 		if (val == HDMI_FORUM_OUI)
+@@ -3954,6 +4000,8 @@ static void dw_hdmi_connector_atomic_commit(struct drm_connector *connector,
+ 	u32 val;
+ 
+ 	if (hdmi->update) {
++		bool hold;
++
+ 		if (hdmi->hdmi_changed_status & HDMI_COLOR_FMT_CHANGED) {
+ 			if (hdmi->plat_data->set_grf_cfg)
+ 				hdmi->plat_data->set_grf_cfg(hdmi->plat_data->phy_data);
+@@ -3961,9 +4009,13 @@ static void dw_hdmi_connector_atomic_commit(struct drm_connector *connector,
+ 		}
+ 		if (hdmi->hdmi_changed_status & HDMI_HDR_STATUS_CHANGED)
+ 			hdmi_config_drm_infoframe(hdmi, connector);
++		hold = dw_hdmi_qp_fmt_switch(hdmi, hdmi->hdmi_data.enc_out_bus_format);
+ 
+ 		msleep(50);
+-		hdmi_writel(hdmi, 2, PKTSCHED_PKT_CONTROL0);
++		if (hold)
++			dw_hdmi_qp_unmute_later(hdmi);
++		else
++			hdmi_writel(hdmi, 2, PKTSCHED_PKT_CONTROL0);
+ 		hdmi->update = false;
+ 	}
+ 
+@@ -4186,6 +4238,8 @@ static void dw_hdmi_qp_bridge_atomic_disable(struct drm_bridge *bridge,
+ 	if (hdmi->panel)
+ 		drm_panel_disable(hdmi->panel);
+ 
++	cancel_delayed_work_sync(&hdmi->unmute_work);
++
+ 	if (hdmi->plat_data->get_link_cfg)
+ 		link_cfg = hdmi->plat_data->get_link_cfg(data);
+ 
+@@ -4247,6 +4301,7 @@ static void dw_hdmi_qp_bridge_atomic_enable(struct drm_bridge *bridge,
+ 	struct drm_connector *connector;
+ 	void *data = hdmi->plat_data->phy_data;
+ 	struct dw_hdmi_link_config *link_cfg = NULL;
++	bool hold;
+ 
+ 	if (hdmi->plat_data->get_link_cfg)
+ 		link_cfg = hdmi->plat_data->get_link_cfg(data);
+@@ -4259,11 +4314,19 @@ static void dw_hdmi_qp_bridge_atomic_enable(struct drm_bridge *bridge,
+ 
+ 	mutex_lock(&hdmi->mutex);
+ 
++	/* colour class change: sink stays muted until it has taken the new AVI */
++	hold = hdmi->plat_data->get_output_bus_format &&
++	       dw_hdmi_qp_fmt_switch(hdmi, hdmi->plat_data->get_output_bus_format(data));
++	if (hold)
++		dw_hdmi_qp_set_avmute(hdmi, true);
++
+ 	dw_hdmi_qp_setup(hdmi, connector, state);
+ 
+ 	if (link_cfg && !link_cfg->frl_mode) {
+-		hdmi_writel(hdmi, 2, PKTSCHED_PKT_CONTROL0);
+-		hdmi_modb(hdmi, PKTSCHED_GCP_TX_EN, PKTSCHED_GCP_TX_EN, PKTSCHED_PKT_EN);
++		if (hold)
++			dw_hdmi_qp_unmute_later(hdmi);
++		else
++			dw_hdmi_qp_set_avmute(hdmi, false);
+ 	}
+ 	mutex_unlock(&hdmi->mutex);
+ 
+@@ -5390,6 +5453,7 @@ static struct dw_hdmi_qp *dw_hdmi_qp_probe(struct platform_device *pdev,
+ 		goto err_ddc;
+ 	}
+ 	INIT_WORK(&hdmi->flt_work, dw_hdmi_qp_flt_work);
++	INIT_DELAYED_WORK(&hdmi->unmute_work, dw_hdmi_qp_unmute_work);
+ 
+ 	return hdmi;
+ 
+@@ -5412,6 +5476,7 @@ static struct dw_hdmi_qp *dw_hdmi_qp_probe(struct platform_device *pdev,
+ 
+ static void dw_hdmi_qp_remove(struct dw_hdmi_qp *hdmi)
+ {
++	cancel_delayed_work_sync(&hdmi->unmute_work);
+ 	cancel_work_sync(&hdmi->flt_work);
+ 	flush_workqueue(hdmi->workqueue);
+ 	destroy_workqueue(hdmi->workqueue);

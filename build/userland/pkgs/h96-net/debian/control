@@ -1,0 +1,14 @@
+Source: h96-net
+Section: net
+Priority: optional
+Maintainer: Scrumpper <190908034+Scrumpper@users.noreply.github.com>
+Rules-Requires-Root: no
+Standards-Version: 4.7.0
+
+Package: h96-net
+Architecture: all
+Multi-Arch: foreign
+Depends: h96-base (= 8.0.0~r39), wpasupplicant, dhcpcd-base, iw, rfkill, ethtool
+Description: H96 MAX V58 network: BCM43752 Wi-Fi units, hotspot, wake-on-LAN
+ bcmdhd module options, wlan0 wpa_supplicant and dhcpcd units, Wi-Fi connect
+ and diagnose tools, hotspot and wake-on-LAN tools (installed disabled).

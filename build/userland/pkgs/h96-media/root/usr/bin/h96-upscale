@@ -1,0 +1,188 @@
+#!/bin/bash
+# h96-upscale: enable ravu-lite-ar-r4 GPU upscaling (mpv user shader) on the Mali-G610 via Panfrost; picked over FSRCNNX/nnedi3 because the G610 lacks the GFLOPS budget for them.
+#
+# Measured: 720p clip, no shader 3.81 s vs ravu 4.31 s (+13%); compiles clean on Panfrost.
+# Use the root shader variant, not gather/: this GLES context has no textureGatherOffset.
+
+set -uo pipefail
+
+[ -r /usr/lib/h96/banner.sh ] && . /usr/lib/h96/banner.sh
+command -v h96_banner >/dev/null 2>&1 || h96_banner() { :; }
+
+SHADER=/usr/share/h96/shaders/ravu-lite-ar-r4.hook
+CONF=/etc/mpv/mpv.conf
+BEGIN='# >>> h96-upscale >>>'
+END='# <<< h96-upscale <<<'
+
+die() { echo "h96-upscale: $*" >&2; exit 1; }
+need_root() { [ "$(id -u)" -eq 0 ] || die "that needs root (try: sudo h96-upscale $*)"; }
+
+is_on() { [ -f "$CONF" ] && grep -qF "$BEGIN" "$CONF"; }
+
+# mpv_check: 0 when mpv starts; otherwise MPV_ERR holds the reason
+mpv_check() {
+    MPV_ERR=""
+    command -v mpv >/dev/null 2>&1 || { MPV_ERR="mpv is not installed"; return 1; }
+    local out rc miss
+    out=$(timeout 15 mpv --no-config --version 2>&1); rc=$?
+    [ "$rc" -eq 0 ] && return 0
+    miss=$(ldd "$(command -v mpv)" 2>/dev/null | awk '/not found/{printf "%s ", $1}')
+    MPV_ERR="mpv does not start (exit $rc): $(printf '%s\n' "$out" | grep -m1 .)"
+    [ -n "$miss" ] && MPV_ERR="$MPV_ERR; missing libraries: ${miss% }"
+    MPV_ERR="$MPV_ERR; video setup log: /var/log/h96-video-setup.log"
+    return 1
+}
+
+show_status() {
+    h96_banner "U P S C A L I N G"
+    printf '  shader file      %s\n' "$([ -r "$SHADER" ] && echo "$SHADER" || echo 'MISSING')"
+    printf '  mpv config       %s\n' "$CONF"
+    printf '  state            %s\n' "$(is_on && echo 'ENABLED' || echo 'disabled')"
+    if [ -f "$CONF" ]; then
+        printf '  vo               %s\n' "$(grep -m1 '^vo=' "$CONF" | cut -d= -f2-)"
+        printf '  hwdec            %s\n' "$(grep -m1 '^hwdec=' "$CONF" | cut -d= -f2-)"
+    fi
+    printf '\n  Applies to mpv in desktop or compositor session.\n'
+    has_desktop || printf '  No desktop installed: armbian-config -> System -> Desktop.\n'
+}
+
+has_desktop() {
+    [ -x /usr/bin/plasmashell ] || [ -x /usr/bin/gnome-shell ] || [ -x /usr/bin/startxfce4 ] \
+        || [ -x /usr/bin/cinnamon ] || [ -x /usr/bin/mate-session ]
+}
+
+enable() {
+    need_root on
+    [ -r "$SHADER" ] || die "shader not found at $SHADER"
+    [ -f "$CONF" ]   || die "$CONF does not exist"
+    is_on && { echo "h96-upscale: already enabled"; exit 0; }
+    cp -a "$CONF" "$CONF.pre-h96-upscale"
+    {
+        printf '%s\n' "$BEGIN"
+        printf '# added by h96-upscale; remove with: sudo h96-upscale off\n'
+        printf 'glsl-shaders=%s\n' "$SHADER"
+        printf '%s\n' "$END"
+    } >> "$CONF"
+    echo "h96-upscale: enabled (backup at $CONF.pre-h96-upscale)"
+    echo "             restart mpv for it to take effect"
+}
+
+disable() {
+    need_root off
+    is_on || { echo "h96-upscale: already disabled"; exit 0; }
+    cp -a "$CONF" "$CONF.pre-h96-upscale"
+    sed -i "/$(printf '%s' "$BEGIN" | sed 's/[]\/$*.^[]/\\&/g')/,/$(printf '%s' "$END" | sed 's/[]\/$*.^[]/\\&/g')/d" "$CONF"
+    echo "h96-upscale: disabled"
+}
+
+# any connected display connector (Writeback reports unknown)
+any_connected() {
+    local c
+    for c in /sys/class/drm/card*-*/status; do
+        [ "$(cat "$c" 2>/dev/null)" = connected ] && return 0
+    done
+    return 1
+}
+
+# WxH of the output mpv draws on: X session mode, else first mode of the connected connector
+out_size() {
+    local s="" c
+    if [ -n "${DISPLAY:-}" ] && command -v xrandr >/dev/null 2>&1; then
+        s=$(xrandr --current 2>/dev/null | awk '/ connected/{for(i=3;i<=NF;i++) if ($i ~ /^[0-9]+x[0-9]+\+/){split($i,a,"+"); print a[1]; exit}}')
+    fi
+    if [ -z "$s" ]; then
+        for c in /sys/class/drm/card*-*/status; do
+            [ "$(cat "$c" 2>/dev/null)" = connected ] || continue
+            s=$(head -1 "${c%/status}/modes" 2>/dev/null); [ -n "$s" ] && break
+        done
+    fi
+    printf '%s' "$s"
+}
+
+# shader WHEN: engages only when output is above sqrt(2) x clip size in both axes
+scale_note() {
+    local clip="$1" csz osz
+    if [ "$clip" = generated ]; then csz=1280x720
+    else csz=$(ffprobe -v error -select_streams v:0 -show_entries stream=width,height -of csv=s=x:p=0 "$clip" 2>/dev/null | head -1)
+    fi
+    osz=$(out_size)
+    case "$csz" in [0-9]*x[0-9]*) ;; *) return 0;; esac
+    case "$osz" in [0-9]*x[0-9]*) ;; *) return 0;; esac
+    awk -v c="$csz" -v o="$osz" 'BEGIN{split(c,a,"x"); split(o,b,"x");
+        if (a[1]/b[1] >= 0.707106 || a[2]/b[2] >= 0.707106)
+            printf "  NOTE: output %s is below 1.41x of clip %s; shader engages only above\n        1.41x, so shader on and off times match on this display.\n", o, c}'
+}
+
+run_test() {
+    [ -r "$SHADER" ] || die "shader not found at $SHADER"
+    any_connected || die "no connected display: mpv renders about 1 frame per second without one, timings not valid"
+    mpv_check || die "$MPV_ERR"
+    local clip="${1:-}"
+    if [ -z "$clip" ]; then
+        command -v ffmpeg >/dev/null 2>&1 || die "no clip given and ffmpeg is unavailable to make one"
+        clip=$(mktemp -u /tmp/h96-upscale-XXXX.mp4)
+        echo "  making a 720p test clip..."
+        ffmpeg -hide_banner -loglevel error -y -f lavfi \
+            -i testsrc2=size=1280x720:rate=30:duration=5 -c:v h264_rkmpp "$clip" 2>/dev/null \
+            || die "could not create a test clip"
+        scale_note generated
+    else
+        scale_note "$clip"
+    fi
+    local runner=() ctx=()  # prefix only (cage); mpv is named below
+    # Headless: borrow cage (installed for game-mode).
+    if [ -z "${WAYLAND_DISPLAY:-}${DISPLAY:-}" ] && command -v cage >/dev/null 2>&1; then
+        echo "  no session detected - running inside cage"
+        export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+        mkdir -p "$XDG_RUNTIME_DIR" 2>/dev/null; chmod 700 "$XDG_RUNTIME_DIR" 2>/dev/null
+        runner=(cage --)
+        ctx=(--gpu-context=wayland)
+        echo "  NOTE: cage does not engage rkmpp hardware decode, so this measures"
+        echo "        shader cost only, not playback with hardware decode."
+    fi
+    local t0 t1 rc fail=0 log
+    log=$(mktemp /tmp/h96-upscale-log-XXXX)
+    echo
+    for mode in off on; do
+        local args=(--vo=gpu --gpu-api=opengl --no-config --untimed --no-audio
+                    --fullscreen --msg-level=all=error --hwdec=rkmpp "${ctx[@]}")
+        [ "$mode" = on ] && args+=(--glsl-shaders="$SHADER")
+        t0=$(date +%s%N)
+        timeout 180 "${runner[@]}" mpv "${args[@]}" "$clip" >"$log" 2>&1; rc=$?
+        t1=$(date +%s%N)
+        if [ "$rc" -ne 0 ]; then
+            printf '  shader %-3s  FAILED (mpv exit %s)\n' "$mode" "$rc"
+            sed -n '1,5s/^/      /p' "$log"
+            fail=1
+            continue
+        fi
+        printf '  shader %-3s  %6.2f s\n' "$mode" "$(awk "BEGIN{print ($t1-$t0)/1e9}")"
+    done
+    rm -f "$log"
+    case "$clip" in /tmp/h96-upscale-*) rm -f "$clip";; esac
+    [ "$fail" -eq 0 ] || die "test failed: mpv did not play the clip, timings not valid"
+}
+
+case "${1:-status}" in
+    status|"")      show_status ;;
+    on|enable)      enable ;;
+    off|disable)    disable ;;
+    test)           shift; run_test "${1:-}" ;;
+    -h|--help|help)
+        cat <<'USAGE'
+h96-upscale: RAVU GPU upscaling for mpv
+
+  h96-upscale               show state
+  sudo h96-upscale on       enable it in /etc/mpv/mpv.conf
+  sudo h96-upscale off      remove it again
+  h96-upscale test [file]   time playback with shader on vs off (needs
+                            connected display; shader engages only when
+                            output is above 1.41x of video size)
+
+Uses ravu-lite-ar-r4 (LGPL-3.0, bjin/mpv-prescalers) on the Mali-G610 via
+Panfrost. Costs roughly 10-13% more GPU time than no shader. Needs desktop or
+compositor session; image boots to console until desktop is installed.
+USAGE
+        ;;
+    *) echo "h96-upscale: unknown argument '$1' (try --help)" >&2; exit 2 ;;
+esac

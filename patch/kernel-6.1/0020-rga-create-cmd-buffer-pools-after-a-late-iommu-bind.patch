@@ -1,0 +1,87 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: H96 build <noreply@localhost>
+Date: Wed, 7 Oct 2026 00:00:00 +0000
+Subject: [PATCH 20/20] rga: create cmd buffer pools after a late iommu bind
+
+With the deferred iommu bind (91131c6c6) the rga nodes probe after
+rga_init(), whose pool loop then sees no scheduler, so every job failed
+with "rga_dma_buf_pool is not initialized". Create the pools after a
+successful bind and for a scheduler attached after the bind; rga_init()
+skips schedulers that already have one.
+---
+ drivers/video/rockchip/rga3/rga_drv.c | 37 ++++++++++++++++++++++++---
+ 1 file changed, 33 insertions(+), 4 deletions(-)
+
+diff --git a/drivers/video/rockchip/rga3/rga_drv.c b/drivers/video/rockchip/rga3/rga_drv.c
+index 55f0e7b77..e02cf9e62 100644
+--- a/drivers/video/rockchip/rga3/rga_drv.c
++++ b/drivers/video/rockchip/rga3/rga_drv.c
+@@ -1354,6 +1354,27 @@ static unsigned int rga_count_available_nodes(void)
+ 	return n;
+ }
+ 
++/* cmd buffer pools for probed schedulers that lack one (late probe after module init) */
++static void rga_init_cmd_buf_pools(void)
++{
++	struct rga_scheduler_t *scheduler;
++	struct rga_dma_buf_pool *pool;
++	int i;
++
++	for (i = 0; i < rga_drvdata->num_of_scheduler; i++) {
++		scheduler = rga_drvdata->scheduler[i];
++		if (scheduler->cmd_buf_pool)
++			continue;
++		pool = rga_dma_buf_pool_init(scheduler,
++					     scheduler->data->cmd_reg_size * sizeof(uint32_t));
++		if (IS_ERR(pool)) {
++			dev_err(scheduler->dev, "failed to init cmd buf pool\n");
++			continue;
++		}
++		scheduler->cmd_buf_pool = pool;
++	}
++}
++
+ /* force: bind with whatever has probed (first open fallback) */
+ static int rga_try_bind(bool force)
+ {
+@@ -1370,10 +1391,12 @@ static int rga_try_bind(bool force)
+ 	}
+ 
+ 	ret = rga_iommu_bind();
+-	if (ret < 0)
++	if (ret < 0) {
+ 		pr_err("rga iommu bind failed!\n");
+-	else
++	} else {
+ 		rga_bound = true;
++		rga_init_cmd_buf_pools();
++	}
+ out:
+ 	mutex_unlock(&rga_bind_lock);
+ 
+@@ -1617,10 +1640,14 @@ static int rga_drv_probe(struct platform_device *pdev)
+ 	dev_info(dev, "probe successfully, irq = %d, hw_version:%s\n",
+ 		 scheduler->irq, scheduler->version.str);
+ 
+-	if (rga_bound)
++	if (rga_bound) {
+ 		rga_attach_late_scheduler(scheduler);
+-	else
++		mutex_lock(&rga_bind_lock);
++		rga_init_cmd_buf_pools();
++		mutex_unlock(&rga_bind_lock);
++	} else {
+ 		rga_try_bind(false);
++	}
+ 
+ 	return 0;
+ 
+@@ -1735,6 +1762,8 @@ static int __init rga_init(void)
+ 	for (i = 0; i < rga_drvdata->num_of_scheduler; i++) {
+ 		struct rga_scheduler_t *scheduler = rga_drvdata->scheduler[i];
+ 
++		if (scheduler->cmd_buf_pool)
++			continue;
+ 		scheduler->cmd_buf_pool =
+ 			rga_dma_buf_pool_init(scheduler,
+ 					      scheduler->data->cmd_reg_size * sizeof(uint32_t));

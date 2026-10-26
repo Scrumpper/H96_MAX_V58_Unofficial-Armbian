@@ -1,0 +1,6 @@
+enable h96-vfd.service
+enable h96-leds.service
+enable h96-wifi.service
+enable h96-bluetooth.service
+enable h96-gaming-setup.service
+enable h96-firstboot.service

@@ -1,0 +1,1 @@
+../../../share/steam-arm-setup/install.sh

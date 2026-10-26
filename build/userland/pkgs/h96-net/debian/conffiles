@@ -1,0 +1,4 @@
+/etc/NetworkManager/conf.d/99-h96-wlan0-unmanaged.conf
+/etc/apt/apt.conf.d/99-h96-force-ipv4
+/etc/modprobe.d/h96-wifi.conf
+/etc/udev/rules.d/10-wifi-disable-powermanagement.rules

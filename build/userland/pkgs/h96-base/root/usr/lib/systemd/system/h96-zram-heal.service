@@ -1,0 +1,14 @@
+[Unit]
+Documentation=file:/usr/share/doc/h96-base/COMMANDS.md
+Description=h96: ensure armbian-zram-config stays enabled (orphaned-symlink guard)
+After=local-fs.target
+ConditionPathExists=!/etc/systemd/system/sysinit.target.wants/armbian-zram-config.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/systemctl enable --now armbian-zram-config.service
+RemainAfterExit=yes
+TimeoutStartSec=60
+
+[Install]
+WantedBy=multi-user.target

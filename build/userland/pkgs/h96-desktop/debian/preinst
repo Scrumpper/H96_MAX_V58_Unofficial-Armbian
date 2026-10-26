@@ -1,0 +1,55 @@
+#!/bin/sh
+# divert v7.2-edited files of other packages before unpack
+set -e
+case "$1" in
+install|upgrade)
+  dpkg-divert --package h96-desktop --add --rename --divert /usr/share/applications/org.gnome.Settings.desktop.distrib /usr/share/applications/org.gnome.Settings.desktop
+  dpkg-divert --package h96-desktop --add --rename --divert /usr/share/dbus-1/system-services/net.hadess.PowerProfiles.service.distrib /usr/share/dbus-1/system-services/net.hadess.PowerProfiles.service
+  dpkg-divert --package h96-desktop --add --rename --divert /usr/share/dbus-1/system-services/org.freedesktop.UPower.PowerProfiles.service.distrib /usr/share/dbus-1/system-services/org.freedesktop.UPower.PowerProfiles.service
+  ;;
+esac
+R="${DPKG_ROOT:-}"
+if [ "$1" = install ] && [ -z "${2:-}" ]; then
+  while read -r k v p; do
+    if [ "$k" = f ] && [ -f "$R$p" ] && [ ! -L "$R$p" ] && [ "$(sha256sum < "$R$p" | cut -d" " -f1)" = "$v" ]; then
+      mv -f "$R$p" "$R$p.h96-v72"
+    elif [ "$k" = l ] && [ -L "$R$p" ] && [ "$(readlink "$R$p")" = "$v" ]; then
+      mv -f "$R$p" "$R$p.h96-v72"
+    fi
+  done <<'EOF'
+f 721a3c673456067f1d13925b726cf4aa8a1d79ef7cf9077608414ca19d195afb /etc/apt/apt.conf.d/99-h96-desktop-cleanup
+f 6ef1679b752a48d0b69b6ff3dbafaba56feac5b6f350bceba90ae7a39c2bf474 /etc/systemd/system/gdm.service.d/zz-h96-handoff.conf
+f 4047d70765a76f14e5920be3e19af4f47f2e9138a21ad6a42d1a980f90d2065f /etc/systemd/system/h96-display-console.service
+f 570b1b4ea33ef47f307c674c0e439e85e5be40eb8625ed47fb6a2d81ccae8fc4 /etc/systemd/system/h96-dm-handoff-check.service
+f 1d9c654e3759484e89de6d2ce4eac6faf5422e1e2faf14acdd9d3234a8191e12 /etc/systemd/system/h96-scdc.service
+l /etc/systemd/system/h96-display-console.service /etc/systemd/system/multi-user.target.wants/h96-display-console.service
+l /etc/systemd/system/h96-dm-handoff-check.service /etc/systemd/system/multi-user.target.wants/h96-dm-handoff-check.service
+l /etc/systemd/system/h96-scdc.service /etc/systemd/system/multi-user.target.wants/h96-scdc.service
+f 105df373c2028b1af52e06f384c644903f88cead1248dc5f6bebea9190e193e1 /etc/systemd/system/sddm.service.d/zz-h96-handoff.conf
+f 8b26e224516efc69a0fefdd5ba9d05d7848eb9268a42c753a147ad190ff85f03 /etc/udev/rules.d/97-h96-display-wake.rules
+f ac7948ece6de5e08696713a283f52a105d28f3fd939ee58e33f3ea17c3b07d46 /etc/udev/rules.d/99-h96-ddc-i2c.rules
+f f7bbbd401b2c940f95863da035ed9b1a97b1a1cffbfa28fafbeca17393a8222d /etc/xdg/autostart/h96-display-session.desktop
+f ef0273745630715d9f1a88fa3f6595c4499c6eacbe735173445285714253bacd /usr/local/bin/h96-brightness
+f 56466931c9ae5339bc41b80f1eb2895594100ed31b6b6b6050900aa002f1c1cd /usr/local/bin/h96-scale
+f 01d7efaa7ddfbda004e4e470d449f5c0d1e4aee3d67f3c888041de4c934ed3ce /usr/local/bin/settings-launch
+f 7e5f4a27d007667b7b37d34dbbc61191e23f3af964176f4d5932898af3b23187 /usr/local/lib/h96/ddc-edid-read
+f c1a606b5b57bf48f68357b80d6abc4eccc0b98621e12471b332b87009c0d640a /usr/local/lib/h96/edid_merge.py
+f dcd033b1a58ab9cdecc6d405ce68f35cb7638060b96c098a353eefef71652431 /usr/local/lib/h96/edid_modes.py
+f 85406710cc0fdfede2a85dca8641f5ab21c65498158614392decc2b1b2050509 /usr/local/lib/h96/h96-display-wake-daemon.py
+f 2d1e90435f97484531563b83407c2c8b4de32ec1807a6a8459a527706c9c941b /usr/local/sbin/h96-autologin-setup
+f 3debafde96bfd51e34900f3094c74bca0d2630a08e3b6cc90cd5a73315b284dc /usr/local/sbin/h96-ddc-setup.sh
+f 4bce571a2ecf0fb8886ddd362d7a871f79d992b882902208234674ca53f8f3ca /usr/local/sbin/h96-desktop-cleanup
+f 4e47a6365392d538e35aa2f5ea29c919d3cd372f17c106713bdd12e541d7db25 /usr/local/sbin/h96-desktop-fixup.sh
+f d2394911c07d6fef6fcb580968e23baafbd8031abaa6bd912e07898c35eaeef2 /usr/local/sbin/h96-display
+f 87dd5856e407d69299b119ec85e3a9e2bc1d5fb150a5e4e1bc6109098ee42fcc /usr/local/sbin/h96-display-guard.sh
+f 1be5e570e9dba3b25f980d11af841197aea38ebfbdc5f7653a8a17b33013d758 /usr/local/sbin/h96-display-wake.sh
+f 16d8523a1996e0cb76871923a02c1afa85ce4de574fe38750b3784728615ed31 /usr/local/sbin/h96-dm-handoff
+f 1ca4e34481ee0e1c168e3bb48989b899f2d490aa30dd7c41e2b235eaafa0014d /usr/local/sbin/h96-gnome-configure.sh
+f c18de147a0dd4d6b87b953c04a63464f59ac1d9a34d30dfe19145553f7e1cdf4 /usr/local/sbin/h96-kde-configure.sh
+f a2158bb1a389487447f56c96b3eb5243d954d95bbf738ba48eb0242117d86dea /usr/local/sbin/h96-lightdm-configure.sh
+f 712d25359d2518036c75b6ecd7835d006a544a68efcff3f0261345eec5cb73f9 /usr/local/sbin/h96-power-profiles.py
+f 81a1b1a58794719abf1c88b4b209fb86f6892a99398c15422e85e89d8f09d818 /usr/local/sbin/h96-scdc
+f 430d1e520631af3752fe9d967131cd64b11332c8c880740929c9ceb224ae90a2 /usr/local/share/applications/org.gnome.Settings.desktop
+EOF
+fi
+exit 0

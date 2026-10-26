@@ -1,0 +1,1 @@
+SUBSYSTEM=="input", ENV{ID_INPUT}=="1", TAG+="uaccess", TAG+="seat", ENV{ID_SEAT}=""

@@ -1,0 +1,11 @@
+[Unit]
+Documentation=file:/usr/share/doc/h96-base/COMMANDS.md
+Description=H96 Max V58 front-panel VFD display
+
+[Service]
+ExecStart=/usr/bin/h96-vfd
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

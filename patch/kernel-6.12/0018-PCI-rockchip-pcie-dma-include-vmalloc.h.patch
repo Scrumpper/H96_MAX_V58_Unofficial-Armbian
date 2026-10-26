@@ -1,0 +1,26 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: H96 build <builder@h96-build>
+Date: Sun, 18 Oct 2026 00:00:00 +0000
+Subject: [PATCH 18/59] PCI: rockchip: pcie-dma: include vmalloc.h
+
+vmalloc(), vmap(), vfree() and VM_MAP are no longer reached through
+other headers on 6.12; CONFIG_ROCKCHIP_PCIE_DMA_OBJ=y (carried from
+config.v80) failed to build.
+
+H96 series: 6.12 build fix, t1.
+---
+ drivers/pci/controller/rockchip-pcie-dma.c | 1 +
+ 1 file changed, 1 insertion(+)
+
+diff --git a/drivers/pci/controller/rockchip-pcie-dma.c b/drivers/pci/controller/rockchip-pcie-dma.c
+index 6ffd33514..3f28d54de 100644
+--- a/drivers/pci/controller/rockchip-pcie-dma.c
++++ b/drivers/pci/controller/rockchip-pcie-dma.c
+@@ -24,6 +24,7 @@
+ #include <linux/signal.h>
+ #include <linux/types.h>
+ #include <linux/uaccess.h>
++#include <linux/vmalloc.h>
+ #include <uapi/linux/rk-pcie-dma.h>
+ 
+ #include "rockchip-pcie-dma.h"

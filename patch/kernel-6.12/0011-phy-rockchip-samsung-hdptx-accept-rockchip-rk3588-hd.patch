@@ -1,0 +1,33 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: H96 build <builder@h96-build>
+Date: Fri, 16 Oct 2026 00:00:00 +0000
+Subject: [PATCH 11/59] phy: rockchip: samsung-hdptx: accept
+ rockchip,rk3588-hdptx-phy-hdmi
+
+Pre-rkr7 vendor DTBs bind HDMI through a separate hdmiphy node with
+this compatible. Without the match the HDMI PHY never binds on such a
+DTB and HDMI stays dark.
+
+Gated by DT content.
+
+H96 series: feb833fcb (new on rk-6.1-rkr7.2).
+---
+ drivers/phy/rockchip/phy-rockchip-samsung-hdptx.c | 5 +++++
+ 1 file changed, 5 insertions(+)
+
+diff --git a/drivers/phy/rockchip/phy-rockchip-samsung-hdptx.c b/drivers/phy/rockchip/phy-rockchip-samsung-hdptx.c
+index c3bd876ec..b4dd03491 100644
+--- a/drivers/phy/rockchip/phy-rockchip-samsung-hdptx.c
++++ b/drivers/phy/rockchip/phy-rockchip-samsung-hdptx.c
+@@ -3124,6 +3124,11 @@ static const struct of_device_id rk_hdptx_phy_of_match[] = {
+ 		.compatible = "rockchip,rk3588-hdptx-phy",
+ 		.data = &rk3588_hdptx_phy_cfgs
+ 	},
++	{
++		/* H96: pre-rkr7 vendor DTBs bind HDMI through a separate hdmiphy node */
++		.compatible = "rockchip,rk3588-hdptx-phy-hdmi",
++		.data = &rk3588_hdptx_phy_cfgs
++	},
+ 	{}
+ };
+ MODULE_DEVICE_TABLE(of, rk_hdptx_phy_of_match);

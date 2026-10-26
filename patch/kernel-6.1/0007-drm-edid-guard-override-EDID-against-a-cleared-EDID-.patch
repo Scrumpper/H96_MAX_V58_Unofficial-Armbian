@@ -1,0 +1,29 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: H96 build <builder@h96-build>
+Date: Fri, 16 Oct 2026 00:00:00 +0000
+Subject: [PATCH 07/20] drm/edid: guard override EDID against a cleared EDID
+ blob
+
+drm_get_override_edid() dereferenced connector->edid_blob_ptr whenever
+override_edid was set; the blob is cleared on disconnect while the
+flag stays set. Check the blob pointer too.
+
+H96 series: d3299ab29 / 1f3193932.
+---
+ drivers/gpu/drm/drm_edid.c | 3 ++-
+ 1 file changed, 2 insertions(+), 1 deletion(-)
+
+diff --git a/drivers/gpu/drm/drm_edid.c b/drivers/gpu/drm/drm_edid.c
+index fc6028aae..3de2e7ef3 100644
+--- a/drivers/gpu/drm/drm_edid.c
++++ b/drivers/gpu/drm/drm_edid.c
+@@ -2188,7 +2188,8 @@ static struct edid *drm_get_override_edid(struct drm_connector *connector,
+ {
+ 	struct edid *override = NULL;
+ 
+-	if (connector->override_edid)
++	/* the blob is cleared on disconnect while override_edid stays set */
++	if (connector->override_edid && connector->edid_blob_ptr)
+ 		override = drm_edid_duplicate(connector->edid_blob_ptr->data);
+ 
+ 	if (!override)

@@ -1,0 +1,285 @@
+h96-audio (8.0.0~r39) resolute; urgency=medium
+
+  * WirePlumber bluetooth.autoswitch-to-headset-profile = false
+    (30-h96-bluetooth.conf): Bluetooth profile stays where the user set
+    it; an opened microphone no longer switches a headset from A2DP to
+    HFP/HSP. Headset profile for voice is chosen in the audio applet.
+
+ -- Scrumpper <190908034+Scrumpper@users.noreply.github.com>  Tue, 27 Oct 2026 00:00:00 +0000
+
+h96-audio (8.0.0~r38) resolute; urgency=medium
+
+  * Version bump with h96-base change; files unchanged apart from version.
+
+ -- Scrumpper <190908034+Scrumpper@users.noreply.github.com>  Mon, 26 Oct 2026 18:00:00 +0000
+
+h96-audio (8.0.0~r37) resolute; urgency=medium
+
+  * Version bump with h96-base change; files unchanged apart from version.
+
+ -- Scrumpper <190908034+Scrumpper@users.noreply.github.com>  Mon, 26 Oct 2026 12:00:00 +0000
+
+h96-audio (8.0.0~r36) resolute; urgency=medium
+
+  * Version bump with h96-tools and h96-base changes; files unchanged
+    apart from version.
+
+ -- Scrumpper <190908034+Scrumpper@users.noreply.github.com>  Mon, 26 Oct 2026 06:00:00 +0000
+
+h96-audio (8.0.0~r35) resolute; urgency=medium
+
+  * Version bump with h96-base documentation change; files unchanged apart
+    from version.
+
+ -- Scrumpper <190908034+Scrumpper@users.noreply.github.com>  Mon, 26 Oct 2026 00:00:00 +0000
+
+h96-audio (8.0.0~r34) resolute; urgency=medium
+
+  * Version bump with h96-media and h96-tools changes; files unchanged
+    apart from version.
+
+ -- Scrumpper <190908034+Scrumpper@users.noreply.github.com>  Sun, 25 Oct 2026 18:00:00 +0000
+
+h96-audio (8.0.0~r33) resolute; urgency=medium
+
+  * Version bump with h96-media and h96-base changes; files unchanged
+    apart from version.
+
+ -- Scrumpper <190908034+Scrumpper@users.noreply.github.com>  Sun, 25 Oct 2026 12:00:00 +0000
+
+h96-audio (8.0.0~r32) resolute; urgency=medium
+
+  * Version bump with h96-base documentation change; files unchanged apart
+    from version.
+
+ -- Scrumpper <190908034+Scrumpper@users.noreply.github.com>  Sun, 25 Oct 2026 06:00:00 +0000
+
+h96-audio (8.0.0~r31) resolute; urgency=medium
+
+  * Version bump with h96-base documentation change; files unchanged apart
+    from version.
+
+ -- Scrumpper <190908034+Scrumpper@users.noreply.github.com>  Sun, 25 Oct 2026 00:00:00 +0000
+
+h96-audio (8.0.0~r30) resolute; urgency=medium
+
+  * Detect X re-probe sets mode only when current mode and rate are no
+    longer offered after xrandr -q (then preferred mode, --auto); changed
+    list that still offers current mode (real vs merged EDID differ by
+    interlaced modes) and unchanged list: no mode set, no blank. Output
+    disconnected after re-probe: nothing set.
+
+ -- Scrumpper <190908034+Scrumpper@users.noreply.github.com>  Sat, 24 Oct 2026 18:00:00 +0000
+
+h96-audio (8.0.0~r29) resolute; urgency=medium
+
+  * Manual page headers name public release 8.0 instead of package
+    version.
+
+ -- Scrumpper <190908034+Scrumpper@users.noreply.github.com>  Sat, 24 Oct 2026 12:00:00 +0000
+
+h96-audio (8.0.0~r28) resolute; urgency=medium
+
+  * Detect X re-probe sets current mode again only when X mode list
+    changed (xrandr --current before, xrandr -q after): h96-display edid
+    real|merged with same modes no longer blanks display for about one
+    second.
+
+ -- Scrumpper <190908034+Scrumpper@users.noreply.github.com>  Sat, 24 Oct 2026 06:00:00 +0000
+
+h96-audio (8.0.0~r27) resolute; urgency=medium
+
+  * Version bump with h96-base change; files unchanged apart from version
+    in manual pages.
+
+ -- Scrumpper <190908034+Scrumpper@users.noreply.github.com>  Fri, 23 Oct 2026 20:00:00 +0000
+
+h96-audio (8.0.0~r26) resolute; urgency=medium
+
+  * Version bump with h96-net, h96-base and h96-gaming changes; files
+    unchanged apart from version in manual pages.
+
+ -- Scrumpper <190908034+Scrumpper@users.noreply.github.com>  Fri, 23 Oct 2026 15:00:00 +0000
+
+h96-audio (8.0.0~r25) resolute; urgency=medium
+
+  * Version bump with h96-base, h96-gaming and h96-desktop changes;
+    version aligned with h96-vulkan-wsi 8.0.0~r25; files unchanged apart
+    from version in manual pages.
+
+ -- Scrumpper <190908034+Scrumpper@users.noreply.github.com>  Fri, 23 Oct 2026 09:00:00 +0000
+
+h96-audio (8.0.0~r24) resolute; urgency=medium
+
+  * Plasma Wayland session: detect asks KWin to re-read connectors (DRM
+    change event) after kernel EDID reload.
+
+ -- Scrumpper <190908034+Scrumpper@users.noreply.github.com>  Fri, 23 Oct 2026 03:00:00 +0000
+
+h96-audio (8.0.0~r23) resolute; urgency=medium
+
+  * Version bump with h96-desktop, h96-media and h96-base changes; files
+    unchanged apart from version in manual pages.
+
+ -- Scrumpper <190908034+Scrumpper@users.noreply.github.com>  Thu, 22 Oct 2026 21:00:00 +0000
+
+h96-audio (8.0.0~r22) resolute; urgency=medium
+
+  * h96-audio-passthrough off no longer leaves blank line in
+    /etc/mpv/mpv.conf per on/off cycle.
+  * Kernel EDID reload check compares mode lists as sets (6.12 lists same
+    modes in other order after connector off/detect) and names both lists
+    when reload still fails.
+
+ -- Scrumpper <190908034+Scrumpper@users.noreply.github.com>  Thu, 22 Oct 2026 18:00:00 +0000
+
+h96-audio (8.0.0~r21) resolute; urgency=medium
+
+  * Version bump with h96-desktop and h96-base changes; files unchanged
+    apart from version in manual pages.
+
+ -- Scrumpper <190908034+Scrumpper@users.noreply.github.com>  Thu, 22 Oct 2026 12:00:00 +0000
+
+h96-audio (8.0.0~r20) resolute; urgency=medium
+
+  * Version bump with h96-media and h96-base changes; files unchanged
+    apart from version in manual pages.
+
+ -- Scrumpper <190908034+Scrumpper@users.noreply.github.com>  Thu, 22 Oct 2026 09:00:00 +0000
+
+h96-audio (8.0.0~r19) resolute; urgency=medium
+
+  * Upgrade restarts h96-hdmi-hotplug.service when a hotplug run is in
+    progress.
+  * X re-probe after kernel EDID load (detect, hotplug) sets current mode
+    and rate again: xrandr -q sends no RandR change event, so KDE display
+    settings kept old mode list until a mode change. X refusing that set:
+    output set to preferred mode (--auto).
+
+ -- Scrumpper <190908034+Scrumpper@users.noreply.github.com>  Thu, 22 Oct 2026 06:00:00 +0000
+
+h96-audio (8.0.0~r18) resolute; urgency=medium
+
+  * Version bump with h96-media change; files unchanged apart from version
+    in manual pages.
+
+ -- Scrumpper <190908034+Scrumpper@users.noreply.github.com>  Thu, 22 Oct 2026 03:00:00 +0000
+
+h96-audio (8.0.0~r17) resolute; urgency=medium
+
+  * h96-hdmi-hotplug and h96-hdmi-hotplug.service: on HDMI hotplug, wait
+    until connector state holds, read display EDID over DDC and run HDMI
+    detect only for new display or lost kernel EDID; same display,
+    disconnect or unreadable EDID change nothing (earlier builds ran full
+    detect on every HPD change). Wayland session gets change event on DRM
+    card after kernel EDID reload; stored colour and range, SCDC check and
+    CEC address follow. Record in /var/lib/h96/hdmi-hotplug.json;
+    'h96-hdmi-hotplug off' leaves detect at boot only.
+  * 99-h96-hdmi-audio.rules records udev event number and starts
+    h96-hdmi-hotplug.service on any DRM card (was
+    h96-hdmi-audio-detect.service on card0).
+  * Kernel EDID load on 6.3 and later kernels: when plain connector detect
+    keeps cached EDID (6.12), connector off then detect (screen dark about
+    1 s); earlier builds never loaded merged EDID on 6.12 and left forced
+    1080p EDID in drm.edid_firmware for next replug. 6.1 path unchanged.
+  * Real EDID mode (/etc/h96/display-edid-real, off by default, set by
+    'h96-display edid real'): firmware parameter emptied, override reset,
+    kernel uses display EDID read over DDC; detect records its md5 as
+    kernel EDID identity; audio layouts, CEC address and boot arguments
+    follow.
+
+ -- Scrumpper <190908034+Scrumpper@users.noreply.github.com>  Wed, 21 Oct 2026 23:30:00 +0000
+
+h96-audio (8.0.0~r16) resolute; urgency=medium
+
+  * h96-audio-passthrough re-probes X display of active session; none in
+    Wayland session.
+
+ -- Scrumpper <190908034+Scrumpper@users.noreply.github.com>  Wed, 21 Oct 2026 22:00:00 +0000
+
+h96-audio (8.0.0~r15) resolute; urgency=medium
+
+  * h96-rfcomm.service drops copy of rfcomm.ko stash for kernel 6.1.115:
+    8.0 kernel builds rfcomm in tree; image no longer holds stash.
+
+ -- Scrumpper <190908034+Scrumpper@users.noreply.github.com>  Sun, 18 Oct 2026 23:45:00 +0000
+
+h96-audio (8.0.0~r14) resolute; urgency=medium
+
+  * Version bump with h96-base, h96-net and h96-tools changes.
+  * Manual page DESCRIPTION holds whole COMMANDS.md paragraph (was cut at
+    first line).
+
+ -- Scrumpper <190908034+Scrumpper@users.noreply.github.com>  Sun, 18 Oct 2026 23:30:00 +0000
+
+h96-audio (8.0.0~r13) resolute; urgency=medium
+
+  * Version bump with h96-base, h96-net, h96-desktop and h96-tools
+    changes; files unchanged apart from version in manual pages.
+
+ -- Scrumpper <190908034+Scrumpper@users.noreply.github.com>  Sun, 18 Oct 2026 23:00:00 +0000
+
+h96-audio (8.0.0~r12) resolute; urgency=medium
+
+  * Silence source and HDMI rule comments state rank limits: non-pro sinks
+    and capture devices 0 to 27; pro-audio sink outranks silence source.
+
+ -- Scrumpper <190908034+Scrumpper@users.noreply.github.com>  Sun, 18 Oct 2026 22:00:00 +0000
+
+h96-audio (8.0.0~r11) resolute; urgency=medium
+
+  * Silence source priority.session 1300 and HDMI sink priority.session
+    1200 (was 2001 and 2000): silence source ranks above monitors of
+    non-pro sinks and below non-pro ALSA capture devices 0 to 27 (UCM and
+    mono-fallback included) and Bluetooth capture; sink of card in
+    pro-audio profile ranks above it.
+  * Upgrade from 8.0.0~r9 keeps detection files outside their directories
+    while dpkg unpacks, so dpkg prints no directory removal warning.
+
+ -- Scrumpper <190908034+Scrumpper@users.noreply.github.com>  Sun, 18 Oct 2026 18:00:00 +0000
+
+h96-audio (8.0.0~r10) resolute; urgency=medium
+
+  * h96-hdmi.conf profile set and 51-h96-iec958.conf are seeds, outside
+    dpkg -V: audio detection rewrites them.
+  * Silence source priority.session 2001: chosen over sink monitors when a
+    Bluetooth mic disappears, still below Bluetooth, USB and analog
+    capture devices.
+  * Files that turned into seeds keep their content on upgrade from
+    earlier rounds.
+
+ -- Scrumpper <190908034+Scrumpper@users.noreply.github.com>  Sun, 18 Oct 2026 12:00:00 +0000
+
+h96-audio (8.0.0~r9) resolute; urgency=medium
+
+  * Fresh install warns about locally modified copies left in
+    /usr/local/bin or /usr/local/sbin; they precede packaged commands in
+    PATH.
+
+ -- Scrumpper <190908034+Scrumpper@users.noreply.github.com>  Sat, 17 Oct 2026 22:00:00 +0000
+
+h96-audio (8.0.0~r8) resolute; urgency=medium
+
+  * Packaged files moved out of /usr/local and /opt: commands to /usr/bin
+    and /usr/sbin, helpers and payloads to /usr/lib/h96, data to
+    /usr/share/h96, units to /usr/lib/systemd/system, udev rules to
+    /usr/lib/udev/rules.d; every reference rewritten. Fresh install over
+    an image that holds the old copies moves exact old copies aside and
+    deletes them at configure; a failed install restores them.
+  * Manual pages for each command; Documentation key on each unit.
+
+ -- Scrumpper <190908034+Scrumpper@users.noreply.github.com>  Sat, 17 Oct 2026 18:00:00 +0000
+
+h96-audio (8.0.0~alpha2) resolute; urgency=medium
+
+  * h96-bt-loopback from repo branch armbian-8.0 (python heredoc on fd 3,
+    SC2259).
+
+ -- H96 MAX V58 Unofficial Armbian <h96-max-v58@noreply.invalid>  Sat, 17 Oct 2026 12:00:00 +0000
+
+h96-audio (8.0.0~alpha1) resolute; urgency=medium
+
+  * Initial packaging of v7.2 h96 userland; files kept at v7.2 paths,
+    /usr/local kept; enablement as on v7.2.
+
+ -- H96 MAX V58 Unofficial Armbian <h96-max-v58@noreply.invalid>  Fri, 16 Oct 2026 12:00:00 +0000

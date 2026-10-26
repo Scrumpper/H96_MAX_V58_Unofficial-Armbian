@@ -1,0 +1,4 @@
+Types: deb
+URIs: file:/opt/h96-pkgs/
+Suites: ./
+Signed-By: /usr/share/keyrings/h96-local-archive-keyring.gpg

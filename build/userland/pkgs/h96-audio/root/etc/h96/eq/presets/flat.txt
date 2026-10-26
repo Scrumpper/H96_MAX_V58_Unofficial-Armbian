@@ -1,0 +1,2 @@
+# Flat: no gain applied. EQ sink exists only while EQ is on.
+Preamp: 0 dB

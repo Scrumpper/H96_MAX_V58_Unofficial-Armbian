@@ -1,0 +1,2 @@
+/etc/sudoers.d/h96-perf
+/etc/sysctl.d/zz-h96-perf.conf

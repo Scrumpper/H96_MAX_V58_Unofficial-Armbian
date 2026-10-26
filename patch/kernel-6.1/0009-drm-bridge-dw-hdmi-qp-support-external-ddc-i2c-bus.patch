@@ -1,0 +1,63 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: H96 build <builder@h96-build>
+Date: Fri, 16 Oct 2026 00:00:00 +0000
+Subject: [PATCH 09/20] drm/bridge: dw-hdmi-qp: support external ddc-i2c-bus
+
+With a ddc-i2c-bus phandle, hdmi->i2c is NULL and the main hardirq
+dereferenced it unconditionally. Complete the internal I2CM only when
+it exists; otherwise just clear the I2CM interrupt bits. Probe logs
+the external adapter name.
+
+Gated by DT: active only with ddc-i2c-bus on the HDMI node.
+
+H96 series: 8510ec1ef / c30b450cd.
+---
+ drivers/gpu/drm/bridge/synopsys/dw-hdmi-qp.c | 21 +++++++++++++-------
+ 1 file changed, 14 insertions(+), 7 deletions(-)
+
+diff --git a/drivers/gpu/drm/bridge/synopsys/dw-hdmi-qp.c b/drivers/gpu/drm/bridge/synopsys/dw-hdmi-qp.c
+index c80ef42c3..a91ee8d38 100644
+--- a/drivers/gpu/drm/bridge/synopsys/dw-hdmi-qp.c
++++ b/drivers/gpu/drm/bridge/synopsys/dw-hdmi-qp.c
+@@ -4337,8 +4337,18 @@ static irqreturn_t dw_hdmi_qp_main_hardirq(int irq, void *dev_id)
+ 
+ 	stat = hdmi_readl(hdmi, MAINUNIT_1_INT_STATUS);
+ 
+-	i2c->stat = stat & (I2CM_OP_DONE_IRQ | I2CM_READ_REQUEST_IRQ |
+-			    I2CM_NACK_RCVD_IRQ);
++	/* external ddc-i2c-bus: no internal I2CM state to complete */
++	if (i2c) {
++		i2c->stat = stat & (I2CM_OP_DONE_IRQ | I2CM_READ_REQUEST_IRQ |
++				    I2CM_NACK_RCVD_IRQ);
++		if (i2c->stat) {
++			hdmi_writel(hdmi, i2c->stat, MAINUNIT_1_INT_CLEAR);
++			complete(&i2c->cmp);
++		}
++	} else if (stat & (I2CM_OP_DONE_IRQ | I2CM_READ_REQUEST_IRQ | I2CM_NACK_RCVD_IRQ)) {
++		hdmi_writel(hdmi, stat & (I2CM_OP_DONE_IRQ | I2CM_READ_REQUEST_IRQ |
++					  I2CM_NACK_RCVD_IRQ), MAINUNIT_1_INT_CLEAR);
++	}
+ 	hdmi->scdc_intr = stat & (SCDC_UPD_FLAGS_RD_IRQ |
+ 				  SCDC_UPD_FLAGS_CHG_IRQ |
+ 				  SCDC_UPD_FLAGS_CLR_IRQ |
+@@ -4349,10 +4359,6 @@ static irqreturn_t dw_hdmi_qp_main_hardirq(int irq, void *dev_id)
+ 				 FLT_EXIT_TO_LTSL_IRQ);
+ 
+ 	dev_dbg(hdmi->dev, "i2c main unit irq:%#x\n", stat);
+-	if (i2c->stat) {
+-		hdmi_writel(hdmi, i2c->stat, MAINUNIT_1_INT_CLEAR);
+-		complete(&i2c->cmp);
+-	}
+ 
+ 	if (hdmi->flt_intr) {
+ 		dev_dbg(hdmi->dev, "i2c flt irq:%#x\n", hdmi->flt_intr);
+@@ -5131,7 +5137,8 @@ static struct dw_hdmi_qp *dw_hdmi_qp_probe(struct platform_device *pdev,
+ 			dev_dbg(hdmi->dev, "failed to read ddc node\n");
+ 			return ERR_PTR(-EPROBE_DEFER);
+ 		}
+-
++		/* EDID and drm_scdc_* go through this adapter, internal I2CM stays idle */
++		dev_info(hdmi->dev, "external DDC adapter %s\n", hdmi->ddc->name);
+ 	} else {
+ 		dev_dbg(hdmi->dev, "no ddc property found\n");
+ 	}

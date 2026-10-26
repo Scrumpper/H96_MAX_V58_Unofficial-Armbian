@@ -1,0 +1,11 @@
+[Unit]
+Description=H96 Max V58 — weekly yt-dlp refresh
+
+[Timer]
+OnCalendar=weekly
+# Boxes are off most of the time; run a missed update shortly after boot.
+Persistent=true
+RandomizedDelaySec=1h
+
+[Install]
+WantedBy=timers.target

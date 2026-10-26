@@ -1,0 +1,10 @@
+[Unit]
+ConditionPathExists=!/var/lib/h96-gnome-configure-done
+Description=Watch for gdm3 installation (armbian-config GNOME install)
+
+[Path]
+PathExists=/usr/sbin/gdm3
+Unit=h96-gnome-configure.service
+
+[Install]
+WantedBy=multi-user.target

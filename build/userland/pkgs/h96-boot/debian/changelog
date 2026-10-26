@@ -1,0 +1,260 @@
+h96-boot (8.0.0~r39) resolute; urgency=medium
+
+  * Version bump with h96-audio and h96-base changes; files unchanged
+    apart from version in manual pages.
+
+ -- Scrumpper <190908034+Scrumpper@users.noreply.github.com>  Tue, 27 Oct 2026 00:00:00 +0000
+
+h96-boot (8.0.0~r38) resolute; urgency=medium
+
+  * Version bump with h96-base change; files unchanged apart from version.
+
+ -- Scrumpper <190908034+Scrumpper@users.noreply.github.com>  Mon, 26 Oct 2026 18:00:00 +0000
+
+h96-boot (8.0.0~r37) resolute; urgency=medium
+
+  * Version bump with h96-base change; files unchanged apart from version.
+
+ -- Scrumpper <190908034+Scrumpper@users.noreply.github.com>  Mon, 26 Oct 2026 12:00:00 +0000
+
+h96-boot (8.0.0~r36) resolute; urgency=medium
+
+  * Version bump with h96-tools and h96-base changes; files unchanged
+    apart from version.
+
+ -- Scrumpper <190908034+Scrumpper@users.noreply.github.com>  Mon, 26 Oct 2026 06:00:00 +0000
+
+h96-boot (8.0.0~r35) resolute; urgency=medium
+
+  * Version bump with h96-base documentation change; files unchanged apart
+    from version.
+
+ -- Scrumpper <190908034+Scrumpper@users.noreply.github.com>  Mon, 26 Oct 2026 00:00:00 +0000
+
+h96-boot (8.0.0~r34) resolute; urgency=medium
+
+  * Version bump with h96-media and h96-tools changes; files unchanged
+    apart from version.
+
+ -- Scrumpper <190908034+Scrumpper@users.noreply.github.com>  Sun, 25 Oct 2026 18:00:00 +0000
+
+h96-boot (8.0.0~r33) resolute; urgency=medium
+
+  * Version bump with h96-media and h96-base changes; files unchanged
+    apart from version.
+
+ -- Scrumpper <190908034+Scrumpper@users.noreply.github.com>  Sun, 25 Oct 2026 12:00:00 +0000
+
+h96-boot (8.0.0~r32) resolute; urgency=medium
+
+  * Version bump with h96-base documentation change; files unchanged apart
+    from version.
+
+ -- Scrumpper <190908034+Scrumpper@users.noreply.github.com>  Sun, 25 Oct 2026 06:00:00 +0000
+
+h96-boot (8.0.0~r31) resolute; urgency=medium
+
+  * Version bump with h96-base documentation change; files unchanged apart
+    from version.
+
+ -- Scrumpper <190908034+Scrumpper@users.noreply.github.com>  Sun, 25 Oct 2026 00:00:00 +0000
+
+h96-boot (8.0.0~r30) resolute; urgency=medium
+
+  * Version bump with h96-audio change; files unchanged apart from
+    version.
+
+ -- Scrumpper <190908034+Scrumpper@users.noreply.github.com>  Sat, 24 Oct 2026 18:00:00 +0000
+
+h96-boot (8.0.0~r29) resolute; urgency=medium
+
+  * Manual page headers name public release 8.0 instead of package
+    version.
+
+ -- Scrumpper <190908034+Scrumpper@users.noreply.github.com>  Sat, 24 Oct 2026 12:00:00 +0000
+
+h96-boot (8.0.0~r28) resolute; urgency=medium
+
+  * Version bump with h96-media, h96-audio and h96-base changes; files
+    unchanged apart from version in manual pages.
+
+ -- Scrumpper <190908034+Scrumpper@users.noreply.github.com>  Sat, 24 Oct 2026 06:00:00 +0000
+
+h96-boot (8.0.0~r27) resolute; urgency=medium
+
+  * Version bump with h96-base change; files unchanged apart from version
+    in manual pages.
+
+ -- Scrumpper <190908034+Scrumpper@users.noreply.github.com>  Fri, 23 Oct 2026 20:00:00 +0000
+
+h96-boot (8.0.0~r26) resolute; urgency=medium
+
+  * Version bump with h96-net, h96-base and h96-gaming changes; files
+    unchanged apart from version in manual pages.
+
+ -- Scrumpper <190908034+Scrumpper@users.noreply.github.com>  Fri, 23 Oct 2026 15:00:00 +0000
+
+h96-boot (8.0.0~r25) resolute; urgency=medium
+
+  * Version bump with h96-base, h96-gaming and h96-desktop changes;
+    version aligned with h96-vulkan-wsi 8.0.0~r25; files unchanged apart
+    from version in manual pages.
+
+ -- Scrumpper <190908034+Scrumpper@users.noreply.github.com>  Fri, 23 Oct 2026 09:00:00 +0000
+
+h96-boot (8.0.0~r24) resolute; urgency=medium
+
+  * Version bump with h96-desktop, h96-media, h96-audio, h96-gaming and
+    h96-base changes; files unchanged apart from version in manual pages.
+
+ -- Scrumpper <190908034+Scrumpper@users.noreply.github.com>  Fri, 23 Oct 2026 03:00:00 +0000
+
+h96-boot (8.0.0~r23) resolute; urgency=medium
+
+  * Version bump with h96-desktop, h96-media and h96-base changes; files
+    unchanged apart from version in manual pages.
+
+ -- Scrumpper <190908034+Scrumpper@users.noreply.github.com>  Thu, 22 Oct 2026 21:00:00 +0000
+
+h96-boot (8.0.0~r22) resolute; urgency=medium
+
+  * Version bump with h96-desktop, h96-gaming, h96-net, h96-audio,
+    h96-media, h96-tools and h96-base changes; files unchanged apart from
+    version in manual pages.
+
+ -- Scrumpper <190908034+Scrumpper@users.noreply.github.com>  Thu, 22 Oct 2026 18:00:00 +0000
+
+h96-boot (8.0.0~r21) resolute; urgency=medium
+
+  * Version bump with h96-desktop and h96-base changes; files unchanged
+    apart from version in manual pages.
+
+ -- Scrumpper <190908034+Scrumpper@users.noreply.github.com>  Thu, 22 Oct 2026 12:00:00 +0000
+
+h96-boot (8.0.0~r20) resolute; urgency=medium
+
+  * Version bump with h96-media and h96-base changes; files unchanged
+    apart from version in manual pages.
+
+ -- Scrumpper <190908034+Scrumpper@users.noreply.github.com>  Thu, 22 Oct 2026 09:00:00 +0000
+
+h96-boot (8.0.0~r19) resolute; urgency=medium
+
+  * Version bump with h96-desktop, h96-audio, h96-media and h96-base
+    changes; files unchanged apart from version in manual pages.
+
+ -- Scrumpper <190908034+Scrumpper@users.noreply.github.com>  Thu, 22 Oct 2026 06:00:00 +0000
+
+h96-boot (8.0.0~r18) resolute; urgency=medium
+
+  * Version bump with h96-media change; files unchanged apart from version
+    in manual pages.
+
+ -- Scrumpper <190908034+Scrumpper@users.noreply.github.com>  Thu, 22 Oct 2026 03:00:00 +0000
+
+h96-boot (8.0.0~r17) resolute; urgency=medium
+
+  * Version bump with h96-audio, h96-desktop and h96-base changes; files
+    unchanged apart from version in manual pages.
+
+ -- Scrumpper <190908034+Scrumpper@users.noreply.github.com>  Wed, 21 Oct 2026 23:30:00 +0000
+
+h96-boot (8.0.0~r16) resolute; urgency=medium
+
+  * Version bump with h96-base, h96-desktop, h96-audio, h96-media,
+    h96-tools and h96-gaming changes; files unchanged apart from version
+    in manual pages.
+
+ -- Scrumpper <190908034+Scrumpper@users.noreply.github.com>  Wed, 21 Oct 2026 22:00:00 +0000
+
+h96-boot (8.0.0~r15) resolute; urgency=medium
+
+  * Manual page NAME of h96-armbian-update-guard holds first sentence of
+    description (was path only).
+
+ -- Scrumpper <190908034+Scrumpper@users.noreply.github.com>  Sun, 18 Oct 2026 23:45:00 +0000
+
+h96-boot (8.0.0~r14) resolute; urgency=medium
+
+  * Version bump with h96-base, h96-net and h96-tools changes.
+  * Manual page DESCRIPTION holds whole COMMANDS.md paragraph (was cut at
+    first line).
+
+ -- Scrumpper <190908034+Scrumpper@users.noreply.github.com>  Sun, 18 Oct 2026 23:30:00 +0000
+
+h96-boot (8.0.0~r13) resolute; urgency=medium
+
+  * Version bump with h96-base, h96-net, h96-desktop and h96-tools
+    changes; files unchanged apart from version in manual pages.
+
+ -- Scrumpper <190908034+Scrumpper@users.noreply.github.com>  Sun, 18 Oct 2026 23:00:00 +0000
+
+h96-boot (8.0.0~r12) resolute; urgency=medium
+
+  * Version bump with h96-base, h96-audio, h96-desktop, h96-gaming and
+    h96-tools changes; files unchanged apart from version in manual pages.
+
+ -- Scrumpper <190908034+Scrumpper@users.noreply.github.com>  Sun, 18 Oct 2026 22:00:00 +0000
+
+h96-boot (8.0.0~r11) resolute; urgency=medium
+
+  * Upgrade from 8.0.0~r9 keeps h96-sink-audio.bin under
+    /var/lib/h96/seed-keep while dpkg unpacks.
+
+ -- Scrumpper <190908034+Scrumpper@users.noreply.github.com>  Sun, 18 Oct 2026 18:00:00 +0000
+
+h96-boot (8.0.0~r10) resolute; urgency=medium
+
+  * /usr/lib/firmware/edid/h96-sink-audio.bin is a seed, outside dpkg -V:
+    audio detection rewrites it.
+  * Files that turned into seeds keep their content on upgrade from
+    earlier rounds.
+
+ -- Scrumpper <190908034+Scrumpper@users.noreply.github.com>  Sun, 18 Oct 2026 12:00:00 +0000
+
+h96-boot (8.0.0~r9) resolute; urgency=medium
+
+  * Boot pin comment names kernel and DTB packages staged in
+    /usr/lib/h96-kernel.
+  * Fresh install warns about locally modified copies left in
+    /usr/local/bin or /usr/local/sbin; they precede packaged commands in
+    PATH.
+
+ -- Scrumpper <190908034+Scrumpper@users.noreply.github.com>  Sat, 17 Oct 2026 22:00:00 +0000
+
+h96-boot (8.0.0~r8) resolute; urgency=medium
+
+  * Packaged files moved out of /usr/local and /opt: commands to /usr/bin
+    and /usr/sbin, helpers and payloads to /usr/lib/h96, data to
+    /usr/share/h96, units to /usr/lib/systemd/system, udev rules to
+    /usr/lib/udev/rules.d; every reference rewritten. Fresh install over
+    an image that holds the old copies moves exact old copies aside and
+    deletes them at configure; a failed install restores them.
+  * Manual pages for each command; Documentation key on each unit.
+  * Panthor switch tooling of the vendor kernel era dropped
+    (h96-panthor-setup.service, first-boot, deploy, userspace and verify
+    scripts, firmware copy under /opt/panthor); kernel package is
+    Panthor-native. panthor-revert.sh (GPU driver off) kept under
+    /usr/lib/h96/panthor. Old unit copy and enable link moved aside on
+    fresh install.
+
+ -- Scrumpper <190908034+Scrumpper@users.noreply.github.com>  Sat, 17 Oct 2026 18:00:00 +0000
+
+h96-boot (8.0.0~alpha2) resolute; urgency=medium
+
+  * Fresh install over v7.2 files drops v7.2 copy of
+    h96-panthor-setup.service (exact v7.2 bytes) and its
+    multi-user.target.wants link, so gated unit installs without conffile
+    prompt and stays disabled; failed install restores both.
+
+ -- H96 MAX V58 Unofficial Armbian <h96-max-v58@noreply.invalid>  Sat, 17 Oct 2026 12:00:00 +0000
+
+h96-boot (8.0.0~alpha1) resolute; urgency=medium
+
+  * Initial packaging of v7.2 h96 userland; files kept at v7.2 paths,
+    /usr/local kept; enablement as on v7.2.
+  * h96-panthor-setup.service installed disabled and gated on /opt/panthor
+    kernel files.
+  * Firmware diversion covers /lib/firmware path and its /usr/lib alias.
+
+ -- H96 MAX V58 Unofficial Armbian <h96-max-v58@noreply.invalid>  Fri, 16 Oct 2026 12:00:00 +0000

@@ -1,0 +1,7 @@
+[Unit]
+Documentation=file:/usr/share/doc/h96-base/COMMANDS.md
+Description=H96 undo desktop setup after desktop removal
+
+[Service]
+Type=oneshot
+ExecStart=/usr/sbin/h96-desktop-cleanup --run

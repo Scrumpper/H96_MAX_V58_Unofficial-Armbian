@@ -1,0 +1,14 @@
+[Unit]
+Description=H96 Wake-on-LAN magic packet on eth0 (h96-wol on)
+Documentation=file:/usr/share/doc/h96-base/COMMANDS.md
+# started by eth0 device when it appears; boot never waits for absent eth0
+After=sys-subsystem-net-devices-eth0.device
+ConditionPathExists=/sys/class/net/eth0
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/sbin/ethtool -s eth0 wol g
+
+[Install]
+WantedBy=sys-subsystem-net-devices-eth0.device

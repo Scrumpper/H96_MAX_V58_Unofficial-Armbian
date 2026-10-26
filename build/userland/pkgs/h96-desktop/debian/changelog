@@ -1,0 +1,296 @@
+h96-desktop (8.0.0~r39) resolute; urgency=medium
+
+  * Version bump with h96-audio and h96-base changes; files unchanged
+    apart from version in manual pages.
+
+ -- Scrumpper <190908034+Scrumpper@users.noreply.github.com>  Tue, 27 Oct 2026 00:00:00 +0000
+
+h96-desktop (8.0.0~r38) resolute; urgency=medium
+
+  * Version bump with h96-base change; files unchanged apart from version.
+
+ -- Scrumpper <190908034+Scrumpper@users.noreply.github.com>  Mon, 26 Oct 2026 18:00:00 +0000
+
+h96-desktop (8.0.0~r37) resolute; urgency=medium
+
+  * Version bump with h96-base change; files unchanged apart from version.
+
+ -- Scrumpper <190908034+Scrumpper@users.noreply.github.com>  Mon, 26 Oct 2026 12:00:00 +0000
+
+h96-desktop (8.0.0~r36) resolute; urgency=medium
+
+  * Version bump with h96-tools and h96-base changes; files unchanged
+    apart from version.
+
+ -- Scrumpper <190908034+Scrumpper@users.noreply.github.com>  Mon, 26 Oct 2026 06:00:00 +0000
+
+h96-desktop (8.0.0~r35) resolute; urgency=medium
+
+  * Version bump with h96-base documentation change; files unchanged apart
+    from version.
+
+ -- Scrumpper <190908034+Scrumpper@users.noreply.github.com>  Mon, 26 Oct 2026 00:00:00 +0000
+
+h96-desktop (8.0.0~r34) resolute; urgency=medium
+
+  * Version bump with h96-media and h96-tools changes; files unchanged
+    apart from version.
+
+ -- Scrumpper <190908034+Scrumpper@users.noreply.github.com>  Sun, 25 Oct 2026 18:00:00 +0000
+
+h96-desktop (8.0.0~r33) resolute; urgency=medium
+
+  * Version bump with h96-media and h96-base changes; files unchanged
+    apart from version.
+
+ -- Scrumpper <190908034+Scrumpper@users.noreply.github.com>  Sun, 25 Oct 2026 12:00:00 +0000
+
+h96-desktop (8.0.0~r32) resolute; urgency=medium
+
+  * Version bump with h96-base documentation change; files unchanged apart
+    from version.
+
+ -- Scrumpper <190908034+Scrumpper@users.noreply.github.com>  Sun, 25 Oct 2026 06:00:00 +0000
+
+h96-desktop (8.0.0~r31) resolute; urgency=medium
+
+  * Version bump with h96-base documentation change; files unchanged apart
+    from version.
+
+ -- Scrumpper <190908034+Scrumpper@users.noreply.github.com>  Sun, 25 Oct 2026 00:00:00 +0000
+
+h96-desktop (8.0.0~r30) resolute; urgency=medium
+
+  * Version bump with h96-audio change; files unchanged apart from
+    version.
+
+ -- Scrumpper <190908034+Scrumpper@users.noreply.github.com>  Sat, 24 Oct 2026 18:00:00 +0000
+
+h96-desktop (8.0.0~r29) resolute; urgency=medium
+
+  * Manual page headers name public release 8.0 instead of package
+    version.
+
+ -- Scrumpper <190908034+Scrumpper@users.noreply.github.com>  Sat, 24 Oct 2026 12:00:00 +0000
+
+h96-desktop (8.0.0~r28) resolute; urgency=medium
+
+  * Version bump with h96-media, h96-audio and h96-base changes; files
+    unchanged apart from version in manual pages.
+
+ -- Scrumpper <190908034+Scrumpper@users.noreply.github.com>  Sat, 24 Oct 2026 06:00:00 +0000
+
+h96-desktop (8.0.0~r27) resolute; urgency=medium
+
+  * Version bump with h96-base change; files unchanged apart from version
+    in manual pages.
+
+ -- Scrumpper <190908034+Scrumpper@users.noreply.github.com>  Fri, 23 Oct 2026 20:00:00 +0000
+
+h96-desktop (8.0.0~r26) resolute; urgency=medium
+
+  * Version bump with h96-net, h96-base and h96-gaming changes; files
+    unchanged apart from version in manual pages.
+
+ -- Scrumpper <190908034+Scrumpper@users.noreply.github.com>  Fri, 23 Oct 2026 15:00:00 +0000
+
+h96-desktop (8.0.0~r25) resolute; urgency=medium
+
+  * h96-display range in Plasma Wayland session prints notice and changes
+    nothing (KWin exposes no RGB range on HDMI-A-1 under kernel 6.12);
+    range status and h96-display status name it.
+
+ -- Scrumpper <190908034+Scrumpper@users.noreply.github.com>  Fri, 23 Oct 2026 09:00:00 +0000
+
+h96-desktop (8.0.0~r24) resolute; urgency=medium
+
+  * h96-autologin-setup --session plasma|plasmax11 selects autologin
+    session; plasmax11 stays default, plasma (Plasma Wayland) is
+    experimental. --status names Plasma Wayland.
+  * Plasma Wayland session: h96-display range applies through KWin
+    (kscreen-doctor rgbrange), colour format through kernel EDID; status
+    names session and kernel EDID source; display wake asks KWin for DPMS
+    on instead of X modeset. X11 paths unchanged.
+
+ -- Scrumpper <190908034+Scrumpper@users.noreply.github.com>  Fri, 23 Oct 2026 03:00:00 +0000
+
+h96-desktop (8.0.0~r23) resolute; urgency=medium
+
+  * Merged kernel EDID keeps display's VRR range blocks (AMD FreeSync
+    VSDB, HDMI 2.1 VRR bytes) by default, so vrr_capable reads 1 on VRR
+    display; /etc/h96/display-vrr-blocks.off drops them. Display without
+    VRR blocks: kernel EDID bytes unchanged.
+  * h96-vrr on/off switches only Xorg VariableRefresh option and its flag;
+    status names EDID VRR blocks.
+
+ -- Scrumpper <190908034+Scrumpper@users.noreply.github.com>  Thu, 22 Oct 2026 21:00:00 +0000
+
+h96-desktop (8.0.0~r22) resolute; urgency=medium
+
+  * Display wake (hotplug and keypress) waits up to 8 s for HDMI output to
+    return on its own and re-drives only when output stays connected but
+    disabled; each decision logged. Re-drive after long screen-off dropped
+    RandR output and Steam client exited.
+  * Upgrade restarts running h96-scdc and h96-display-wake daemons.
+
+ -- Scrumpper <190908034+Scrumpper@users.noreply.github.com>  Thu, 22 Oct 2026 18:00:00 +0000
+
+h96-desktop (8.0.0~r21) resolute; urgency=medium
+
+  * h96-display status: RGB range select note prints on 6.12 kernel.
+    Kernel EDID file in sysfs reports size 0 although readable, so range
+    select check skipped it and note never printed; check now reads file
+    and needs at least one EDID block.
+
+ -- Scrumpper <190908034+Scrumpper@users.noreply.github.com>  Thu, 22 Oct 2026 12:00:00 +0000
+
+h96-desktop (8.0.0~r20) resolute; urgency=medium
+
+  * Version bump with h96-media and h96-base changes; files unchanged
+    apart from version in manual pages.
+
+ -- Scrumpper <190908034+Scrumpper@users.noreply.github.com>  Thu, 22 Oct 2026 09:00:00 +0000
+
+h96-desktop (8.0.0~r19) resolute; urgency=medium
+
+  * Upgrade restarts running h96-power-profiles daemon (try-restart): new
+    profile code applied without reboot (earlier upgrades left old daemon
+    running until reboot).
+  * h96-display status 'wire:' range is quantization range sent to display
+    (HDMI controller status; VOP2 field only when status has none). When
+    kernel EDID lists no RGB range select, line notes that 6.12 driver
+    sends display default and range setting is not applied.
+  * h96-vrr: HDMI variable refresh switch, off by default, experimental
+    (blanking seen on some displays). 'on' runs display detect with VRR
+    first and changes switch files only after detect succeeds; Xorg
+    VariableRefresh snippet in /usr/share/h96/xorg.
+  * edid_merge.py keeps display FreeSync range block and HDMI 2.1 VRR
+    range in kernel EDID while /etc/h96/display-vrr.on exists (h96-vrr
+    on); off: bytes as before.
+
+ -- Scrumpper <190908034+Scrumpper@users.noreply.github.com>  Thu, 22 Oct 2026 06:00:00 +0000
+
+h96-desktop (8.0.0~r18) resolute; urgency=medium
+
+  * Version bump with h96-media change; files unchanged apart from version
+    in manual pages.
+
+ -- Scrumpper <190908034+Scrumpper@users.noreply.github.com>  Thu, 22 Oct 2026 03:00:00 +0000
+
+h96-desktop (8.0.0~r17) resolute; urgency=medium
+
+  * h96-display edid merged|real|status: kernel EDID built by detect
+    (default) or display EDID unchanged.
+
+ -- Scrumpper <190908034+Scrumpper@users.noreply.github.com>  Wed, 21 Oct 2026 23:30:00 +0000
+
+h96-desktop (8.0.0~r16) resolute; urgency=medium
+
+  * h96-display, h96-display-wake.sh and h96-scdc use display of active
+    session (Xorg on :1 after Wayland session in same boot broke them);
+    behaviour on :0 unchanged.
+  * h96-scale in Plasma Wayland session sets output scale through
+    kscreen-doctor and reads it back; exits 1 when scale did not change
+    (wrote X11 settings only and reported success).
+  * h96-scdc set-mode passes Wayland socket to kscreen-doctor, skips
+    xrandr fallback on Wayland and prints reason on failure, so
+    h96-display revert no longer exits 1 without message.
+  * Power-saver profile: schedutil on all clusters, CPU floor 408 MHz, big
+    cores capped at 1800 MHz, little cores at 1416 MHz (was powersave
+    governor pinned at 408 MHz, which dropped frames at 4K60); GPU range
+    and deep idle unchanged.
+  * DDR frequency scaling (6.12 kernel, dmc devfreq): performance profile
+    pins DDR floor at its top rate, balanced and power-saver restore
+    lowest rate; skipped where kernel has no dmc node.
+
+ -- Scrumpper <190908034+Scrumpper@users.noreply.github.com>  Wed, 21 Oct 2026 22:00:00 +0000
+
+h96-desktop (8.0.0~r15) resolute; urgency=medium
+
+  * Version bump with h96-audio, h96-boot, h96-media and h96-tools
+    changes; files unchanged apart from version in manual pages.
+
+ -- Scrumpper <190908034+Scrumpper@users.noreply.github.com>  Sun, 18 Oct 2026 23:45:00 +0000
+
+h96-desktop (8.0.0~r14) resolute; urgency=medium
+
+  * Version bump with h96-base, h96-net and h96-tools changes.
+  * Manual page DESCRIPTION holds whole COMMANDS.md paragraph (was cut at
+    first line).
+
+ -- Scrumpper <190908034+Scrumpper@users.noreply.github.com>  Sun, 18 Oct 2026 23:30:00 +0000
+
+h96-desktop (8.0.0~r13) resolute; urgency=medium
+
+  * Desktop fixup writes files only when content differs (polkit rule,
+    WiFi tray entries, DiscoverNotifier overrides, HDMI default-nodes,
+    lxqt-sudo overrides); polkit restarts only after rule change.
+
+ -- Scrumpper <190908034+Scrumpper@users.noreply.github.com>  Sun, 18 Oct 2026 23:00:00 +0000
+
+h96-desktop (8.0.0~r12) resolute; urgency=medium
+
+  * Desktop fixup no longer writes 20-h96-hdmi-audio.conf (h96-audio
+    conffile): first desktop install kept v7.2 HDMI priority.session 2000,
+    which outranked silence source and microphones.
+  * Desktop fixup polkit rule and LightDM configure Xorg file equal
+    packaged seed text.
+
+ -- Scrumpper <190908034+Scrumpper@users.noreply.github.com>  Sun, 18 Oct 2026 22:00:00 +0000
+
+h96-desktop (8.0.0~r11) resolute; urgency=medium
+
+  * Version bump with h96-base, h96-boot, h96-audio, h96-media and
+    h96-tools changes; files unchanged apart from version in manual pages.
+
+ -- Scrumpper <190908034+Scrumpper@users.noreply.github.com>  Sun, 18 Oct 2026 18:00:00 +0000
+
+h96-desktop (8.0.0~r10) resolute; urgency=medium
+
+  * h96-kde-configure skips install-time preset of masked
+    power-profiles-daemon (no error).
+
+ -- Scrumpper <190908034+Scrumpper@users.noreply.github.com>  Sun, 18 Oct 2026 12:00:00 +0000
+
+h96-desktop (8.0.0~r9) resolute; urgency=medium
+
+  * EDID reader built from source as dynamic executable with hardening
+    flags.
+  * Desktop fixup writes lxqt-sudo menu overrides per user, not under
+    /usr/local.
+  * Fresh install warns about locally modified copies left in
+    /usr/local/bin or /usr/local/sbin; they precede packaged commands in
+    PATH.
+
+ -- Scrumpper <190908034+Scrumpper@users.noreply.github.com>  Sat, 17 Oct 2026 22:00:00 +0000
+
+h96-desktop (8.0.0~r8) resolute; urgency=medium
+
+  * Packaged files moved out of /usr/local and /opt: commands to /usr/bin
+    and /usr/sbin, helpers and payloads to /usr/lib/h96, data to
+    /usr/share/h96, units to /usr/lib/systemd/system, udev rules to
+    /usr/lib/udev/rules.d; every reference rewritten. Fresh install over
+    an image that holds the old copies moves exact old copies aside and
+    deletes them at configure; a failed install restores them.
+  * Manual pages for each command; Documentation key on each unit.
+  * h96-kde-configure: kwin_x11 wrapper and libmali ld.so.conf diversions
+    removed (no vendor blob).
+  * h96-dm-handoff reads package install time with dpkg-query.
+  * GNOME Settings desktop entry diverts
+    /usr/share/applications/org.gnome.Settings.desktop.
+
+ -- Scrumpper <190908034+Scrumpper@users.noreply.github.com>  Sat, 17 Oct 2026 18:00:00 +0000
+
+h96-desktop (8.0.0~alpha2) resolute; urgency=medium
+
+  * Version bump with h96-base, h96-gaming and h96-audio changes; payload
+    unchanged.
+
+ -- H96 MAX V58 Unofficial Armbian <h96-max-v58@noreply.invalid>  Sat, 17 Oct 2026 12:00:00 +0000
+
+h96-desktop (8.0.0~alpha1) resolute; urgency=medium
+
+  * Initial packaging of v7.2 h96 userland; files kept at v7.2 paths,
+    /usr/local kept; enablement as on v7.2.
+
+ -- H96 MAX V58 Unofficial Armbian <h96-max-v58@noreply.invalid>  Fri, 16 Oct 2026 12:00:00 +0000

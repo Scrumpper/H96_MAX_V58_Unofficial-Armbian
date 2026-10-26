@@ -1,0 +1,544 @@
+#!/bin/bash
+# h96-hdr: HDR10 video. Desktop (KDE on X11): HDR10 tone-mapped to SDR in mpv. HDR display: play on a KMS VT.
+#
+#   tonemap       HDR10 -> SDR BT.709 in desktop mpv (vo=gpu-next, /etc/mpv/hdr.conf include)
+#   off           remove the tonemap include
+#   play FILE     HDR10 out: FILE full screen on a free VT (mpv KMS, /etc/mpv/hdr-kms.conf), q returns
+#   setup [off]   HDR display prep: VP0 overlay plane (h96-vp0-plane, next boot) + HDR EDID (h96-display hdr)
+#   passthrough   older verb: sets tonemap and points at play (X11 cannot carry HDR)
+
+set -uo pipefail
+
+[ -r /usr/lib/h96/banner.sh ] && . /usr/lib/h96/banner.sh
+command -v h96_banner >/dev/null 2>&1 || h96_banner() { :; }
+
+MPVDIR="${H96_HDR_MPVDIR:-/etc/mpv}"               # H96_HDR_*: selftest overrides
+CONF=$MPVDIR/mpv.conf
+DROPIN=$MPVDIR/hdr.conf
+KMSCONF=$MPVDIR/hdr-kms.conf
+BEGIN='# >>> h96-hdr >>>'
+END='# <<< h96-hdr <<<'
+ENV="${H96_HDR_BOOT_ENV:-/boot/armbianEnv.txt}"
+OVL_DIR="$(dirname "$ENV")/overlay-user"
+OVL=h96-vp0-plane
+ENV_LOCK="${H96_ENV_LOCK:-/run/lock/h96-armbianenv.lock}"   # shared armbianEnv writer lock
+CONN="${H96_HDR_CONN:-/sys/class/drm/card0-HDMI-A-1}"
+DT_VP0="${H96_HDR_DT:-/proc/device-tree}/vop@fdd90000/ports/port@0/rockchip,plane-mask"
+SUMMARY="${H96_HDR_SUMMARY:-/sys/kernel/debug/dri/0/summary}"
+RESET_SRC="${H96_HDR_RESET_SRC:-av://lavfi:color=black:s=640x360:d=0.1}"   # libavdevice lavfi in mpv
+DISP="${H96_DISPLAY:-/usr/sbin/h96-display}"
+SKIP_ROOT=0
+
+die() { echo "h96-hdr: $*" >&2; exit 1; }
+need_root() { [ "$SKIP_ROOT" = 1 ] || [ "$(id -u)" -eq 0 ] || die "that needs root (try: sudo h96-hdr $*)"; }
+
+is_on()  { [ -f "$CONF" ] && grep -qF "$BEGIN" "$CONF"; }
+
+current_mode() {  # tonemap / passthrough / custom / absent
+    [ -f "$DROPIN" ] || { echo "absent"; return; }
+    if grep -q '^# MODE: tonemap' "$DROPIN"; then echo "tonemap"
+    elif grep -q '^# MODE: passthrough' "$DROPIN"; then echo "passthrough"
+    else echo "custom"; fi
+}
+
+have_libplacebo() {
+    { command -v ldconfig >/dev/null 2>&1 && ldconfig -p 2>/dev/null | grep -qi 'libplacebo'; } && return 0
+    ls /usr/lib/*/libplacebo.so* >/dev/null 2>&1 && return 0
+    return 1
+}
+
+# mpv_check: 0 when mpv starts; otherwise MPV_ERR holds the reason
+mpv_check() {
+    MPV_ERR=""
+    command -v mpv >/dev/null 2>&1 || { MPV_ERR="mpv is not installed"; return 1; }
+    local out rc miss
+    out=$(timeout 15 mpv --no-config --version 2>&1); rc=$?
+    [ "$rc" -eq 0 ] && return 0
+    miss=$(ldd "$(command -v mpv)" 2>/dev/null | awk '/not found/{printf "%s ", $1}')
+    MPV_ERR="mpv does not start (exit $rc): $(printf '%s\n' "$out" | grep -m1 .)"
+    [ -n "$miss" ] && MPV_ERR="$MPV_ERR; missing libraries: ${miss% }"
+    MPV_ERR="$MPV_ERR; video setup log: /var/log/h96-video-setup.log"
+    return 1
+}
+
+# 0 listed, 1 not listed, 2 mpv missing or not starting (MPV_ERR set)
+have_gpu_next() {
+    mpv_check || return 2
+    mpv --vo=help 2>/dev/null | grep -qw 'gpu-next'
+}
+
+# --- tonemap drop-in (desktop mpv) ---
+
+write_tonemap() {
+    cat > "$DROPIN" <<'EOF'
+# /etc/mpv/hdr.conf -- managed by h96-hdr. Edits here are overwritten on toggle.
+# MODE: tonemap   HDR10 / BT.2020 PQ -> SDR BT.709   (desktop, X11)
+vo=gpu-next
+target-colorspace-hint=no
+target-prim=bt.709
+target-trc=bt.1886
+tone-mapping=bt.2390
+gamut-mapping-mode=perceptual
+# GLES 3.1 compute shader; comment out if 4K HDR playback stutters on the G610
+hdr-compute-peak=yes
+EOF
+    chmod 0644 "$DROPIN"
+}
+
+add_include() {
+    cp -a "$CONF" "$CONF.pre-h96-hdr"
+    {
+        printf '%s\n' "$BEGIN"
+        printf '# added by h96-hdr; remove with: sudo h96-hdr off\n'
+        printf 'include=%s\n' "$DROPIN"
+        printf '%s\n' "$END"
+    } >> "$CONF"
+}
+
+remove_include() {
+    cp -a "$CONF" "$CONF.pre-h96-hdr"
+    local b e
+    b=$(printf '%s' "$BEGIN" | sed 's/[]\/$*.^[]/\\&/g')
+    e=$(printf '%s' "$END"   | sed 's/[]\/$*.^[]/\\&/g')
+    sed -i "/$b/,/$e/d" "$CONF"
+}
+
+do_tonemap() {
+    need_root tonemap
+    [ -f "$CONF" ] || die "$CONF does not exist (is mpv installed? run h96-video-setup)"
+    have_gpu_next; case $? in
+        1) echo "h96-hdr: WARNING -- mpv does not list a 'gpu-next' vo here; run 'h96-hdr test' before relying on this" ;;
+        2) echo "h96-hdr: WARNING -- $MPV_ERR" ;;
+    esac
+    write_tonemap
+    is_on || add_include
+    echo "h96-hdr: tonemap enabled (HDR10 -> SDR). include added to $CONF"
+    echo "         backup at $CONF.pre-h96-hdr; restart mpv to apply"
+}
+
+do_passthrough() {  # X11 cannot carry HDR: older target-trc=pq drop-in replaced by tonemap
+    need_root passthrough
+    local was; was=$(current_mode)
+    do_tonemap
+    [ "$was" = passthrough ] && echo "h96-hdr: passthrough drop-in (target-trc=pq) replaced: wrong colours under X11"
+    echo
+    echo "  HDR10 output to an HDR display runs outside the desktop, on a text VT:"
+    echo "    sudo h96-hdr setup        once per box (VP0 overlay plane + HDR EDID; reboot)"
+    echo "    sudo h96-hdr play FILE    q returns to the desktop"
+}
+
+do_off() {
+    need_root off
+    is_on || { echo "h96-hdr: already off (no include in $CONF)"; exit 0; }
+    remove_include
+    echo "h96-hdr: off. include removed from $CONF (backup at $CONF.pre-h96-hdr)"
+    echo "         mpv reverts to its base config; restart mpv to apply"
+}
+
+# --- HDR display checks ---
+
+edid_has_pq() {  # $1 EDID file: 0 when a CTA HDR static metadata block lists SMPTE ST 2084
+    python3 - "$1" <<'PY'
+import sys
+try:
+    e = open(sys.argv[1], "rb").read()
+except OSError:
+    sys.exit(1)
+for i in range(128, len(e) - 127, 128):
+    b = e[i:i + 128]
+    if b[0] != 2:
+        continue
+    j, end = 4, b[2] if b[2] >= 4 else 4
+    while j < end:
+        tag, n = b[j] >> 5, b[j] & 31
+        if tag == 7 and n >= 2 and j + 2 < len(b) and b[j + 1] == 6 and b[j + 2] & 4:
+            sys.exit(0)
+        j += 1 + n
+sys.exit(1)
+PY
+}
+
+vp0_overlay_active() {  # running DT: VP0 plane mask 0x7 (Cluster1 added by h96-vp0-plane)
+    [ "$(od -An -tx1 "$DT_VP0" 2>/dev/null | tr -d ' \n')" = 00000007 ]
+}
+
+env_lists_ovl() { grep -E "^user_overlays=" "$ENV" 2>/dev/null | head -1 | tr ' =' '\n\n' | grep -qx "$OVL"; }
+
+hdr_active() {  # VOP2 VP0 in HDR: 0 yes, 1 no, 2 unknown (no debugfs)
+    [ -r "$SUMMARY" ] || return 2
+    sed -n '/Video Port0/,/Video Port1/p' "$SUMMARY" | grep -qE 'eotf\[2\]|hdr_type\[HDR' && return 0
+    return 1
+}
+
+parse_mode() {  # xrandr --current on stdin -> WxH@HZ of the first active mode
+    awk '/\*/ {for (i = 2; i <= NF; i++) if ($i ~ /\*/) {r = $i; gsub(/[*+]/, "", r)}; print $1 "@" r; exit}'
+}
+
+disp_has_hdr() { [ -x "$DISP" ] && "$DISP" --help 2>/dev/null | grep -qE '^ +hdr '; }
+
+# --- armbianEnv user_overlays (lock, tmp + fsync + rename + fsync /boot) ---
+
+env_overlay() {  # $1 on|off: 0 changed, 3 unchanged, 1 error
+    [ -f "$ENV" ] || { echo "h96-hdr: $ENV missing" >&2; return 1; }
+    (
+        flock -w 30 9 || { echo "h96-hdr: armbianEnv lock busy" >&2; exit 1; }
+        python3 - "$ENV" "$OVL" "$1" <<'PY'
+import os, sys
+path, name, mode = sys.argv[1:4]
+text = open(path).read()
+lines = text.split("\n")
+idx = next((i for i, l in enumerate(lines) if l.startswith("user_overlays=")), None)
+toks = lines[idx].split("=", 1)[1].split() if idx is not None else []
+if (name in toks) == (mode == "on"):
+    sys.exit(3)
+if mode == "on":
+    toks.append(name)
+else:
+    toks = [t for t in toks if t != name]
+if idx is None:
+    if lines and lines[-1] == "":
+        lines.insert(len(lines) - 1, f"user_overlays={name}")
+    else:
+        lines.append(f"user_overlays={name}")
+elif toks:
+    lines[idx] = "user_overlays=" + " ".join(toks)
+else:
+    del lines[idx]
+tmp = path + ".h96-hdr.tmp"
+with open(tmp, "w") as f:
+    f.write("\n".join(lines))
+    f.flush(); os.fsync(f.fileno())
+os.chmod(tmp, os.stat(path).st_mode & 0o7777)
+bak = path + ".pre-h96-hdr"
+with open(bak, "w") as f:
+    f.write(text); f.flush(); os.fsync(f.fileno())
+os.replace(tmp, path)
+fd = os.open(os.path.dirname(os.path.abspath(path)), os.O_RDONLY); os.fsync(fd); os.close(fd)
+PY
+    ) 9>"$ENV_LOCK"
+}
+
+do_setup() {
+    need_root setup
+    local rc
+    case "${1:-on}" in
+        on)
+            [ -r "$OVL_DIR/$OVL.dtbo" ] || die "$OVL_DIR/$OVL.dtbo missing"
+            env_overlay on; rc=$?
+            case $rc in
+                0) echo "h96-hdr: $OVL added to user_overlays in $ENV (previous copy: $ENV.pre-h96-hdr)" ;;
+                3) echo "h96-hdr: $OVL already in user_overlays" ;;
+                *) die "armbianEnv not changed" ;;
+            esac
+            if disp_has_hdr; then "$DISP" hdr on
+            else echo "h96-hdr: this h96-display has no 'hdr' setting: HDR EDID not switched"; fi
+            vp0_overlay_active || echo "h96-hdr: reboot to load the VP0 overlay plane; then: sudo h96-hdr play FILE" ;;
+        off)
+            env_overlay off; rc=$?
+            case $rc in
+                0) echo "h96-hdr: $OVL removed from user_overlays (previous copy: $ENV.pre-h96-hdr)" ;;
+                3) echo "h96-hdr: $OVL not in user_overlays" ;;
+                *) die "armbianEnv not changed" ;;
+            esac
+            disp_has_hdr && "$DISP" hdr off
+            vp0_overlay_active && echo "h96-hdr: reboot to return Cluster1 to VP1" ;;
+        *) die "usage: sudo h96-hdr setup [off]" ;;
+    esac
+    return 0
+}
+
+# --- play on a KMS VT ---
+
+find_vt() {  # free VT 8..20 (above logind autovt range), not the desktop VT
+    local used n st
+    used=$(for p in /proc/[0-9]*/fd/*; do readlink "$p" 2>/dev/null; done | grep -E '^/dev/tty[0-9]+$' | sort -u)
+    # VT_GETSTATE bitmask (VTs 1-15): openvt refuses an allocated VT even with no open fd
+    st=$(python3 -c 'import fcntl,struct;print(struct.unpack("HHH",fcntl.ioctl(open("/dev/tty0"),0x5603,b"\0"*6))[2])' 2>/dev/null || echo 0)
+    for n in $(seq 8 20); do
+        [ "$n" = "$XVT" ] && continue
+        [ -e "/dev/tty$n" ] || continue
+        printf '%s\n' "$used" | grep -qx "/dev/tty$n" && continue
+        [ "$n" -lt 16 ] && [ $(( st >> n & 1 )) = 1 ] && continue
+        echo "$n"; return 0
+    done
+    return 1
+}
+
+stop_player() {  # SIGTERM only: mpv restores SDR and the previous mode on exit
+    local p
+    for p in $(pgrep -t "tty$VT" -x mpv 2>/dev/null); do kill -TERM "$p" 2>/dev/null; done
+}
+
+on_signal() { STOPPING=1; stop_player; }
+
+wait_player() {  # wait for openvt (PLAYRC = its status); after a signal at most 20 s, never SIGKILL
+    local t=0 r
+    PLAYRC=0
+    while :; do
+        wait "$PLAYPID" 2>/dev/null; r=$?
+        kill -0 "$PLAYPID" 2>/dev/null || { PLAYRC=$r; return 0; }
+        if [ "$STOPPING" = 1 ]; then
+            t=$((t + 1)); [ "$t" -gt 20 ] && { echo "h96-hdr: mpv did not stop after SIGTERM (left running on VT $VT)" >&2; return 1; }
+            sleep 1
+        fi
+    done
+}
+
+run_on_vt() {  # $1 user (root = as is) $2.. command; background, PLAYPID set; -s switches (chvt first makes openvt refuse the VT)
+    if [ "$1" = root ]; then shift; openvt -s -c "$VT" -w -- "$@" &
+    else
+        local u=$1; shift
+        # session bus of target user, not caller's (root's address through runuser stalls mpv MPRIS plugin)
+        openvt -s -c "$VT" -w -- runuser -u "$u" -- env XDG_RUNTIME_DIR="/run/user/$(id -u "$u")" \
+            DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$(id -u "$u")/bus" \
+            HOME="$(getent passwd "$u" | cut -d: -f6)" "$@" &
+    fi
+    PLAYPID=$!
+}
+
+sdr_reset() {  # 1-frame SDR KMS run: SDR metadata + desktop mode
+    run_on_vt root mpv --no-config --vo=gpu --gpu-context=drm --gpu-api=opengl --drm-connector=HDMI-A-1 \
+        ${MODE:+--drm-mode="$MODE"} --hwdec=no --no-audio --frames=1 --really-quiet "$RESET_SRC"
+    wait_player
+}
+
+back_to_desktop() {
+    [ -n "${VT:-}" ] || return 0
+    [ -n "${XVT:-}" ] && chvt "$XVT" 2>/dev/null
+    deallocvt "$VT" 2>/dev/null || true
+    VT=""
+}
+
+do_play() {
+    need_root play
+    [ $# -ge 1 ] && [ -r "$1" ] || die "usage: sudo h96-hdr play FILE [MPV_OPTION...]"
+    local file sess cls start rc s log=()
+    file=$(readlink -f "$1"); shift
+    [ -r "$KMSCONF" ] || die "$KMSCONF missing"
+    edid_has_pq "$CONN/edid" || die "display EDID lists no HDR10 (PQ): HDR display on HDMI0 needed, then: sudo h96-hdr setup"
+    vp0_overlay_active || [ "${H96_HDR_FORCE:-0}" = 1 ] \
+        || die "VP0 overlay plane not active: sudo h96-hdr setup, then reboot"
+    mpv_check || die "$MPV_ERR"
+    sess=$(loginctl show-seat seat0 -p ActiveSession --value 2>/dev/null)
+    [ -n "$sess" ] || die "no active session on seat0"
+    cls=$(loginctl show-session "$sess" -p Class --value 2>/dev/null)
+    [ "$cls" = user ] || die "seat0 session $sess is '$cls', not a desktop login"
+    USR=$(loginctl show-session "$sess" -p Name --value)
+    XVT=$(loginctl show-session "$sess" -p VTNr --value 2>/dev/null)
+    [ -n "$XVT" ] && [ "$XVT" != 0 ] || XVT=$(fgconsole 2>/dev/null)
+    [ -n "$XVT" ] || die "cannot find the desktop VT"
+    runuser -u "$USR" -- test -r "$file" || die "$USR cannot read $file"
+    local xd xa=/var/run/lightdm/root/:0; xd=$(loginctl show-session "$sess" -p Display --value 2>/dev/null)
+    if [ -r /usr/lib/h96/h96-xdisplay ] && . /usr/lib/h96/h96-xdisplay && h96_xdisplay && [ -n "$H96_XD_DISPLAY" ]; then
+        xd="$H96_XD_DISPLAY"; xa="${H96_XD_XAUTH:-$xa}"
+    fi
+    MODE=$(env DISPLAY="${xd:-:0}" XAUTHORITY="$xa" xrandr --current 2>/dev/null | parse_mode)
+    VT=$(find_vt) || die "no free VT between 8 and 20"
+    [ -n "${H96_HDR_LOG:-}" ] && log=(--log-file="$H96_HDR_LOG")
+    STOPPING=0
+    trap on_signal TERM INT HUP
+    trap back_to_desktop EXIT
+    echo "h96-hdr: playing on VT $VT as $USR${MODE:+ at $MODE}; q returns to the desktop (VT $XVT)"
+    start=$(date +%s)
+    run_on_vt "$USR" mpv ${MODE:+--drm-mode="$MODE"} --include="$KMSCONF" "${log[@]}" "$@" -- "$file"
+    wait_player; rc=$PLAYRC
+    if [ "$STOPPING" = 0 ] && [ "$rc" != 0 ] && [ $(( $(date +%s) - start )) -lt 3 ] && [ "${MODE#*@}" != "$MODE" ]; then
+        MODE=${MODE%@*}            # quick failure: refresh rate not matched by mpv, retry WxH only
+        echo "h96-hdr: retry at $MODE"
+        run_on_vt "$USR" mpv --drm-mode="$MODE" --include="$KMSCONF" "${log[@]}" "$@" -- "$file"
+        wait_player; rc=$PLAYRC
+    fi
+    hdr_active; s=$?
+    if [ "$STOPPING" = 1 ] || [ "$s" != 1 ]; then
+        sdr_reset
+        hdr_active; s=$?
+    fi
+    case $s in 0) echo "h96-hdr: WARNING: VP0 still flagged HDR (see $SUMMARY)" >&2 ;;
+               1) echo "h96-hdr: SDR restored" ;;
+               *) echo "h96-hdr: SDR reset run (debugfs not readable, state unknown)" ;; esac
+    back_to_desktop
+    trap - EXIT TERM INT HUP
+    [ "$STOPPING" = 1 ] && return 143
+    return "$rc"
+}
+
+show_status() {
+    h96_banner "H D R  1 0"
+    local gn; have_gpu_next; case $? in
+        0) gn="available" ;;
+        2) gn="unknown: $MPV_ERR" ;;
+        *) gn="NOT listed by this mpv" ;;
+    esac
+    printf '  mpv config       %s\n' "$CONF"
+    printf '  tonemap include  %s (mode %s)\n' "$(is_on && echo yes || echo no)" "$(is_on && current_mode || echo off)"
+    printf '  vo=gpu-next      %s\n' "$gn"
+    printf '  libplacebo       %s\n' "$(have_libplacebo && echo present || echo 'NOT found')"
+    printf '  HDR play conf    %s (%s)\n' "$KMSCONF" "$([ -r "$KMSCONF" ] && echo present || echo MISSING)"
+    printf '  display HDR10    %s\n' "$(edid_has_pq "$CONN/edid" && echo 'listed in kernel EDID' || echo 'not listed (SDR EDID or SDR display)')"
+    printf '  VP0 plane        %s; %s in user_overlays: %s\n' \
+        "$(vp0_overlay_active && echo 'overlay plane active' || echo 'no overlay plane')" "$OVL" "$(env_lists_ovl && echo yes || echo no)"
+    if disp_has_hdr; then printf '  h96-display hdr  %s\n' "$("$DISP" hdr status 2>/dev/null | tail -1)"; fi
+    cat <<'TXT'
+
+  Desktop (KDE on X11): HDR10 video tone-mapped to SDR (tonemap).
+  HDR display: HDR10 output from a text VT (play), after setup and a reboot.
+
+  sudo h96-hdr tonemap        HDR10 -> SDR in desktop mpv
+  sudo h96-hdr off            remove tonemap include
+  sudo h96-hdr setup [off]    HDR display prep (VP0 overlay plane + HDR EDID), reboot
+  sudo h96-hdr play FILE      HDR10 out on a VT; q returns
+       h96-hdr test [file]    check vo=gpu-next starts here
+TXT
+}
+
+run_test() {
+    mpv_check || die "$MPV_ERR"
+    echo "  libplacebo:   $(have_libplacebo && echo present || echo 'NOT found -- gpu-next cannot work without it')"
+    if have_gpu_next; then
+        echo "  gpu-next vo:  listed by mpv"
+    else
+        die "mpv does not list a 'gpu-next' video output. This mpv build lacks libplacebo/gpu-next; HDR tone-mapping via gpu-next is not available."
+    fi
+
+    local clip="${1:-}"
+    if [ -z "$clip" ]; then
+        command -v ffmpeg >/dev/null 2>&1 || { echo "  (no test file given and no ffmpeg to synthesise one -- skipping render probe)"; return 0; }
+        clip=$(mktemp -u /tmp/h96-hdr-XXXX.mp4)
+        echo "  making a short BT.2020/PQ-tagged test clip..."
+        ffmpeg -hide_banner -loglevel error -y -f lavfi \
+            -i testsrc2=size=1280x720:rate=30:duration=3 \
+            -color_primaries bt2020 -color_trc smpte2084 -colorspace bt2020nc \
+            -c:v hevc_rkmpp "$clip" 2>/dev/null \
+            || { echo "  could not create a test clip (VPU encode failed) -- skipping render probe"; return 0; }
+    fi
+    [ -r "$clip" ] || die "cannot read test file: $clip"
+
+    local runner=() ctx=() rc=0
+    if [ -z "${WAYLAND_DISPLAY:-}${DISPLAY:-}" ] && command -v cage >/dev/null 2>&1; then
+        echo "  no session detected - probing inside cage"
+        export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+        mkdir -p "$XDG_RUNTIME_DIR" 2>/dev/null; chmod 700 "$XDG_RUNTIME_DIR" 2>/dev/null
+        runner=(cage --); ctx=(--gpu-context=wayland)
+    else  # same GPU API as playback (mpv.conf), not the --no-config default
+        local api; api="$(sed -n 's/^gpu-api=//p' "$CONF" 2>/dev/null | head -1)"
+        [ -n "$api" ] && ctx=(--gpu-api="$api")
+    fi
+    echo "  starting mpv with vo=gpu-next (3 frames, no audio)..."
+    if timeout 60 "${runner[@]}" mpv --no-config --vo=gpu-next --hwdec=rkmpp \
+            --frames=3 --no-audio --really-quiet "${ctx[@]}" "$clip" >/dev/null 2>&1; then
+        echo "  RESULT: vo=gpu-next rendered frames OK on this box."
+    else
+        echo "  RESULT: vo=gpu-next FAILED to render here. Tone-mapping via gpu-next"
+        echo "          is not usable until this is resolved; the base vo=gpu still plays HDR"
+        echo "          with mpv's built-in (weaker) tone-mapping."
+        rc=1
+    fi
+    case "$clip" in /tmp/h96-hdr-*) rm -f "$clip";; esac
+    return "$rc"
+}
+
+selftest() {  # file logic only (no DRM, no VT): scratch dir
+    local d n=0 f=0 out
+    d=$(mktemp -d) || exit 1
+    SKIP_ROOT=1
+    ok() { n=$((n + 1)); if [ "$1" = 0 ]; then echo "PASS $2"; else echo "FAIL $2"; f=$((f + 1)); fi; }
+    ENV=$d/boot/armbianEnv.txt; OVL_DIR=$d/boot/overlay-user; ENV_LOCK=$d/lock
+    mkdir -p "$OVL_DIR"
+    printf 'verbosity=1\nfdtfile=rockchip/x.dtb\nrootdev=UUID=1\n' > "$ENV"; cp "$ENV" "$d/env0"
+    env_overlay on >/dev/null 2>&1; [ $? = 0 ] && grep -qx "user_overlays=$OVL" "$ENV" && grep -qx 'rootdev=UUID=1' "$ENV" \
+        && cmp -s "$ENV.pre-h96-hdr" "$d/env0"; ok $? "setup: no user_overlays line -> line added, other lines kept, previous copy"
+    env_overlay on >/dev/null 2>&1; [ $? = 3 ]; ok $? "setup: second run unchanged (rc 3)"
+    env_overlay off >/dev/null 2>&1; cmp -s "$ENV" "$d/env0"; ok $? "setup off: only token -> line removed, file as before"
+    printf 'verbosity=1\nuser_overlays=h96-av1d\nextraargs=x\n' > "$ENV"; cp "$ENV" "$d/env1"
+    env_overlay on >/dev/null 2>&1; grep -qx "user_overlays=h96-av1d $OVL" "$ENV"; ok $? "setup: appended after h96-av1d"
+    env_lists_ovl; ok $? "status: token found in user_overlays"
+    env_overlay off >/dev/null 2>&1; cmp -s "$ENV" "$d/env1"; ok $? "setup off: h96-av1d kept, file as before"
+    env_overlay off >/dev/null 2>&1; [ $? = 3 ]; ok $? "setup off: second run unchanged (rc 3)"
+    ! env_lists_ovl; ok $? "status: token absent"
+    printf 'user_overlays=foo\nverbosity=1' > "$ENV"   # no trailing newline
+    env_overlay on >/dev/null 2>&1; [ "$(head -1 "$ENV")" = "user_overlays=foo $OVL" ] && [ "$(tail -c 11 "$ENV")" = "verbosity=1" ]
+    ok $? "setup: file without trailing newline kept as is"
+    rm -f "$ENV"; env_overlay on >/dev/null 2>&1; [ $? = 1 ]; ok $? "setup: missing armbianEnv -> error, nothing created"
+    # EDID: synthetic base block + CTA with/without HDR static metadata (ext tag 6, EOTF bit 2 = PQ)
+    python3 - "$d" <<'PY'
+import sys
+d = sys.argv[1]
+b0 = bytes([0, 255, 255, 255, 255, 255, 255, 0]) + bytes(118) + bytes([1, 0])
+def cta(blocks):
+    body = b"".join(blocks)
+    c = bytes([2, 3, 4 + len(body), 0]) + body
+    c += bytes(127 - len(c))
+    return c + bytes([(-sum(c)) & 255])
+open(f"{d}/pq.bin", "wb").write(b0 + cta([bytes([0xE3, 6, 0x05, 0x01]), bytes([0xE2, 5, 0xC0])]))
+open(f"{d}/hlg.bin", "wb").write(b0 + cta([bytes([0xE3, 6, 0x09, 0x01])]))
+open(f"{d}/sdr.bin", "wb").write(b0 + cta([bytes([0x23, 0x09, 0x07, 0x07])]))
+open(f"{d}/nocta.bin", "wb").write(b0)
+PY
+    edid_has_pq "$d/pq.bin"; ok $? "EDID: HDR static metadata with ST 2084 -> HDR10"
+    ! edid_has_pq "$d/hlg.bin"; ok $? "EDID: HLG only -> not HDR10"
+    ! edid_has_pq "$d/sdr.bin"; ok $? "EDID: audio block only -> not HDR10"
+    ! edid_has_pq "$d/nocta.bin" && ! edid_has_pq "$d/missing.bin"; ok $? "EDID: no CTA block / no file -> not HDR10"
+    out=$(printf 'Screen 0: minimum 8 x 8\nHDMI-1 connected primary 2560x1440+0+0\n   2560x1440    143.97*+  59.95  \n   1920x1080     60.00 \n' | parse_mode)
+    [ "$out" = "2560x1440@143.97" ]; ok $? "mode: active xrandr mode -> 2560x1440@143.97"
+    out=$(printf '   3840x2160     60.00*   30.00 +\n' | parse_mode); [ "$out" = "3840x2160@60.00" ]; ok $? "mode: preferred mark elsewhere"
+    out=$(printf 'HDMI-1 disconnected\n' | parse_mode); [ -z "$out" ]; ok $? "mode: no active mode -> empty (mpv preferred mode)"
+    H=$d/dt/vop@fdd90000/ports/port@0; mkdir -p "$H"; DT_VP0=$H/rockchip,plane-mask
+    printf '\0\0\0\7' > "$DT_VP0"; vp0_overlay_active; ok $? "DT: VP0 mask 0x7 -> overlay plane active"
+    printf '\0\0\0\5' > "$DT_VP0"; ! vp0_overlay_active; ok $? "DT: VP0 mask 0x5 -> not active"
+    SUMMARY=$d/summary
+    printf 'Video Port0: ACTIVE\n  bus_format[100a]: RGB888_1X24 hdr_type[SDR] eotf[0]\n  Esmart0-win0: eotf[0]\nVideo Port1: DISABLED\n  Esmart1: eotf[2]\n' > "$SUMMARY"
+    hdr_active; [ $? = 1 ]; ok $? "summary: VP0 SDR (VP1 line ignored) -> 1"
+    printf 'Video Port0: ACTIVE\n  Esmart0-win0: NV15 color: hdr_type[HDR10] eotf[2]\nVideo Port1: DISABLED\n' > "$SUMMARY"
+    hdr_active; [ $? = 0 ]; ok $? "summary: VP0 eotf[2] -> 0"
+    rm -f "$SUMMARY"; hdr_active; [ $? = 2 ]; ok $? "summary: unreadable -> 2"
+    MPVDIR=$d/mpv; CONF=$MPVDIR/mpv.conf; DROPIN=$MPVDIR/hdr.conf; mkdir -p "$MPVDIR"
+    printf 'vo=gpu\nhwdec=rkmpp,rkmpp-copy\ngpu-api=opengl\n' > "$CONF"; cp "$CONF" "$d/conf0"
+    mpv_check() { MPV_ERR="selftest"; return 1; }
+    cat > "$DROPIN" <<'EOF'
+# MODE: passthrough
+vo=gpu-next
+target-trc=pq
+EOF
+    do_passthrough >/dev/null 2>&1
+    [ "$(current_mode)" = tonemap ] && ! grep -q 'target-trc=pq' "$DROPIN" && is_on; ok $? "passthrough: X11 pq drop-in -> tonemap, include present"
+    do_off >/dev/null 2>&1; cmp -s "$CONF" "$d/conf0"; ok $? "off: mpv.conf as before tonemap"
+    do_tonemap >/dev/null 2>&1; do_tonemap >/dev/null 2>&1; [ "$(grep -cF "$BEGIN" "$CONF")" = 1 ]; ok $? "tonemap twice: one include"
+    rm -rf "$d"
+    echo "$((n - f))/$n PASS"
+    [ "$f" = 0 ]
+}
+
+case "${1:-status}" in
+    status|"")            show_status ;;
+    tonemap|on|enable)    do_tonemap ;;
+    passthrough|pass)     do_passthrough ;;
+    off|disable)          do_off ;;
+    play)                 shift; do_play "$@"; exit $? ;;
+    setup)                shift; do_setup "${1:-on}" ;;
+    test)                 shift; run_test "${1:-}" ;;
+    --selftest)           selftest; exit $? ;;
+    -h|--help|help)
+        cat <<'USAGE'
+h96-hdr -- HDR10 video
+
+  h96-hdr                     show state
+  sudo h96-hdr tonemap        desktop mpv: HDR10 -> SDR BT.709 (vo=gpu-next)
+  sudo h96-hdr off            remove the tonemap include
+  sudo h96-hdr setup          HDR display prep: VP0 overlay plane (/boot/overlay-user/h96-vp0-plane.dtbo
+                              added to user_overlays, next boot) + HDR EDID (h96-display hdr on)
+  sudo h96-hdr setup off      undo both (next boot)
+  sudo h96-hdr play FILE [MPV_OPTION...]
+                              HDR10 to the display: FILE full screen on a free VT (8-20) as the
+                              desktop user, mpv KMS with /etc/mpv/hdr-kms.conf at the desktop mode;
+                              q (or SIGTERM to h96-hdr) returns to the desktop, SDR restored
+  sudo h96-hdr passthrough    older verb: sets tonemap, points at play
+       h96-hdr test [file]    check vo=gpu-next starts here
+       h96-hdr --selftest     file logic checks (scratch dir)
+
+Desktop (KDE on X11) cannot carry HDR: HDR10 output runs on a text VT (play).
+play needs: HDR10 (PQ) listed in display EDID (setup), VP0 overlay plane (setup + reboot).
+tonemap manages /etc/mpv/hdr.conf and one marked include in /etc/mpv/mpv.conf (backup mpv.conf.pre-h96-hdr).
+USAGE
+        ;;
+    *) die "unknown argument '$1' (try --help)" ;;
+esac
