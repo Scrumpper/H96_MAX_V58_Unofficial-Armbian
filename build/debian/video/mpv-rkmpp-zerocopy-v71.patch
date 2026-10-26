@@ -1,0 +1,92 @@
+--- a/video/decode/vd_lavc.c	2025-12-21 11:08:20.000000000 -0800
++++ b/video/decode/vd_lavc.c	2026-10-06 19:37:42.843620392 -0700
+@@ -237,6 +237,7 @@
+ 
+     bool hwdec_request_reinit;
+     int hwdec_fail_count;
++    int rga_vf; // 0 unknown, 1 no RGA filter in --vf, 2 RGA filter present
+ 
+     struct mp_image_pool *hwdec_swpool;
+ 
+@@ -384,7 +385,9 @@
+                 // Usually we want to prefer using hw_frames_ctx for true
+                 // hwaccels only, but we actually don't have any way to detect
+                 // those, so always use hw_frames_ctx if offered.
+-                if (cfg->methods & AV_CODEC_HW_CONFIG_METHOD_HW_FRAMES_CTX) {
++                // rkmpp is a wrapper decoder: no hwaccel frame params, pass the device only
++                if ((cfg->methods & AV_CODEC_HW_CONFIG_METHOD_HW_FRAMES_CTX) &&
++                    strcmp(name, "rkmpp") != 0) {
+                     info.use_hw_frames = true;
+                 } else {
+                     info.use_hw_device = true;
+@@ -487,6 +490,16 @@
+ 
+         if (hw_ctx && hw_ctx->av_device_ref)
+             return av_buffer_ref(hw_ctx->av_device_ref);
++
++        // rkmpp outputs DRM_PRIME frames; the VO interop maps them, the decoder gets its own device
++        const char *dev_name = av_hwdevice_get_type_name(hwdec->lavc_device);
++        if (dev_name && strcmp(dev_name, "rkmpp") == 0 &&
++            hwdec_devices_get_by_imgfmt_and_type(ctx->hwdec_devs, imgfmt,
++                                                 AV_HWDEVICE_TYPE_DRM)) {
++            AVBufferRef *ref = NULL;
++            av_hwdevice_ctx_create(&ref, hwdec->lavc_device, NULL, NULL, 0);
++            return ref;
++        }
+     }
+ 
+     return NULL;
+@@ -1276,6 +1289,25 @@
+     return ret;
+ }
+ 
++// an RGA filter (scale_rkrga, vpp_rkrga) in --vf converts NV15/NV20 before the VO maps it
++static bool rga_filter_follows(struct mp_filter *vd)
++{
++    vd_ffmpeg_ctx *ctx = vd->priv;
++    if (!ctx->rga_vf) {
++        struct MPOpts *o = mp_get_config_group(NULL, vd->global, &mp_opt_root);
++        bool r = false;
++        for (int n = 0; o->vf_settings && o->vf_settings[n].name; n++) {
++            struct m_obj_settings *s = &o->vf_settings[n];
++            r |= s->enabled && strstr(s->name, "rkrga");
++            for (int i = 0; s->enabled && s->attribs && s->attribs[i]; i++)
++                r |= !!strstr(s->attribs[i], "rkrga");
++        }
++        talloc_free(o);
++        ctx->rga_vf = r ? 2 : 1;
++    }
++    return ctx->rga_vf == 2;
++}
++
+ static int receive_frame(struct mp_filter *vd, struct mp_frame *out_frame)
+ {
+     vd_ffmpeg_ctx *ctx = vd->priv;
+@@ -1325,6 +1357,27 @@
+     if (!res)
+         return AVERROR_UNKNOWN;
+ 
++    // rkmpp zero-copy: a sw format the VO interop cannot map (NV15, NV20) falls back to the next hwdec,
++    // unless an RGA filter converts it first
++    if (ctx->use_hwdec && !ctx->hwdec.copying && res->imgfmt == IMGFMT_DRMPRIME &&
++        ctx->hwdec_devs && ctx->hwdec.lavc_device == av_hwdevice_find_type_by_name("rkmpp")) {
++        struct mp_hwdec_ctx *dev = hwdec_devices_get_by_imgfmt_and_type(
++            ctx->hwdec_devs, IMGFMT_DRMPRIME, AV_HWDEVICE_TYPE_DRM);
++        bool ok = !dev || !dev->supported_formats;
++        for (int n = 0; !ok && dev->supported_formats[n]; n++)
++            ok = dev->supported_formats[n] == res->params.hw_subfmt;
++        if (!ok && rga_filter_follows(vd))
++            ok = true;
++        if (!ok) {
++            MP_WARN(vd, "VO cannot map %s frames, trying next hwdec.\n",
++                    mp_imgfmt_to_name(res->params.hw_subfmt));
++            mp_image_unrefp(&res);
++            ctx->hwdec_fail_count = INT_MAX - 1; // force fallback
++            handle_err(vd);
++            return AVERROR_UNKNOWN;
++        }
++    }
++
+     if (ctx->use_hwdec && ctx->hwdec.copying && res->hwctx) {
+         struct mp_image *sw = mp_image_hw_download(res, ctx->hwdec_swpool);
+         mp_image_unrefp(&res);

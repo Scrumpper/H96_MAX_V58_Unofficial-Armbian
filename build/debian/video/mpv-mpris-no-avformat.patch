@@ -1,0 +1,62 @@
+--- a/mpris.c	2026-01-01 14:21:19.000000000 -0800
++++ b/mpris.c	2026-10-22 18:33:46.120639407 -0700
+@@ -1,7 +1,6 @@
+ #include <gio/gio.h>
+ #include <glib-unix.h>
+ #include <mpv/client.h>
+-#include <libavformat/avformat.h>
+ #include <inttypes.h>
+ #include <string.h>
+ 
+@@ -290,42 +289,6 @@
+     return out;
+ }
+ 
+-static gchar* extract_embedded_art(AVFormatContext *context) {
+-    AVPacket *packet = NULL;
+-    for (unsigned int i = 0; i < context->nb_streams; i++) {
+-        if (context->streams[i]->disposition & AV_DISPOSITION_ATTACHED_PIC) {
+-            AVPacket *p = &context->streams[i]->attached_pic;
+-
+-            // Skip the thumbnail if the size is bigger than 25MiB to avoid crashes
+-            if (p->size <= 25*0x100000) {
+-                packet = p;
+-                break;
+-            }
+-        }
+-    }
+-    if (!packet) {
+-        return NULL;
+-    }
+-
+-    gchar *data = g_base64_encode(packet->data, packet->size);
+-    gchar *img = g_strconcat("data:image/jpeg;base64,", data, NULL);
+-
+-    g_free(data);
+-    return img;
+-}
+-
+-static gchar* try_get_embedded_art(char *path)
+-{
+-    gchar *out = NULL;
+-    AVFormatContext *context = NULL;
+-    if (!avformat_open_input(&context, path, NULL, NULL)) {
+-        out = extract_embedded_art(context);
+-        avformat_close_input(&context);
+-    }
+-
+-    return out;
+-}
+-
+ static gchar* get_art_url(mpv_handle *mpv, char *path)
+ {
+     gchar *url;
+@@ -335,8 +298,6 @@
+         return url;
+     if (is_remote && (url = try_get_youtube_thumbnail(path)))
+         return url;
+-    if (!is_remote && (url = try_get_embedded_art(path)))
+-        return url;
+     if (!is_remote && (url = try_get_folder_art(mpv, path)))
+         return url;
+ 

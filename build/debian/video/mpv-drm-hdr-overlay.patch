@@ -1,0 +1,37 @@
+diff -ruN a/video/out/gpu/video.c b/video/out/gpu/video.c
+--- a/video/out/gpu/video.c
++++ b/video/out/gpu/video.c
+@@ -3437,6 +3437,16 @@
+                                                 &p->src_rect, &p->dst_rect,
+                                                 frame->frame_id != p->image.id);
+ 
++        // overlay scans the video out as is: target = source colour (drm HDR metadata)
++        if (frame->current) {
++            p->target_params = (struct mp_image_params){
++                .w = mp_rect_w(p->dst_rect),
++                .h = mp_rect_h(p->dst_rect),
++                .color = frame->current->params.color,
++                .repr = frame->current->params.repr,
++            };
++        }
++
+         if (frame->current)
+             p->osd_pts = frame->current->pts;
+ 
+diff -ruN a/video/out/hwdec/hwdec_drmprime_overlay.c b/video/out/hwdec/hwdec_drmprime_overlay.c
+--- a/video/out/hwdec/hwdec_drmprime_overlay.c
++++ b/video/out/hwdec/hwdec_drmprime_overlay.c
+@@ -204,6 +204,13 @@
+                 drm_object_set_property(request, p->ctx->drmprime_video_plane, "CRTC_W",  dstw);
+                 drm_object_set_property(request, p->ctx->drmprime_video_plane, "CRTC_H",  dsth);
+                 drm_object_set_property(request, p->ctx->drmprime_video_plane, "ZPOS",    0);
++                // plane YCbCr matrix + range from the frame (DRM enum order: 601, 709, 2020)
++                const struct pl_color_repr *r = &hw_image->params.repr;
++                int enc = r->sys == PL_COLOR_SYSTEM_BT_2020_NC ? 2 :
++                          r->sys == PL_COLOR_SYSTEM_BT_601 ? 0 : 1;
++                drm_object_set_property(request, p->ctx->drmprime_video_plane, "COLOR_ENCODING", enc);
++                drm_object_set_property(request, p->ctx->drmprime_video_plane, "COLOR_RANGE",
++                                        r->levels == PL_COLOR_LEVELS_FULL ? 1 : 0);
+             } else {
+                 ret = drmModeSetPlane(p->ctx->fd, p->ctx->drmprime_video_plane->id, p->ctx->crtc->id, next_frame.fb.fb_id, 0,
+                                       MP_ALIGN_DOWN(p->dst.x0, 2), MP_ALIGN_DOWN(p->dst.y0, 2), dstw, dsth,

@@ -1,0 +1,5 @@
+# H96 Max V58 Debian Edition: PipeWire 1.6 from trixie-backports (h96 audio configs and WirePlumber
+# 0.5.18 target PipeWire 1.6); Mesa exact version pinned in 01-h96-protect-mesa.
+Package: src:pipewire
+Pin: release n=trixie-backports
+Pin-Priority: 600
