@@ -61,7 +61,7 @@ ALLOWLIST = [
     # vendor DT drm-logo and drm-cubic-lut nodes left at size 0 by boot loader: nothing to reserve
     ("612-reserved-mem-empty", "ignore", r"^OF: reserved mem: Reserved memory: failed to reserve memory for node 'drm-(logo|cubic-lut)@0': base 0x0+, size 0 MiB$"),
     # vendor cpufreq probes before CPU clock provider; deferred probe binds policies (hw check reads them)
-    ("612-cpufreq-clk-defer", "ignore", r"^(cpu cpu0: (failed to get cpu0 clk|cpu0 clk is not ready)|failed to init cpufreq)$"),
+    ("612-cpufreq-clk-defer", "ignore", r"^(cpu cpu0: (failed to get cpu0 (clk|reg)|cpu0 (clk|reg) is not ready)|failed to init cpufreq)$"),
     # BT wake_host pin is IRQ input in board DT; vendor rfkill driver tries output direction once, BT works
     ("612-bt-wake-host-irq", "ignore", r"^gpio-\d+ \(BT,wake_host\): gpiod_direction_output: tried to set a GPIO tied to an IRQ as output$"),
     # optional DDR DVFS inputs absent (no VOP latency table, BL31 without stall time call); DVFS runs (8 h soak)
@@ -1196,6 +1196,8 @@ def cmd_selftest(args):
             ("OF: reserved mem: Reserved memory: failed to reserve memory for node 'drm-cubic-lut@0': base 0x0000000000000000, size 0 MiB", "612-reserved-mem-empty"),
             ("cpu cpu0: failed to get cpu0 clk", "612-cpufreq-clk-defer"),
             ("cpu cpu0: cpu0 clk is not ready", "612-cpufreq-clk-defer"),
+            ("cpu cpu0: failed to get cpu0 reg", "612-cpufreq-clk-defer"),
+            ("cpu cpu0: cpu0 reg is not ready", "612-cpufreq-clk-defer"),
             ("failed to init cpufreq", "612-cpufreq-clk-defer"),
             ("gpio-0 (BT,wake_host): gpiod_direction_output: tried to set a GPIO tied to an IRQ as output", "612-bt-wake-host-irq"),
             ("rockchip-dmc dmc: failed to get vop pn to msch rl", "612-dmc-optional"),
