@@ -142,7 +142,7 @@ cp "/work/zip/PRODUCTION/Unofficial Armbian v8.0/CHANGELOG-v8.0.md" "/work/zip/U
 python3 -I build/ubuntu/zip-times.py Unofficial.Armbian.v8.0.zip "/work/zip/PRODUCTION/Unofficial Armbian v8.0"
 python3 -I build/ubuntu/zip-times.py Unofficial.Armbian.v8.0.zip /work/zip/rel --partial
 H96_UPLOAD_ROOT=/work/zip/PRODUCTION H96_RELEASE_DIR=/work/zip/rel python3 -I build/ubuntu/stage-and-zip.py 8.0
-sha256sum "/work/zip/PRODUCTION/Unofficial Armbian v8.0.zip"      # 7f42cb249f08b3b6de7f15a7bb40500c70b6350c25cf3d3c86f4b9893a0c5951
+sha256sum "/work/zip/PRODUCTION/Unofficial Armbian v8.0.zip"      # 8cb0413feb7f30deedcda42b015e85397865139da83c559400931e1cacc0d964
 ```
 
 `zip-times.py` copies timestamps and modes of each member from published zip; run it and `stage-and-zip.py` under one TZ. `stage-and-zip.py` gates docs (clinical style, version strings), zips sorted members with ZIP_STORED and reads image back out of finished zip.
@@ -150,16 +150,16 @@ sha256sum "/work/zip/PRODUCTION/Unofficial Armbian v8.0.zip"      # 7f42cb249f08
 
 | Zip member | sha256 |
 |---|---|
-| CHANGELOG-v8.0.md | `855cc95cefdc67d48473803d9cd0df1ee80d04835a3103e934c37be1a3af2f3c` |
-| CHANGELOG.md | `741618bb494f38cfbc9dd3e80d3e9de034b64d5f1f9a472107dae21a5ace8dc4` |
-| COMMANDS.md | `bcbc51339480135b645439999c78371696f6d5dfa56427ac116316c8aa1868c5` |
+| CHANGELOG-v8.0.md | `b91fd963d5fdbc594fc7ca9df7e773104922890291476d8f170028e6896d3a87` |
+| CHANGELOG.md | `206492b92462d7ccbe94c99f0a49afcac9b9b400dab4ac48ef01b6e648ffe478` |
+| COMMANDS.md | `72abc87c3b00876a95604d68ca134e8c3742260be1f8a1b89d0ec0f68fbcbde8` |
 | FLASHER-SHA256SUMS.txt | `d4d03439d0e9ac4e1d4b6f48f0598d693f6ead34c415637100cd8f704c7a1043` |
-| FLASHING.md | `b29e2422f186ee725f6454f75c1a93f67b1b805b579c9db706f8805ff7ded2b8` |
-| KERNEL-COMPARISON.md | `9038857febbd128b7de0bac18dbc2567e82e8258a48044d5f8cc6b354628653a` |
+| FLASHING.md | `11c76e67c6d233cb5f3c3daf2e45eeab82f02f313d25215d387df4bcc200979c` |
+| KERNEL-COMPARISON.md | `dfd43f99c06e055c72c21c0a7ef790fa188d05864e5bb8caa3114264a060ec00` |
 | MiniLoaderAll.bin | `95325cba73b2de46f160da2df970199c7ecf1bb1d47d6584936ec4cd1e88140e` |
-| ON-DEMAND-LIBRARIES.md | `9621ba9e9cdd00d1454abb3f7a735a10d242892c720da236c6e34e8eb56b3cae` |
-| README.md | `1a55f2cd8084f75821c717b8dd3d94d8793f59c08698f318c52df17b3650ed3f` |
-| UNDERVOLT_README.md | `ed442d6bafe2e20ac85ea70f7832b7cc6dd59fc6f42a4e741289963b227d11df` |
+| ON-DEMAND-LIBRARIES.md | `c159eff30f01f0c4f554713427e87c779304d181b44ccb8be19a30c117f8a572` |
+| README.md | `033c2eda6e71f0bb845bec8c0403fcf6ad5c2ad4906676f90ea3e5df0630bca0` |
+| UNDERVOLT_README.md | `ae540fa4fc7da2f132a273f9d656f3ebf05e33d22585879eabb26753e13cba22` |
 | flash.py | `f51730d3a614c3bf55a2e1f2e10915069b34090acc0a6706389016967c97d778` |
 
 ## Expected sha256
@@ -182,7 +182,7 @@ sha256sum "/work/zip/PRODUCTION/Unofficial Armbian v8.0.zip"      # 7f42cb249f08
 | h96-tools_8.0.0~r39_arm64.deb | `fad05c113654021b1a0b7bb542ed936a53f10f221a52400d829ec5b51062209c` | |
 | H96-MAX-V58_Unofficial-Armbian_v8.0.img | `8d7903bb225336bb3cb1d5de499a5ac8585ab77f3c8122b5d072418c9deb1317` | |
 | H96-MAX-V58_Unofficial-Armbian_v8.0.img.xz | `2141887975144d6a660735ee3c1b5e2f3edd76b733347536a18e8e42f24fbedc` | |
-| Unofficial.Armbian.v8.0.zip | `7f42cb249f08b3b6de7f15a7bb40500c70b6350c25cf3d3c86f4b9893a0c5951` | |
+| Unofficial.Armbian.v8.0.zip | `8cb0413feb7f30deedcda42b015e85397865139da83c559400931e1cacc0d964` | |
 
 Deb version strings (`8.0.0~rN`) are Debian package versions of published files, not release names.
 
