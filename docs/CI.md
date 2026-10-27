@@ -8,10 +8,11 @@ Workflow file: `.github/workflows/ci.yml`. Runs on push to `main` and `armbian-*
 |-----|------|-----------------|------------|
 | `docs` | Style rules | `tools/docs/check-docs.py` | Any style issue in tracked `*.md`; build round label `~rN` passes only in package `Version:` field |
 | `docs` | Article pass | `tools/docs/strip-articles.py --check` | Any article left in prose, or dangling internal link |
+| `docs` | Alliteration | `tools/docs/check-alliteration.py` | Three words sharing initial letter inside four-word window of one sentence, outside code and tables; names listed in `tools/docs/alliteration-allow.txt` pass |
 | `docs` | Privacy grep | Built-in generic regex, allowlist `.github/privacy-allow.txt` | LAN address, home path or webmail address in tracked text, other than allowlisted test vectors |
 | `lint` | Shell lint | `shellcheck -S error` over `*.sh` and files with sh/bash shebang | Any error-level finding (warnings printed, not gating) |
 | `lint` | Python syntax | `python3 -m py_compile` over `*.py` and files with python shebang | Any syntax error |
-| `lint` | Self-tests | `tools/h96-selftest.py self-test`, plus `tests/` when present | Any failed check |
+| `lint` | Self-tests | `tools/h96-selftest.py self-test`, plus `tests/` (unit test of `check-alliteration.py`) | Any failed check |
 | `kit-oldest-python` | Backup kit syntax | `compile()` under Python 3.7 over `h96-backup*`, `h96-restore*` and `h96-migrate-kit/` Python files | Any syntax error on oldest supported interpreter, or no kit files present |
 | `debs` | Packaging PII | Generic regex over `build/` and `tools/ci/` | LAN address or home path |
 | `debs` | Deb build | `tools/ci/kernel-debs-smoke.sh` driving `build/build-kernel-debs.sh` | Builder exit status nonzero |
@@ -23,7 +24,7 @@ Jobs `docs`, `lint`, `debs` and `dtb` run inside `ubuntu:26.04` container on arm
 
 ## Deb packaging smoke test
 
-Kernel binaries are pinned build outputs, not CI products, and are not in this repository. `tools/ci/kernel-debs-smoke.sh` feeds `build/build-kernel-debs.sh` placeholder inputs (text Image, one-line System.map, config with matching `CONFIG_LOCALVERSION`, modules tarball with one placeholder file, board overlay compiled as DTB stand-in) with `PIN=0` and version `0~ci`, so placeholder debs never carry release version. Resulting `h96-kernel-*` and `h96-dtb-*` debs exercise package layout, control fields, maintainer scripts and lintian; they are not installable kernels. Builder declines root, so job runs it as `nobody`.
+Kernel binaries are pinned build outputs, not CI products, and are not in this repository. `tools/ci/kernel-debs-smoke.sh` feeds `build/build-kernel-debs.sh` placeholder inputs (text Image, one-line System.map, config whose `CONFIG_LOCALVERSION` agrees, modules tarball with one placeholder file, board overlay compiled as DTB stand-in) with `PIN=0` and version `0~ci`, so placeholder debs never carry release version. Resulting `h96-kernel-*` and `h96-dtb-*` debs exercise package layout, control fields, maintainer scripts and lintian; they are not installable kernels. Builder declines root, so job runs it as `nobody`.
 
 Lintian runs with no suppressed tags and no override files. Modules install under `/usr/lib/modules` (`MODPREFIX` default), so `aliased-location` does not fire. Package version is native (no Debian revision), so changelog is `changelog.gz` and `initial-upload-closes-no-bugs` does not fire.
 
