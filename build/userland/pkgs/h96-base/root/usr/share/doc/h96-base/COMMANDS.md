@@ -882,7 +882,7 @@ mode. Move in steps of 10 to 15 mV.
 
 **Read `/usr/share/doc/h96-tools/README.undervolt.md` before using this.** It covers per-chip bin table, why
 shell busy-loop is not valid stability test, and silent-miscomputation failure mode
-that does not announce itself. It is not repeated here.
+that does not announce itself. That text is not repeated here.
 
 Files: `/boot/dtb/rockchip/rk3588-h96-max-v58-panthor.dtb` (active),
 `...panthor.dtb.stock-backup` (vendor tree, written by first `set` or `oc`, kept forever),

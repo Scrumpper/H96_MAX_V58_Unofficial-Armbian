@@ -328,7 +328,7 @@ on either route: those components require system call filter emulator does not i
 Both installers present component checklist and remove any item again when it is
 deselected on later run.
 
-**ARM64 client.** ARM64 client is build of Steam that Valve made for its ARM based
+**ARM64 client.** Valve made this build of Steam for its ARM based
 VR headset, Steam Frame: native ARM program that runs title's x86 code through emulation
 tool client downloads. On this box that means client interface, overlay, input
 stack, downloads and shader cache run on CPU and GPU directly, only title itself
@@ -483,7 +483,7 @@ correctness fix; benchmarking found no measurable change in throughput, and none
   SIMD load; `confirm` keeps it. Reboot without confirming and boot-time guard reverts to
   stock device tree on its own. Previously guard could revert setting before there
   had been boot on which to confirm it.
-- **Kernel: `CONFIG_SCHED_CLUSTER`.** Kernel now enables `CONFIG_SCHED_CLUSTER`, which
+- **Kernel: `CONFIG_SCHED_CLUSTER`.** Build now enables `CONFIG_SCHED_CLUSTER`, which
   represents RK3588 as its three CPU clusters instead of one flat group, so scheduler's
   topology view matches hardware. On this board clusters are 4x Cortex-A55 (`cpu0`, `cpu5`,
   `cpu6`, `cpu7`), 2x Cortex-A76 (`cpu1`, `cpu2`) and 2x Cortex-A76 (`cpu3`, `cpu4`); two A76 pairs are
@@ -637,7 +637,7 @@ Reflashing wipes existing desktop install.
   libraries and no neuralnetworks HAL, so passing node through would hand Android
   device file with no driver.
 
-- **New `h96-emulators`: 8 GPU-accelerated systems.** `retroarch`, `dolphin`, `ppsspp`,
+- **Added `h96-emulators`: 8 GPU-accelerated systems.** `retroarch`, `dolphin`, `ppsspp`,
   `flycast`, `melonds`, `rmg` and `azahar` as native ARM64 Flatpaks through PanVK/Panfrost,
   plus `cemu` as x86-64 build under `box64`. `install` wires each Flatpak's sandbox to
   Mali GPU and then verifies it, warning when emulator would silently fall back to
@@ -777,7 +777,7 @@ smaller than earlier releases: about 1.22 GB (full), 1.01 GB (nodesktop), and
    profile drops output to mono call quality until deselected; that is how classic
    Bluetooth works, not defect.
 
-2. Bluetooth headset profile now remains selected. WirePlumber used to revert
+2. Headset profile over Bluetooth now remains selected. WirePlumber used to revert
    manually chosen Hands-Free (mic) profile back to A2DP whenever no application was
    recording, so selected mic profile did not hold. v4.1 disables that autoswitch
    (`bluetooth.autoswitch-to-headset-profile = false`), so chosen profile is
@@ -795,7 +795,7 @@ smaller than earlier releases: about 1.22 GB (full), 1.01 GB (nodesktop), and
    after some reboots. v4.1 orders BlueZ after adapter bring-up and waits for adapter
    node to appear.
 
-5. Bluetooth boot fix for headless images. On minimal (headless) base SCO
+5. Boot fix for Bluetooth on headless images. On minimal (headless) base SCO
    audio-routing service (`bt-sco-hci.service`) failed because BlueZ `hcitool`
    CLI is only pulled in by desktop install, so headless boxes booted
    `degraded`. Service now skips when that CLI is absent and keeps sending SCO
