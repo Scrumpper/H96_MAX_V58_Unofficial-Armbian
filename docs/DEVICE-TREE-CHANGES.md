@@ -4,7 +4,7 @@
 **decompile of stock Android vendor DTB** (`dtc -I dtb -O dts`), which is why it carries
 `rockchip,rk3588-nvr-demo-v10-android` compatible and numeric phandles. It
 was then edited for open-GPU Armbian build. File in this repo is decompile of
-`rk3588-h96-max-v58-panthor.dtb`, DTB v6.0 image boots (`fdtfile=` in
+`rk3588-h96-max-v58-panthor.dtb`, DTB which v6.0 image boots (`fdtfile=` in
 `/boot/armbianEnv.txt`); it recompiles to same tree. Changes below are what
 differ from stock DTB.
 
@@ -76,8 +76,8 @@ drm.edid_firmware=HDMI-A-1:edid/h96-1080p-audio.bin
 ```
 
 **Use 256-byte EDID included in this repo at
-`packages/bsp/h96-max-v58/edid/h96-1080p-audio.bin`, not one of kernel's
-built-in blobs.** All of those are 128 bytes with no CTA/CEA extension block, and
+`packages/bsp/h96-max-v58/edid/h96-1080p-audio.bin`, not one of blobs
+compiled into kernel.** All of those are 128 bytes with no CTA/CEA extension block, and
 sink presenting no CTA block is treated as DVI, which disables HDMI audio entirely
 while leaving video working. See CHANGELOG.md under v3.4.
 

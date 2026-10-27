@@ -18,8 +18,8 @@ This board support builds on work of others.
 - **bjin/mpv-prescalers**: `ravu-lite-ar-r4` shader used by `h96-upscale`, by
   Bin Jin. Included unmodified under **GNU LGPL v3**, licence header intact.
   <https://github.com/bjin/mpv-prescalers>
-- **Rockchip RKNPU / RKNN**: NPU driver and `librknnrt` inference runtime.
-  Runtime is proprietary and is therefore **not** distributed with this image --
+- **Rockchip RKNPU** NPU driver and **RKNN** `librknnrt` inference runtime.
+  Runtime is proprietary and is therefore **not** distributed with this image;
   `h96-npu-setup` fetches it from Rockchip, showing their licence first.
 - **Waydroid**: LXC-based Android-in-a-container runtime driven by `h96-waydroid`.
   Not bundled; installed on demand from upstream. <https://waydro.id>
@@ -44,6 +44,6 @@ This board support builds on work of others.
 Front-panel driver (`h96-vfd.c`) was reverse-engineered from stock Android
 kernel's front-display driver (TM1650 protocol).
 
-Development was done conversationally with **Claude Code**. Every device-tree edit,
+Development took place in sessions with **Claude Code**. Every device-tree edit,
 script, and workaround was written and tested interactively. Treat everything here
 as community work offered in good faith, with no warranty.

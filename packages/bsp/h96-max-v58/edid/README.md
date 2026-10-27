@@ -11,7 +11,7 @@ returns 0 bytes and driver logs `i2c read time out` repeatedly. That is not only
 startup cost: connector hotplug poll keeps retrying for as long as board is powered,
 roughly once per second.
 
-Supplying substitute EDID stops that. **But substitute must contain CTA/CEA
+Providing substitute EDID stops that. **But substitute needs CTA/CEA
 extension block.** Every EDID compiled into kernel
 (`drivers/gpu/drm/drm_edid_load.c`, `generic_edid[]`) is 128 bytes with no extension block.
 Using one of those makes `drm_detect_hdmi_monitor()` return false, so driver sets
