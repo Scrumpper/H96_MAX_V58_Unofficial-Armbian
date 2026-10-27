@@ -1834,7 +1834,7 @@ It probes each feature (any absent one is skipped cleanly): desktop environment
 (`kde-plasma-desktop` or `gnome-shell`), installed emulators (Flatpak apps in
 `h96-emulators` catalog, plus `cemu` box64 build), Waydroid profile and which image
 stashes exist, Widevine, gaming wine prefix, NPU runtime, and WiFi credentials and networks.
-`manifest.json` and passive data then form archive: tar plus zstd when `zstd` is
+Tool then packs `manifest.json` and passive data into archive file: tar plus zstd when `zstd` is
 present (`.tar.zst`), otherwise gzip (`.tar.gz`). `h96-restore` reads `.tar.zst` through `zstd`, else
 through Python built-in zstd module.
 
