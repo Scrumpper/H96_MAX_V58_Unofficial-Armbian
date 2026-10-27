@@ -50,8 +50,8 @@ replaces it; modules of one build fail BTF validation on another (`Invalid argum
 compositor after fallback). Tool keeps tree of each staged build under `/var/lib/h96-kernel-switch/modules/<krel>/<sha16>`
 (hard links, keyed by Image sha256 and GNU build id): at `try`, from apt hook before dpkg
 (`/etc/apt/apt.conf.d/80h96-kernel-switch`) and from package postinst. `h96-kernel-switch-modules.service` runs before
-`systemd-udevd` and `systemd-modules-load` (no `/boot` access, writes nothing): running build id
-(`/sys/kernel/notes`) differs from staged Image, saved tree of running build mounted read-only over
+`systemd-udevd` and `systemd-modules-load` (no `/boot` access, writes nothing): when running build id
+(`/sys/kernel/notes`) differs from staged Image, saved tree of running build is mounted read-only over
 `/usr/lib/modules/<krel>`. Fallback, rollback and watchdog reset to earlier build therefore load own modules; boot guard
 needs no module step. `try` of other build of in-boot release refuses unless tree of in-boot build is saved or found in
 `h96-kernel-<krel>` deb (apt cache, `/opt/h96-pkgs`). `status` prints tree source per generation and WARN on mismatch;
@@ -60,7 +60,7 @@ replaces package tree, then full tree size (6.12: 125 MB, 6.1: 181 MB) until no 
 
 Initramfs `init-bottom` script (in every `uInitrd` that `try` builds) does same build-id check before `switch_root`
 and mounts saved tree on target root filesystem, so modules PID1 loads at startup (`ipv6`) and first `modprobe@` units already
-match; `modprobe@.service` drop-in orders after modules unit, which stays second line (generations made by earlier
+match; `modprobe@.service` drop-in orders after modules unit, which stays as second line of defence (generations made by earlier
 versions of this tool have no initramfs script). Initramfs hook copies one hex dumper only (`gnuod`, else `hexdump`;
 never file over 1 MiB, so not Rust coreutils multicall binary); script uses busybox applets otherwise (scratch
 `mkinitramfs`: +56 KB compressed). Staged build ids live in `/var/lib/h96-kernel-switch/modules/<krel>/staged.meta`
@@ -195,7 +195,7 @@ Unfinished `commit` found by `rollback` in running system (killed process): `rol
 
 ## DTB handling
 
-Current behaviour: DTB joins generation switch when staged DTB differs from board DTB; first such `try` turns
+Current behaviour: DTB joins generation switch when staged DTB differs from board copy; first such `try` turns
 `dtb/<fdtfile>` into link to `h96ks/cur/fdt`. Kernel and DTB then always change together. Cost: link inside
 `dtb/rockchip/` (relative path with `..` parts) relies on U-Boot link handling above, which v8.0 images boot through.
 

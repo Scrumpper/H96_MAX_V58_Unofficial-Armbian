@@ -11,8 +11,8 @@ and since v6.2 `pipewire/95-h96-silence-source.conf`, `pipewire/90-h96-eq.conf`,
 
 ## Microphone: why it needs kernel change
 
-HFP (Hands-Free) and HSP (Headset) profiles carry microphone and run over
-RFCOMM. Stock rockchip-rk3588 kernel builds core Bluetooth as module but omits
+Microphone runs over HFP (Hands-Free) profile. HSP (Headset) profile carries it too; both
+run over RFCOMM. Stock rockchip-rk3588 kernel builds core Bluetooth as module but omits
 RFCOMM, so BlueZ cannot open those profiles:
 
     socket(STREAM, RFCOMM): Protocol not supported
@@ -23,7 +23,7 @@ and audio stack pins device to A2DP-only roles.
 Fix: `CONFIG_BT_RFCOMM=m` + `CONFIG_BT_RFCOMM_TTY=y` in kernel config. Armbian
 then compiles `rfcomm.ko` into kernel package with correct module dependencies;
 `modules-load.d/rfcomm.conf` autoloads it at boot ahead of BlueZ, and
-`systemd/h96-rfcomm.service` runs `depmod` for running kernel release (`uname -r`)
+`systemd/h96-rfcomm.service` runs `depmod` for current kernel release (`uname -r`)
 and loads `rfcomm` and `xpad` before `bluetooth.service`. HFP/HSP roles in
 `wireplumber/30-h96-bluetooth.conf` then expose mic as `bluez_input` source
 under "Headset Head Unit" profile.
@@ -32,7 +32,7 @@ under "Headset Head Unit" profile.
 
 HFP voice rides SCO/eSCO link. On this Broadcom BCM4362A2 UART controller SCO
 audio must be routed over HCI, set by vendor command 0xFC1C byte0=0x01 (Transport).
-`bt-sco-hci.service` sends it after adapter appears. Check current routing:
+`bt-sco-hci.service` sends it once adapter is up. Check current routing:
 
     hcitool -i hci0 cmd 0x3f 0x1d   # reply byte after status: 01 = HCI, 00 = PCM
 
@@ -76,8 +76,8 @@ Bluetooth headsets get no audio device at all.
 
 ## A2DP output codecs, including AAC
 
-No `bluez5.codecs` list: PipeWire offers LDAC, aptX HD, aptX, aptX LL, AAC, AAC-ELD, SBC-XQ,
-SBC, FastStream and Opus, and picks best one headset supports. AAC needs
+No `bluez5.codecs` list: PipeWire offers LDAC, aptX with its HD and LL variants, AAC,
+AAC-ELD, SBC-XQ, SBC, FastStream and Opus, and picks best one headset supports. AAC needs
 `libspa-codec-bluez5-aac.so` plugin, packaged only in `libspa-0.2-modules-extra`
 package (FDK-AAC, split out of base PipeWire for licensing). Package is not in
 image's offline repo; release image installs it through `h96-online-extras` once box
@@ -85,7 +85,7 @@ reaches network, and by hand it requires network too:
 
     sudo apt install libspa-0.2-modules-extra
 
-LDAC needs libldacbt-abr2 / libldacbt-enc2; aptX and aptX-HD need libfreeaptx0.
+LDAC needs `libldacbt-abr2` / `libldacbt-enc2`; aptX and aptX-HD need `libfreeaptx0`.
 All are open reimplementations, no vendor blob.
 
 ## 8.0 packages

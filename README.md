@@ -98,7 +98,7 @@ v8.0 is platform release over v7.2. Full list: `CHANGELOG-v8.0.md` in release, h
 - **Packages**: H96 userland in eight dpkg packages (`h96-base`, `h96-boot`, `h96-net`,
   `h96-audio`, `h96-desktop`, `h96-media`, `h96-tools`, `h96-gaming`), files in `/usr/bin`,
   `/usr/sbin` and `/usr/lib/h96`, manual page per command. `libmali` removed: Mesa only.
-- **Boot firmware**: BL31 v1.37 in U-Boot FIT, written by fresh flash.
+- **Boot firmware**: BL31 v1.37 in U-Boot FIT, written when image is flashed.
 - **Plasma (Wayland) session**, experimental, beside default Plasma (X11).
 - **Steam ARM 3.1** from package `steam-arm-setup`, installed through `h96-steam`.
 - **First boot** reboots once; flasher can read whole image back and compare sha256.
@@ -217,7 +217,7 @@ python3 flash.py --verify   # also reads whole image back and compares sha256 be
    rkdeveloptool ld        # Maskrom
    ```
 
-   Pinhole start already in Maskrom skips this step.
+   Box started through pinhole is already in Maskrom and skips this step.
 
 3. Load loader into RAM, write image, read back, compare, reset:
 
@@ -324,7 +324,7 @@ Index of every doc: [docs/README.md](docs/README.md).
   downshifting; `ethtool -s eth0 speed 100 duplex full autoneg off` skips Gigabit
   negotiation at cost of capping port.
 - **Plasma (Wayland) session** is experimental: 4K60 video drops frames at 3840x2160
-  output, no RGB range control, no VRR. Play Proton titles in Plasma X11 session.
+  output, no RGB range control, no VRR. Run Proton titles in Plasma X11 session.
 - **Fallback kernel 6.1** has no RAM scaling.
 - **Boot firmware** changes only with fresh flash; package upgrades never touch it.
 - **Anti-cheat titles** do not run under x86-on-arm64 emulation; Steam snap does not work

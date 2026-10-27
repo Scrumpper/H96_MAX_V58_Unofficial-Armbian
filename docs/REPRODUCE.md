@@ -8,7 +8,7 @@ Rows marked "not public as file" are build outputs or blobs with no standalone d
 
 ## Requirements
 
-Host: Linux x86_64 or arm64, user namespaces (`unshare --map-auto`), qemu-user-static with binfmt for arm64, e2fsprogs (debugfs, mke2fs, tune2fs, e2fsck), dpkg-dev, gpg, xz-utils, zstd, python3, shellcheck, systemd-run (user scope). No root, no writes to host `/boot`.
+Host: Linux x86_64 or arm64, user namespaces (`unshare --map-auto`), qemu-user-static with binfmt for arm64, e2fsprogs (debugfs, mke2fs, tune2fs, e2fsck), dpkg-dev, gpg, shellcheck, xz-utils, zstd, python3, systemd-run (user scope). No root, no writes to host `/boot`.
 Kernel builds: aarch64-linux-gnu-gcc 16.1.0, binutils 2.47, pahole 1.32 (Arch Linux container used for published build).
 Disk: about 20 GB free for image build work folder.
 
@@ -18,7 +18,7 @@ Disk: about 20 GB free for image build work folder.
 bash build/ubuntu/check-recipe.sh        # expect: check-recipe fail=0
 ```
 
-Recipe pins `tools/h96-selftest.py` as of commit `081117c`; later selftest commits change its sha256, so check out commit that carries this recipe before rebuild.
+Recipe pins `tools/h96-selftest.py` as of commit `081117c`; later selftest commits alter its sha256, so switch to commit that carries this recipe before rebuild.
 Checks syntax of every recipe script, pin table format, stage pins against pin table, repo copies of `f5-rows.sh`, `h96-selftest.py` and `preflight_check.py` against their pins, public keyring fingerprint, and `build/userland/pkgs` tree against `pkgs.manifest`.
 
 ## 1. Kernel debs
@@ -86,7 +86,7 @@ Built by `build/ubuntu/stage.sh dryrun` (`repo-build.py`, `repo-sign.py`): v7.2 
 | Release.gpg | `14a573c83d68fafa44cacf2d0b7805848890b5e5ee0de74934192c199a3c1e3c` |
 
 Signing key: public keyring `keys/offline-repo-public.gpg`, fingerprint `97E5DA90A046ECDC7CE5637131869ED166A6D9EC` (`keys/offline-repo-public.fingerprint`). Image carries same keyring as `/usr/share/keyrings/h96-local-archive-keyring.gpg`.
-Without private key, set `H96_REPO_SIG_FROM` to folder with published `Release`, `InRelease` and `Release.gpg` (copied from published image `/opt/h96-pkgs/`). `repo-sign.py` then requires rebuilt Release byte-equal to published Release, requires InRelease body equal to it, verifies both signatures with public keyring, and reuses published signature files. Owner signs with `H96_REPO_KEYDIR`.
+Without private key, set `H96_REPO_SIG_FROM` to folder with published `Release`, `InRelease` and `Release.gpg` (copied from published image `/opt/h96-pkgs/`). `repo-sign.py` then expects rebuilt Release byte-equal to published Release, expects InRelease body equal to it, verifies both signatures with public keyring, and reuses published signature files. Owner signs with `H96_REPO_KEYDIR`.
 
 ## 4. Image
 
@@ -145,7 +145,7 @@ H96_UPLOAD_ROOT=/work/zip/PRODUCTION H96_RELEASE_DIR=/work/zip/rel python3 -I bu
 sha256sum "/work/zip/PRODUCTION/Unofficial Armbian v8.0.zip"      # 7f42cb249f08b3b6de7f15a7bb40500c70b6350c25cf3d3c86f4b9893a0c5951
 ```
 
-`zip-times.py` copies member mtimes and modes from published zip; run it and `stage-and-zip.py` under one TZ. `stage-and-zip.py` gates docs (clinical style, version strings), zips sorted members with ZIP_STORED and reads image back out of finished zip.
+`zip-times.py` copies timestamps and modes of each member from published zip; run it and `stage-and-zip.py` under one TZ. `stage-and-zip.py` gates docs (clinical style, version strings), zips sorted members with ZIP_STORED and reads image back out of finished zip.
 
 
 | Zip member | sha256 |
@@ -192,5 +192,5 @@ Deb version strings (`8.0.0~rN`) are Debian package versions of published files,
 2. Image filesystems. `mke2fs` parameters (UUID, label, hash seed, geometry, creation time) are pinned from v7.2 superblocks and file times come from tree listing, but files written during chroot steps (dpkg database, logs, initramfs and uInitrd, ldconfig and font caches, generated units) carry build-time mtimes and content, and inode and block placement follows host directory order in `mke2fs -d`. Expect `.img` and `.img.xz` sha256 to differ. Compare instead: loader area, GPT, gaps and tail (`cmp` of bytes 0 to 16777216 and outside both partitions), then file trees: `python3 -I build/ubuntu/ext4list.py img p2.img listing.tsv --content` for rebuilt and published partition 2, then `ext4list.py cmp published.tsv rebuilt.tsv`; differences limited to mtime and files listed above. Package list: `debugfs -R 'cat /var/lib/dpkg/status'` on both partitions, compare `Package`/`Version` pairs.
 3. Kernel compile. Image and modules match published sha256 only with GCC 16.1.0, binutils 2.47 and pahole 1.32. Build timestamp, user and host are fixed in build scripts. 6.12 maps source path in debug info (path independent). 6.1 does not: GNU build-id notes in Image, vDSO and each module depend on source folder path; rebuild elsewhere differs in those notes only (`cmp -l`).
 4. Binary inputs without recipe in this repository: v7.2 base image (v7.2 release), loader set A1 blobs (extracted from published image by `loader-blobs.sh`), 94 userland blobs (from published image), `h96-vulkan-wsi` add deb (from published image `/opt/h96-pkgs/`), `steam-arm-setup_3.1_arm64.deb` (Steam ARM 3.1 release).
-5. Release zip. Byte-equal only with member mtimes and modes from published zip (`zip-times.py`) and docs taken from published zip.
+5. Release zip. Byte-equal only with member timestamps and modes from published zip (`zip-times.py`) and docs taken from published zip.
 6. Ubuntu index snapshot. Optional adds provenance check uses index files of fixed date (`Date:` line of each InRelease); live mirror indexes change daily, so use snapshot.ubuntu.com at that date.

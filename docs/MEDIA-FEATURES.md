@@ -20,7 +20,7 @@ pad rules, emulators and Steam front end.
   puts TV in standby and wakes it (verified on Sony TV). On by default since v8.0
   (v7.2 and earlier: off); `sudo systemctl disable --now h96-cec.service` turns it off. Kernels before v6.2 do not build
   CEC adapter, so /dev/cec0 never appears there.
-- **h96-hdr** - mpv HDR10 handling: tone-map HDR10 to SDR via vo=gpu-next/libplacebo
+- **h96-hdr** - HDR10 playback in mpv: tone-map HDR10 to SDR via vo=gpu-next/libplacebo
   (reliable path; true passthrough is X11-limited on this stack).
 - **h96-motion** - mpv BUILT-IN frame interpolation (judder reduction), GPU-side,
   zero deps. SVP/MVTools "soap-opera" path is intentionally not used:
@@ -31,13 +31,13 @@ pad rules, emulators and Steam front end.
   AV receiver.
 - **h96-audio-eq** - system-wide parametric EQ via native PipeWire filter-chain
   (no extra deps) + AutoEQ presets in /etc/h96/eq/presets/.
-- **h96-bt-speaker** - box as Bluetooth A2DP speaker: pair phone, audio out HDMI.
+- **h96-bt-speaker** - A2DP speaker role for box: pair phone, audio out HDMI.
 - **h96-cast** - AirPlay audio (shairport-sync) + screen mirror (uxplay) + DLNA
   renderer (gmediarender). AirPlay 2 downgrades to AirPlay 1 (nqptp has no arm64
   build). Google Cast reception is not openly possible; DLNA is substitute.
 - **h96-transcode-server** - opt-in network HARDWARE transcode node. Drop video into
-  /srv/h96-transcode/in (over SFTP, or Samba/NFS-export folder); VPU transcodes
-  it (rkmpp hw decode + hw encode) to /srv/h96-transcode/out and moves original to
+  /srv/h96-transcode/in (over SFTP, or through NFS or Samba export of that folder); VPU
+  transcodes it (rkmpp hw decode + hw encode) to /srv/h96-transcode/out and moves original to
   done/. Box-measured ~7.5x realtime at 1080p (30 s clip in ~4 s) with CPU idle. NO
   extra packages - it reuses image's rkmpp ffmpeg + /dev/mpp_service, so it adds no
   weight. Installed DISABLED: `sudo h96-transcode-server enable`. Settings in
@@ -45,7 +45,7 @@ pad rules, emulators and Steam front end.
 
 ## Hardware cursor during GPU compositing (v6.0)
 
-Hardware cursor under continuous GPU compositing is handled at kernel driver level in
+Hardware cursor under sustained GPU compositing is handled at kernel driver level in
 v6.0. VOP2 cursor driver fix re-asserts cursor on video-port latch each frame, so
 hardware cursor stays visible during continuous GPU compositing (fullscreen video, animated
 browser pages, desktop splash); it still auto-hides over video and returns on movement, and
@@ -78,7 +78,7 @@ tile inference on NPU is ~100 ms, so whole frame is seconds and clip is
 minutes. Use it for stills and short low-res clips.
 
 Mechanism:
-- Real-ESRGAN x4 model (realesrgan_x4_96.rknn, 96x96 -> 384x384). Fetched on demand
+- Real-ESRGAN x4 model (`realesrgan_x4_96.rknn`, 96x96 -> 384x384). Fetched on demand
   (~58 MB, MIT) into /var/lib/h96/upscale/models/ by h96-npu-upscale-setup.
 - Talks to Rockchip runtime librknnrt.so directly via ctypes (C API) -
   rknnlite Python wheel only builds for CPython <= 3.12, so it is not used.
@@ -127,7 +127,7 @@ Image profiles:
   Panthor-in-image Android 11 build (LineageOS 18.1, about 5 GB) that you supply. Measured
   on box: `GLES: Mesa, Mali-G610 (Panfrost), OpenGL ES 3.1 Mesa 24.0.5`, GPU load 27 to
   41 percent at 300 to 700 MHz. Against official image it is older Android (11 against
-  13), older Mesa (24.0.5 against 26.0.1), unsigned, and abandoned since April 2024 (author
+  13), older Mesa (24.0.5 against 26.0.1), unsigned, and unmaintained since April 2024 (author
   WillzenZou, repos frozen). It needs cgroup v1 tmpfs shims (`/acct`, `/dev/stune`,
   `/dev/cpuset`, `/dev/memcg`), pins itself to 960x512 display that has to be overridden,
   and Vulkan never worked on it.
