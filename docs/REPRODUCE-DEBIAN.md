@@ -16,7 +16,7 @@ Steps below rebuild Unofficial Armbian v8.0 Debian Edition image and its release
 
 - `build/pins/debian-inputs.tsv`: every input, one row each (columns `name`, `url`, `sha256`, `size`, `role`). `name` is path below input folder `$H96_DEB_IN`. `url` is download address, or states `release asset`, `derived: <command>`, `built: <script>` or `not public as file`.
 - `build/debian/env.sh`: paths, all settable from environment (`H96_DEB_WORK`, `H96_DEB_IN`, `H96_DEB_EV`, `H96_DEB_OUT`, `H96_REPO_KEYRING`, `H96_DEB_NAME`).
-- `build/debian/check.sh`: light dry-run from checkout (no inputs, no network, no root).
+- `build/debian/check.sh`: light dry-run from checkout (without inputs, network or root).
 - `build/debian/fetch-inputs.sh`: downloads rows with https URL, checks every sha256, lists rows still needed.
 - `build/debian/pipeline/`: image stages (`base.sh`, `prep.sh`, `repo.sh` or `repo-pinned.sh`, `dryrun.sh`, `build.sh`, `assemble.sh`, `loader-pack.sh`), chroot steps (`chroot/`), laptop tests (`tests.sh`, `t11.sh`), `run-all.sh` (stages under `systemd-run` scope and lock).
 - `build/debian/userland/`: Debian userland debs from Ubuntu pkgs tree of `build/userland` (`pkgs-debian.patch`, `overlay/`, `build-userland.sh`); `generator/` holds Debian override sources of package generator (`edition_debian.py`, `userland-edition.patch`) that produced `pkgs-debian.patch`. Their `armbian-firstlogin` input (Armbian BSP 26.8.3 file plus H96 bounded wait line) equals `h96-base/root/usr/lib/armbian/armbian-firstlogin` after `pkgs-debian.patch`; separate copy left out (upstream file trips privacy grep and shellcheck gates of CI).
@@ -86,7 +86,7 @@ bash $P/run-all.sh tests.sh t11.sh             # optional: laptop chroot tests
 bash build/debian/tools/seal-release.sh "$REL" "$FLASHER"    # FLASHER: flash.py, MiniLoaderAll.bin, FLASHER-SHA256SUMS.txt from published zip
 ```
 
-Zip docs (`README.md`, `CHANGELOG.md`, `CHANGELOG-v8.0.md`, `COMMANDS.md`, `DEBIAN-EDITION.md`, `FLASHING.md`, `KERNEL-COMPARISON.md`, `ON-DEMAND-LIBRARIES.md`, `UNDERVOLT_README.md`) come from published zip. Zip tool and member times: `build/ubuntu/zip-times.py` and `build/ubuntu/stage-and-zip.py 8.0 --edition=debian` with `H96_EDITION_ROOT` (or `H96_RELEASE_DIR`, `H96_UPLOAD_ROOT`), as in [REPRODUCE.md](REPRODUCE.md).
+Zip docs (`README.md`, `CHANGELOG.md`, `CHANGELOG-v8.0.md`, `COMMANDS.md`, `DEBIAN-EDITION.md`, `FLASHING.md`, `KERNEL-COMPARISON.md`, `ON-DEMAND-LIBRARIES.md`, `UNDERVOLT_README.md`) come from published zip. Member times and zip tool: `build/ubuntu/zip-times.py` and `build/ubuntu/stage-and-zip.py 8.0 --edition=debian` with `H96_EDITION_ROOT` (or `H96_RELEASE_DIR`, `H96_UPLOAD_ROOT`), as in [REPRODUCE.md](REPRODUCE.md).
 
 ### 5. Compare
 

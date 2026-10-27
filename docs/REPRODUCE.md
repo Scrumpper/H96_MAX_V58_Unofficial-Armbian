@@ -8,7 +8,7 @@ Rows marked "not public as file" are build outputs or blobs with no standalone d
 
 ## Requirements
 
-Host: Linux x86_64 or arm64, user namespaces (`unshare --map-auto`), qemu-user-static with binfmt for arm64, e2fsprogs (debugfs, mke2fs, tune2fs, e2fsck), dpkg-dev, gpg, shellcheck, xz-utils, zstd, python3, systemd-run (user scope). No root, no writes to host `/boot`.
+Host: Linux x86_64 or arm64, user namespaces (`unshare --map-auto`), qemu-user-static with binfmt for arm64, e2fsprogs (debugfs, mke2fs, tune2fs, e2fsck), dpkg-dev, gpg, shellcheck, xz-utils, zstd, python3, systemd-run (user scope). Root is not needed, and host `/boot` is never written.
 Kernel builds: aarch64-linux-gnu-gcc 16.1.0, binutils 2.47, pahole 1.32 (Arch Linux container used for published build).
 Disk: about 20 GB free for image build work folder.
 
@@ -106,7 +106,7 @@ Inputs:
 | `H96_UBUNTU_IDX` (optional) | Ubuntu resolute index files (pin table) for adds provenance; skipped with WARN when unset |
 | `H96_WORK`, `H96_RC_OUT` | work and output folders (default under `$XDG_CACHE_HOME`) |
 
-Published image files: after `build.sh base`, partitions sit at `$H96_WORK/p1.base` and `p2.base`. Published v8.0 image partition 2 starts at byte 553648128, size 3144679424 bytes:
+Published image files: after `build.sh base`, partitions sit at `$H96_WORK/p1.base` and `p2.base`. Partition 2 of published v8.0 image starts at byte 553648128, size 3144679424 bytes:
 
 ```
 dd if=H96-MAX-V58_Unofficial-Armbian_v8.0.img of=/work/v80-p2.img bs=4M skip=553648128 count=3144679424 iflag=skip_bytes,count_bytes
