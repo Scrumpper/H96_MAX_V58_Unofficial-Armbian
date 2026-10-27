@@ -669,7 +669,7 @@
 @@ -758,7 +758,7 @@
  default. Switch to `performance` before running inference.
  
- **`power sync`.** System power profile (`h96-perf`, panel applet) covers CPU and GPU
+ **`power sync`.** System power profile (`h96-perf`, desktop applet) covers CPU and GPU
 -only. `power sync` reads active profile (`powerprofilesctl get`, governors as fallback)
 +only. `power sync` reads active profile (`powerprofilesctl get` when present, else governors)
  and matches NPU to it: `performance` for performance, `powersave` for power-saver,
