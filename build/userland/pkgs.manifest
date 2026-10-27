@@ -117,7 +117,7 @@ f	644	c4f00a173d20b12e368e90e6c8692cdae84cbb176c4fafb718b249e2d8b1d888	428	-	h96
 f	644	017e6065d746aef2a23539f16c12bc8cd99d4315d078b91ce4098020755ee669	161	-	h96-base/root/usr/lib/systemd/system-preset/50-h96.preset
 f	644	4523e1ad03253ab8afdd9d4d96768e953ea4e5835eb77dcbe00176f44115e4f4	339	-	h96-base/root/usr/lib/udev/rules.d/70-h96-pinhole.rules
 f	755	d29b8841f4003c7d1983ed186f24c848e2542bde9530aa13a3edf61609ca0c6a	721	-	h96-base/root/usr/sbin/h96-timezone-sync
-f	644	72abc87c3b00876a95604d68ca134e8c3742260be1f8a1b89d0ec0f68fbcbde8	147610	-	h96-base/root/usr/share/doc/h96-base/COMMANDS.md
+f	644	87e269f5c75207d03269bef701ca94c20af948889e158a15b7f835110169d3d7	147607	-	h96-base/root/usr/share/doc/h96-base/COMMANDS.md
 b	644	9f22ed8821cc2abb37b5161fc8e54f64d7ad60e4d6fa1ba817479cb800059f82	233	-	h96-base/root/usr/share/keyrings/h96-local-archive-keyring.gpg
 b	644	4ff4e5d7bc9ebb384351fee2bca9e0b2195c00f5667ec2ae21b15030ede99708	257	-	h96-base/root/usr/share/man/man1/h96.1.gz
 b	644	52c61a9c777a952725997c6968730df810e1c342bf92f72e9fbfcc016df5ee62	309	-	h96-base/root/usr/share/man/man8/h96-timezone-sync.8.gz

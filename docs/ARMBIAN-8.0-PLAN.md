@@ -69,8 +69,8 @@ Kernel stays on Rockchip BSP line rk-6.1-rkr7.2 with H96 patch series. Vendor U-
 ### Kernel packages
 
 Payload stages into `/usr/lib/h96-kernel/<krel>/` (Image, System.map, config, DTB) and `/usr/lib/modules/<krel>/`.
-Packages contain nothing under `/boot`. Postinst runs `depmod` for its release only; no `/etc/kernel` hooks,
-no initramfs tools. Prerm blocks uninstall of running kernel's package and postinst shows one hint line.
+Packages contain nothing under `/boot`. Postinst runs `depmod` for its release only, without `/etc/kernel` hooks
+or initramfs tools. Prerm blocks uninstall of running kernel's package and postinst shows one hint line.
 `h96-kernel-switch` copies files into `/boot` as guarded trial with fallback and rollback; see
 [KERNEL-SWITCH.md](KERNEL-SWITCH.md).
 

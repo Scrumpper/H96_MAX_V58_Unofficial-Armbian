@@ -41,7 +41,7 @@ and docs to rebuild and verify release images. Sources are GPL-2.0; see
 ## Downloads
 
 Images are published on [Releases page](https://github.com/Scrumpper/H96_MAX_V58_Unofficial-Armbian/releases).
-v8.0 release carries one zip per edition:
+v8.0 release carries separate zip per edition:
 
 | Asset | Contents |
 |---|---|
@@ -58,7 +58,7 @@ backup and restore.
 ## Editions
 
 Both editions carry same boot chain, kernels, `h96-kernel-switch` and eight H96 userland
-packages. Both boot to text console with SSH; desktop installs on demand.
+packages. Each boots to text console with SSH; desktop installs on demand.
 
 | Area | Ubuntu image | Debian Edition |
 |---|---|---|
@@ -79,15 +79,15 @@ v8.0 is platform release over v7.2. Full list: `CHANGELOG-v8.0.md` in release, h
 [CHANGELOG.md](CHANGELOG.md).
 
 - **Kernel 6.12.69 default**, Rockchip `rk-6.12-rkr1` with H96 patch series (cursor fixes,
-  HDMI-CEC, HDMI 2.0 modes over GPIO DDC bus, colour-format switch, HDR, RGA). Kernel
-  6.1.172 installed beside it as fallback.
+  HDMI-CEC, HDMI 2.0 modes over GPIO DDC bus, colour-format switch, HDR, RGA). Fallback
+  kernel 6.1.172 is installed beside it.
 - **Panthor GPU interface 1.5** on 6.12: Vulkan timestamps, global priority query, per-process
   GPU memory in `/proc/<pid>/fdinfo`, per-process GPU time with profiling switch (off by
   default).
 - **RAM scaling** on 6.12: DDR 528 to 2112 MHz on demand, floor follows display bandwidth.
 - **Power Save profile**: `schedutil` with capped big and little cores and GPU 300 to
   600 MHz; 4K60 mpv playback with 0 dropped frames in 60 s on test unit.
-- **Kernel hardening** on 6.12: `LIST_HARDENED`, `RANDOM_KMALLOC_CACHES`, `SLAB_BUCKETS`;
+- **Hardening options** on 6.12: `LIST_HARDENED`, `RANDOM_KMALLOC_CACHES`, `SLAB_BUCKETS`;
   eMMC host software queue on.
 - **Variable refresh**: FreeSync over HDMI in Plasma X11 session with `sudo h96-vrr on`
   (off by default).
@@ -114,7 +114,7 @@ v8.0 is platform release over v7.2. Full list: `CHANGELOG-v8.0.md` in release, h
 
 Each kernel has own modules (`/usr/lib/modules/<release>`) and device tree.
 `h96-kernel-switch` boots chosen kernel as trial; Image, initramfs and device tree switch
-together through one link (`/boot/h96ks/cur`):
+together through link `/boot/h96ks/cur`:
 
 ```bash
 h96-kernel-switch list                              # staged kernels: running, default, trial
@@ -139,7 +139,7 @@ packages out, so kernels arrive with image releases. Design, refusals and power-
 | Mali-G610 GPU | ✅ | Panthor + Mesa (Panfrost GL, PanVK Vulkan); GPU-composited desktop |
 | Hardware video decode | ✅ | Rockchip MPP + mpv; 8-bit H.264, HEVC, VP9 and AV1 on zero-copy path |
 | Hardware video encode | ✅ | H.264, HEVC and MJPEG through `h96-encode` |
-| HDMI0 + audio | ✅ | One output; EDID over GPIO DDC bus; HDMI 2.0 modes up to 3840x2160 at 60 Hz and 2560x1440 at 144 Hz |
+| HDMI0 + audio | ✅ | Sole output; EDID over GPIO DDC bus; HDMI 2.0 modes up to 3840x2160 at 60 Hz and 2560x1440 at 144 Hz |
 | HDMI-CEC | ✅ | TV remote drives desktop, mpv and Kodi; on by default |
 | Ethernet | ✅ | RTL8211F Gigabit |
 | WiFi 6 (BCM43752 / AP6275P) | ✅ | **PCIe**, runs beside Ethernet; `h96-wifi-connect` or tray icon |
@@ -161,7 +161,7 @@ ir-keytable -p nec -t      # press remote buttons -> prints scancodes
 ```
 
 **Thermals.** Trip points are SoC BSP defaults: `soc-thermal` passive 80 and 95 C, other
-zones passive 75 C, critical 115 C on all. Measured on one unit: idle about 52 to 61 C;
+zones passive 75 C, critical 115 C on all. Measured on test unit: idle about 52 to 61 C;
 sustained all-core `performance` load reached 85 C and throttles.
 
 ---
@@ -203,8 +203,8 @@ python3 flash.py --verify   # also reads whole image back and compares sha256 be
 
 **By hand.**
 
-1. Enter flashing mode. Box running Armbian: `ssh root@<ip> 'reboot loader'`. Box that will
-   not boot: power off, hold recessed pinhole button (rear panel, gap between two WiFi
+1. Enter flashing mode. Box running Armbian: `ssh root@<ip> 'reboot loader'`. Unbootable
+   box: power off, hold recessed pinhole button (rear panel, gap between two WiFi
    antenna posts) while plugging cable into black USB2 port, release after about 3 s.
    `rkdeveloptool ld` reports `Loader` or `Maskrom`.
 
@@ -261,7 +261,7 @@ experimental: `sudo h96-autologin-setup --session plasma`.
   repository and differences.
 - `build/build-kernel-debs.sh` wraps kernel build outputs into `h96-kernel-<krel>` and
   `h96-dtb-<krel>` (payload `/usr/lib/h96-kernel/<krel>`, modules `/usr/lib/modules/<krel>`,
-  nothing under `/boot`); `PIN=1` (default) checks each input against pinned sha256.
+  no files under `/boot`); `PIN=1` (default) checks each input against pinned sha256.
 - `tools/dtb/` builds board DTB from vendor base DTB plus `patch/dt/h96-max-v58.dtso` and
   checks it by tree diff against pinned reference ([docs/DEVICE-TREE-CHANGES.md](docs/DEVICE-TREE-CHANGES.md)).
 - CI runs docs gates, shell lint, tree diff and package checks ([docs/CI.md](docs/CI.md)).
@@ -315,7 +315,7 @@ Index of every doc: [docs/README.md](docs/README.md).
 
 - **Power off** enters firmware standby and restarts about 45 s later (hardware watchdog),
   on both kernels. Unplug power after shutdown.
-- **One HDMI output** (HDMI0). Multichannel HDMI audio not verified.
+- **HDMI output: HDMI0 only.** Multichannel HDMI audio not verified.
 - **10-bit video** (HEVC Main10, VP9 profile 2, AV1 10-bit) decodes in software and drops
   frames at 4K60.
 - **In-browser video decode** stays on CPU; use ff2mpv "play in mpv" path.
@@ -324,7 +324,7 @@ Index of every doc: [docs/README.md](docs/README.md).
   downshifting; `ethtool -s eth0 speed 100 duplex full autoneg off` skips Gigabit
   negotiation at cost of capping port.
 - **Plasma (Wayland) session** is experimental: 4K60 video drops frames at 3840x2160
-  output, no RGB range control, no VRR. Run Proton titles in Plasma X11 session.
+  output, with no RGB range control or VRR. Run Proton titles in Plasma X11 session.
 - **Fallback kernel 6.1** has no RAM scaling.
 - **Boot firmware** changes only with fresh flash; package upgrades never touch it.
 - **Anti-cheat titles** do not run under x86-on-arm64 emulation; Steam snap does not work

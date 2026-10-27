@@ -6,7 +6,7 @@ Steps below rebuild Unofficial Armbian v8.0 Debian Edition image and its release
 
 | File | sha256 | Size (bytes) |
 |---|---|---|
-| `Unofficial.Armbian.v8.0.Debian.Edition.zip` (release asset) | `0f41cf00d1c457b48fa7851eddc42086bf29c5ecf710079ebebb2d23b4d41e2d` | 653490372 |
+| `Unofficial.Armbian.v8.0.Debian.Edition.zip` (release asset) | `6db739695f84ac5071c3082db66334b84adf3d3d1bea6655551dc3b334bcecec` | 653490177 |
 | `H96-MAX-V58_Unofficial-Armbian_v8.0-debian.img.xz` (in zip) | `029ed5699d37dac93a9cbee1844df9ff588feeedc82efb3885c75ae9cae9f0b0` | 652500288 |
 | `H96-MAX-V58_Unofficial-Armbian_v8.0-debian.img` (`xz -dc`) | `84ce3d58fd25cc89354a0a244df075b628faa2c4e0d2e66ebf3b1584aeab79ef` | 3699376128 |
 | `MiniLoaderAll.bin` (in zip) | `95325cba73b2de46f160da2df970199c7ecf1bb1d47d6584936ec4cd1e88140e` | 448960 |
@@ -16,7 +16,7 @@ Steps below rebuild Unofficial Armbian v8.0 Debian Edition image and its release
 
 - `build/pins/debian-inputs.tsv`: every input, one row each (columns `name`, `url`, `sha256`, `size`, `role`). `name` is path below input folder `$H96_DEB_IN`. `url` is download address, or states `release asset`, `derived: <command>`, `built: <script>` or `not public as file`.
 - `build/debian/env.sh`: paths, all settable from environment (`H96_DEB_WORK`, `H96_DEB_IN`, `H96_DEB_EV`, `H96_DEB_OUT`, `H96_REPO_KEYRING`, `H96_DEB_NAME`).
-- `build/debian/check.sh`: light dry-run from checkout (no inputs, no network, no root).
+- `build/debian/check.sh`: light dry-run from checkout (without inputs, network or root).
 - `build/debian/fetch-inputs.sh`: downloads rows with https URL, checks every sha256, lists rows still needed.
 - `build/debian/pipeline/`: image stages (`base.sh`, `prep.sh`, `repo.sh` or `repo-pinned.sh`, `dryrun.sh`, `build.sh`, `assemble.sh`, `loader-pack.sh`), chroot steps (`chroot/`), laptop tests (`tests.sh`, `t11.sh`), `run-all.sh` (stages under `systemd-run` scope and lock).
 - `build/debian/userland/`: Debian userland debs from Ubuntu pkgs tree of `build/userland` (`pkgs-debian.patch`, `overlay/`, `build-userland.sh`); `generator/` holds Debian override sources of package generator (`edition_debian.py`, `userland-edition.patch`) that produced `pkgs-debian.patch`. Their `armbian-firstlogin` input (Armbian BSP 26.8.3 file plus H96 bounded wait line) equals `h96-base/root/usr/lib/armbian/armbian-firstlogin` after `pkgs-debian.patch`; separate copy left out (upstream file trips privacy grep and shellcheck gates of CI).
@@ -86,7 +86,7 @@ bash $P/run-all.sh tests.sh t11.sh             # optional: laptop chroot tests
 bash build/debian/tools/seal-release.sh "$REL" "$FLASHER"    # FLASHER: flash.py, MiniLoaderAll.bin, FLASHER-SHA256SUMS.txt from published zip
 ```
 
-Zip docs (`README.md`, `CHANGELOG.md`, `CHANGELOG-v8.0.md`, `COMMANDS.md`, `DEBIAN-EDITION.md`, `FLASHING.md`, `KERNEL-COMPARISON.md`, `ON-DEMAND-LIBRARIES.md`, `UNDERVOLT_README.md`) come from published zip. Zip tool and member times: `build/ubuntu/zip-times.py` and `build/ubuntu/stage-and-zip.py 8.0 --edition=debian` with `H96_EDITION_ROOT` (or `H96_RELEASE_DIR`, `H96_UPLOAD_ROOT`), as in [REPRODUCE.md](REPRODUCE.md).
+Zip docs (`README.md`, `CHANGELOG.md`, `CHANGELOG-v8.0.md`, `COMMANDS.md`, `DEBIAN-EDITION.md`, `FLASHING.md`, `KERNEL-COMPARISON.md`, `ON-DEMAND-LIBRARIES.md`, `UNDERVOLT_README.md`) come from published zip. Member times and zip tool: `build/ubuntu/zip-times.py` and `build/ubuntu/stage-and-zip.py 8.0 --edition=debian` with `H96_EDITION_ROOT` (or `H96_RELEASE_DIR`, `H96_UPLOAD_ROOT`), as in [REPRODUCE.md](REPRODUCE.md).
 
 ### 5. Compare
 
@@ -114,7 +114,7 @@ Raw areas compared byte for byte; partitions compared as inventories (path, type
 | bytes past sector 32767 of final image | `40831fee929d129eb4c6b0b18b7ba4580ad532541337e53c2d20aaa36cd898df` | no |
 | final image | `84ce3d58fd25cc89354a0a244df075b628faa2c4e0d2e66ebf3b1584aeab79ef` | no |
 | image `.xz` | `029ed5699d37dac93a9cbee1844df9ff588feeedc82efb3885c75ae9cae9f0b0` | no (follows image) |
-| release zip | `0f41cf00d1c457b48fa7851eddc42086bf29c5ecf710079ebebb2d23b4d41e2d` | no (follows image) |
+| release zip | `6db739695f84ac5071c3082db66334b84adf3d3d1bea6655551dc3b334bcecec` | no (follows image) |
 | userland debs, kernel debs, kernel switch deb | sha256 in pins file | userland: two builds equal; kernel: [REPRODUCE.md](REPRODUCE.md) |
 
 ## Not byte-reproducible

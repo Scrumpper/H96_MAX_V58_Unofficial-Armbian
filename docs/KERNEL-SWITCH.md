@@ -30,7 +30,7 @@ guard on top of those links, as v7.1 test kernel guard did.
 
 Three separate links cannot change together: power loss between two renames leaves mixed set (new DTB with old
 Image, old Image with new initramfs), and that boot happens before any guard runs. Tool therefore keeps each
-kernel set in one generation directory and points every boot name through one link:
+kernel set in its own generation directory and routes every boot name through link `h96ks/cur`:
 
 ```
 /boot/Image                      -> h96ks/cur/Image
@@ -45,9 +45,9 @@ Switching kernel is one rename of `h96ks/cur`, so U-Boot reads either complete o
 Generation directory is written under hidden temporary name, read back, then renamed into place; it never
 changes afterwards. Retry of same release creates new generation (`.g2`) and removes earlier unused attempt. Same release, new content: `try` of release that is already default or running makes new generation when staged Image or DTB differs from in-boot generation (refused when both are equal); boot guard tells trial boot from fallback by Image banner when generations differ there, else by boot id and `h96ks/cur`. `list`, `status`, `in-use` and `prune` take generation names (`<krel>.g<n>`).
 
-Module tree per kernel build: builds of one release share `/usr/lib/modules/<krel>`, and package upgrade
-replaces it; modules of one build fail BTF validation on another (`Invalid argument`: no Wi-Fi, no Panthor, no
-compositor after fallback). Tool keeps tree of each staged build under `/var/lib/h96-kernel-switch/modules/<krel>/<sha16>`
+Module tree per kernel build: builds of same release share `/usr/lib/modules/<krel>`, and package upgrade
+replaces it; modules of one build fail BTF validation on another (`Invalid argument`: Wi-Fi, Panthor and
+compositor missing after fallback). Tool keeps tree of each staged build under `/var/lib/h96-kernel-switch/modules/<krel>/<sha16>`
 (hard links, keyed by Image sha256 and GNU build id): at `try`, from apt hook before dpkg
 (`/etc/apt/apt.conf.d/80h96-kernel-switch`) and from package postinst. `h96-kernel-switch-modules.service` runs before
 `systemd-udevd` and `systemd-modules-load` (no `/boot` access, writes nothing): when running build id
@@ -61,7 +61,7 @@ replaces package tree, then full tree size (6.12: 125 MB, 6.1: 181 MB) until no 
 Initramfs `init-bottom` script (in every `uInitrd` that `try` builds) does same build-id check before `switch_root`
 and mounts saved tree on target root filesystem, so modules PID1 loads at startup (`ipv6`) and first `modprobe@` units already
 match; `modprobe@.service` drop-in orders after modules unit, which stays as second line of defence (generations made by earlier
-versions of this tool have no initramfs script). Initramfs hook copies one hex dumper only (`gnuod`, else `hexdump`;
+versions of this tool have no initramfs script). Hook script for `mkinitramfs` copies one hex dumper only (`gnuod`, else `hexdump`;
 never file over 1 MiB, so not Rust coreutils multicall binary); script uses busybox applets otherwise (scratch
 `mkinitramfs`: +56 KB compressed). Staged build ids live in `/var/lib/h96-kernel-switch/modules/<krel>/staged.meta`
 with build-id note offsets; script reads staged build ids there (no size, mtime or inode, so rootfs copied into image

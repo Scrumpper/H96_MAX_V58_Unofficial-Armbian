@@ -38,9 +38,9 @@ pad rules, emulators and Steam front end.
 - **h96-transcode-server** - opt-in network HARDWARE transcode node. Drop video into
   /srv/h96-transcode/in (over SFTP, or through NFS or Samba export of that folder); VPU
   transcodes it (rkmpp hw decode + hw encode) to /srv/h96-transcode/out and moves original to
-  done/. Box-measured ~7.5x realtime at 1080p (30 s clip in ~4 s) with CPU idle. NO
-  extra packages - it reuses image's rkmpp ffmpeg + /dev/mpp_service, so it adds no
-  weight. Installed DISABLED: `sudo h96-transcode-server enable`. Settings in
+  done/. Box-measured ~7.5x realtime at 1080p (30 s clip in ~4 s) with CPU idle. It
+  reuses image's rkmpp ffmpeg + /dev/mpp_service, so it needs no extra package and adds
+  no weight. Installed DISABLED: `sudo h96-transcode-server enable`. Settings in
   /etc/h96/transcode.conf (codec hevc/h264/mjpeg, bitrate, container, optional scale).
 
 ## Hardware cursor during GPU compositing (v6.0)
@@ -100,7 +100,7 @@ Use:
 
 `h96-waydroid` runs full Android system in LXC container that shares host
 kernel (Waydroid 1.6.2). It is OPT-IN like everything else here: image includes
-command, nothing else.
+command only.
 
 Why it needs v5.0 kernel:
 - Android 11 and later `init`/`lmkd` hard-require `/proc/pressure`. Stock BSP kernel
@@ -222,5 +222,5 @@ Flathub remote) after warning, or run `h96-emulators bootstrap` first.
 
 mGBA and ScummVM are deliberately excluded. Both are 2D and do not meaningfully use
 Mali GPU, so this tool's GPU wiring has nothing to do for them. They are not missing from
-box: both are one click away in app store as Flathub `io.mgba.mGBA` and
-`org.scummvm.ScummVM`, or as apt `mgba-qt` and `scummvm`. They run fine on CPU.
+box: app store lists both as Flathub `io.mgba.mGBA` and `org.scummvm.ScummVM`, and apt
+carries `mgba-qt` and `scummvm`. CPU rendering serves them.

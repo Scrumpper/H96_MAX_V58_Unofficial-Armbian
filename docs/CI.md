@@ -1,6 +1,6 @@
 # CI workflow
 
-Workflow file: `.github/workflows/ci.yml`. Runs on push to `main` and `armbian-*` branches, on every pull request and on manual dispatch. All jobs use GitHub-hosted arm64 runners (`ubuntu-24.04-arm`). Workflow token is read-only (`contents: read`). No secrets, no release steps, no pushes, no tags. Outputs go to workflow run artifacts only.
+Workflow file: `.github/workflows/ci.yml`. Runs on push to `main` and `armbian-*` branches, on every pull request and on manual dispatch. All jobs use GitHub-hosted arm64 runners (`ubuntu-24.04-arm`). Workflow token is read-only (`contents: read`). It holds no secrets and runs no release step, push or tag. Outputs go to workflow run artifacts only.
 
 ## Jobs
 
@@ -8,7 +8,7 @@ Workflow file: `.github/workflows/ci.yml`. Runs on push to `main` and `armbian-*
 |-----|------|-----------------|------------|
 | `docs` | Style rules | `tools/docs/check-docs.py` | Any style issue in tracked `*.md`; build round label `~rN` passes only in package `Version:` field |
 | `docs` | Article pass | `tools/docs/strip-articles.py --check` | Any article left in prose, or dangling internal link |
-| `docs` | Alliteration | `tools/docs/check-alliteration.py` | Three words sharing initial letter inside four-word window of one sentence, outside code and tables; names listed in `tools/docs/alliteration-allow.txt` pass |
+| `docs` | Alliteration | `tools/docs/check-alliteration.py` | Three words sharing initial letter inside four-word window of one sentence, outside code and tables; names listed in `tools/docs/alliteration-allow.txt` pass. Same script flags repeated openers (same first word on neighbouring bullets, sentences or clauses) and determiner slogans such as "one" or "nothing" plus noun; names in `tools/docs/openers-allow.txt` pass |
 | `docs` | Privacy grep | Built-in generic regex, allowlist `.github/privacy-allow.txt` | LAN address, home path or webmail address in tracked text, other than allowlisted test vectors |
 | `lint` | Shell lint | `shellcheck -S error` over `*.sh` and files with sh/bash shebang | Any error-level finding (warnings printed, not gating) |
 | `lint` | Python syntax | `python3 -m py_compile` over `*.py` and files with python shebang | Any syntax error |

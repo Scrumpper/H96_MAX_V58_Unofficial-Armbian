@@ -2,8 +2,8 @@
 
 `patch/kernel/rk3588-h96-max-v58-panthor.dts` is board device tree. It began as
 **decompile of stock Android vendor DTB** (`dtc -I dtb -O dts`), which is why it carries
-`rockchip,rk3588-nvr-demo-v10-android` compatible and numeric phandles. It
-was then edited for open-GPU Armbian build. File in this repo is decompile of
+`rockchip,rk3588-nvr-demo-v10-android` compatible and numeric phandles, and was
+then edited for open-GPU Armbian build. File in this repo is decompile of
 `rk3588-h96-max-v58-panthor.dtb`, DTB which v6.0 image boots (`fdtfile=` in
 `/boot/armbianEnv.txt`); it recompiles to same tree. Changes below are what
 differ from stock DTB.
