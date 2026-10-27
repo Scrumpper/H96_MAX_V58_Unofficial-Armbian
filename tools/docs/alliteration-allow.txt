@@ -1,0 +1,85 @@
+# check-alliteration.py allow-list: proper, product, project, codec and protocol names only.
+# One entry per line: name  # justification. Never a common word (power, profile, package).
+# Matching is case-insensitive; a single-word entry also covers hyphen suffixes (aptX-HD, Cortex-A76).
+# An entry that is not one plain word (Steam Deck, S/PDIF, Direct3D) is removed from the text as a phrase first.
+Steam Deck  # Valve product name
+Remote Play  # Steam feature name (Valve)
+Steam  # Valve platform trademark
+Proton  # Valve compatibility layer name
+DXVK  # Direct3D-to-Vulkan project name
+Panfrost  # Mesa Mali GL driver name
+PanVK  # Mesa Mali Vulkan driver name
+Panthor  # kernel Mali CSF driver name
+Mesa  # Mesa 3D project name
+Mali  # Arm GPU product name
+Cortex-A  # Arm CPU core family name
+ARM  # Arm Holdings trademark / architecture name
+Rockchip  # SoC vendor name
+RKNN  # Rockchip NPU toolkit name
+RKNPU  # Rockchip NPU driver name
+MPP  # Rockchip Media Process Platform library name
+Broadcom  # Wi-Fi chip vendor name
+Plasma  # KDE desktop product name
+KDE  # KDE project name
+KWin  # KDE window manager name
+PowerDevil  # KDE power service name
+SDDM  # display manager project name
+Kodi  # media center project name
+Wayland  # display protocol project name
+Weston  # Wayland compositor project name
+Waydroid  # Android container project name
+Android  # Google OS trademark
+Windows  # Microsoft OS trademark
+Linux  # kernel trademark
+Debian  # distribution name
+Armbian  # distribution name
+Ubuntu  # distribution name
+Chromium  # browser project name
+Flatpak  # packaging project name
+NetworkManager  # network service project name
+PipeWire  # audio server project name
+WirePlumber  # PipeWire session manager name
+GStreamer  # media framework project name
+GVfs  # GNOME virtual filesystem project name
+GTK  # toolkit project name
+Samba  # SMB server project name
+mpv  # media player project name
+MPRIS  # media player D-Bus specification name
+ffmpeg  # media library project name
+ddcutil  # monitor control tool project name
+Real-ESRGAN  # upscaler model name
+Claude  # Anthropic product name
+GitHub  # Microsoft service trademark
+Valve  # company name
+AAC  # audio codec name
+aptX  # Qualcomm codec trademark
+LDAC  # Sony codec trademark
+SBC  # Bluetooth codec name
+mSBC  # Bluetooth HFP codec name
+CVSD  # Bluetooth HFP codec name
+HFP  # Bluetooth Hands-Free Profile name
+HSP  # Bluetooth Headset Profile name
+A2DP  # Bluetooth audio profile name
+SCO  # Bluetooth link protocol name
+HDMI  # interface trademark
+DVI  # interface standard name
+PCIe  # PCI-SIG bus standard name
+DDC  # VESA Display Data Channel protocol name
+SCDC  # HDMI Status and Control Data Channel protocol name
+EDID  # VESA display data standard name
+CTA  # Consumer Technology Association (CTA-861) name
+CEA  # Consumer Electronics Association (CEA-861) name
+DRM  # kernel Direct Rendering Manager subsystem name
+GLES  # OpenGL ES API name
+Vulkan  # Khronos API trademark
+OpenGL  # Khronos API trademark
+WiFi  # Wi-Fi Alliance trademark
+SFTP  # SSH file transfer protocol name
+Steam Frame  # Valve product name
+Big Picture  # Steam interface mode name (Valve)
+Source engine  # Valve game engine name
+Adaptive Sync  # VESA trademark
+System Settings  # KDE application name
+FEX  # FEX-Emu x86 emulator project name
+Direct3D  # Microsoft API name
+S/PDIF  # Sony/Philips digital interface standard name
