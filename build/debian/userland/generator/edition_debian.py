@@ -5,9 +5,9 @@ import hashlib, os
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ED = os.path.join(os.path.dirname(HERE), "edition-debian")
-DEB_VERSION = "8.0.0~r39+deb13.1"
+DEB_VERSION = "8.0.0~r40+deb13.1"
 DEB_DIST = "trixie"
-DEB_DATE = "Tue, 27 Oct 2026 06:00:00 +0000"  # after Ubuntu r39 DATE (27 Oct 00:00)
+DEB_DATE = "Tue, 27 Oct 2026 12:00:00 +0000"  # after Ubuntu r40 DATE (27 Oct 06:00)
 WP_DEB = "0.5.18-1~h96.1+deb13.1"
 MESA_DEB = "26.1.6-1~bpo13+1"
 OSID = '"$(. /etc/os-release 2>/dev/null; echo "${ID:-}")"'
@@ -20,7 +20,7 @@ MPRIS_SHA = os.environ.get("H96_DEB_MPRIS_SHA", "")
 # libc6 floor of rebuilt stack binaries (highest GLIBC_ symbol version they need)
 MEDIA_LIBC = os.environ.get("H96_DEB_MEDIA_LIBC", "2.38")
 
-DEB_CHANGES_COMMON = ["Debian 13 trixie build of 8.0.0~r38 (Debian Edition)."]
+DEB_CHANGES_COMMON = ["Debian 13 trixie build of 8.0.0~r40 (Debian Edition)."]
 DEB_CHANGES = {
     "h96-base": ["Mesa pin also names Debian trixie-backports 26.1.6-1~bpo13+1, every Mesa binary of that build "
                  "(OpenCL, Teflon, drm-shim and dev packages too), so no Mesa package resolves to trixie 25.0.7.",

@@ -18,7 +18,7 @@ Dated 2026-10-18 and kept as written then (6.1 kernel line, beta milestones). Re
 
 8.0 is platform release. It adds no new media or gaming features.
 
-- Kernel, DTB and h96-* userland become dpkg packages built from pinned inputs and installed into rootfs at image
+- Kernel, DTB and h96-* userland become dpkg packages built from pinned inputs and installed into root filesystem at image
   build time.
 - Updates arrive as owner-signed bundles. Kernels stage into try-once boot slot with hardware watchdog fallback.
 - `h96-selftest` runs same checks on every release candidate that owner and users can run.
@@ -98,7 +98,7 @@ tools/dtb/dt-tree-diff.sh rk3588-h96-max-v58-panthor.dtb out/candidate.dtb out/g
 ```
 
 Base is vendor DTB from image (`rk3588-h96-max-v58.dtb`). Gate passes when residual lines equal
-`tools/dtb/gate/allowed-residual.txt` after phandle renumbering is removed. Renumbering check covers changed lines
+`tools/dtb/gate/allowed-residual.txt` after phandle renumbering is removed. Renumbering check applies to changed lines
 only: each changed phandle value must resolve to same node path in both trees. Unchanged lines are not resolved
 again. Vendor base DTB and v7.2 reference DTB sit in `dtb/pinned/`, checked by `SHA256SUMS`; CI runs tree diff on
 them with `H96_CI_STRICT` set, so missing or changed inputs fail job. Overlay uses vendor labels and full vendor
@@ -133,13 +133,13 @@ output exists for claim; nothing in this list has been booted on hardware unless
 bench, image build path, BSP successor and update check timer. U-Boot bench checks recorded. Kernel series
 reconstructed (done). State parity manifest from v7.2 box (done in userland package).
 
-**8.0-alpha.** Platform tested part by part on v7.2 box, no image yet. Kernel package installed staging-only
+**8.0-alpha.** Platform tested component by component on v7.2 box, no image yet. Kernel package installed staging-only
 and booted under its own name; overlay DTB booted under test name; userland packages lintian clean and installed in
 chroot; selftest runs on box; first green CI run on pull request; backup matrix green in CI. Every alpha boot of
 new kernel or DTB needs owner present and Maskrom cable ready.
 
 **8.0-beta.** First chroot-built image, try slot live, one clean flash. Live boot script test passed
-(broken-initramfs fallback, induced-panic fallback, forced watchdog expiry, promote). Current state: chroot-built
+(fallback after broken initramfs, fallback after induced panic, forced watchdog expiry, promote). Current state: chroot-built
 image and clean flash done; try slot and live boot script tests still open.
 
 **8.0 release candidate.** Feature set locked, signed bundle path exercised, docs through every gate, draft prepared

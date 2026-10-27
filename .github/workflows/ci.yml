@@ -53,6 +53,11 @@ jobs:
           set -euo pipefail
           mapfile -t docs < <(git ls-files -- '*.md' ':!build/userland/pkgs')
           python3 tools/docs/strip-articles.py --check "${docs[@]}"
+      - name: check-alliteration
+        run: |
+          set -euo pipefail
+          mapfile -t docs < <(git ls-files -- '*.md' ':!build/userland/pkgs')
+          python3 tools/docs/check-alliteration.py "${docs[@]}"
       - name: privacy grep
         run: |
           set -euo pipefail

@@ -36,20 +36,20 @@
                  if path.startswith(SEED_DIR) and wmode not in ("0o644", "0o755"):
 --- a/tools/deltas.py
 +++ b/tools/deltas.py
-@@ -685,8 +685,8 @@
+@@ -686,8 +686,8 @@
      "/usr/local/sbin/h96-dm-handoff": (_dm_handoff, "r8: package install time from dpkg-query db-fsys:Last-Modified, not dpkg info file"),
      "/usr/local/bin/h96-game-mode": (lambda t: fx25.game_mode(xd80.game_mode(_game_mode(t))), "r8: DXVK and env root /usr/lib/h96/gaming, wine root /opt/h96-gaming; r16: status read-only (was taken as game path and started Wine download), missing game path refused before Wine download; r25: patched ICD kept when h96-vulkan-wsi on in Wayland session and Mesa equals pin"),
      "/usr/local/bin/h96-dxvk-install": (_dxvk_install, "r8: DXVK root /usr/lib/h96/gaming, wine root /opt/h96-gaming"),
--    "/usr/local/share/h96/COMMANDS.md": (lambda t: fx39.commands(fx37.commands(fx36.commands(fx35.commands(fx33.commands(fx32.commands(fx31.commands(fx29.commands(fx28.commands(fx27.commands(fx26.commands(fx25.commands(fx24.commands(fx23.commands(fx22.commands(fx21.commands(fx20.commands(fx19.commands(hp80.commands(xd80.commands(_commands_r14(_commands_r13(_commands(t))))))))))))))))))))))),"r8: command locations after FHS move, panthor-revert path, h96-panthor-setup row dropped; r13: h96-wol, undervolt and kernel switch rules, restore wol category; r14: h96-wol status line, boot unit on eth0 device; r16: display lookup helper, h96-scale Wayland, h96-display revert on Wayland, h96-game-mode status, steam-arm-setup recommended; r17: h96-hdmi-hotplug section, hotplug unit row; r19: h96-vrr section and code line; r20: h96-cec on by default, TV input, turn off, key map, unit rows; r21: merged with PRODUCTION v8.0 COMMANDS.md (tools/repo-fixes/COMMANDS.md); r22: wake wait, h96-wol addresses, waydroid status row; r24: Plasma Wayland session option; r25: h96-vulkan-wsi section, kernel-switch same release sentence, Wayland range limitation; r26: modules-load, rpc_pipefs and lxc-net notes; r27: rpc_pipefs unmasked, module tree mismatch note; r28: CEC media keys through MPRIS; r29: no round labels, generation reuse, h96-cec keys, h96-vrr wording; r31: box session text (seek, EDID switch, VRR, vulkan-wsi caution); r32: panthor timeout note in Gaming and Wayland session; r33: MPRIS loader; r35: EDID switch TV resync note; r39: Steam ARM 3.1"),
--    "/etc/skel/Desktop/COMMANDS.md": (lambda t: fx39.commands(fx37.commands(fx36.commands(fx35.commands(fx33.commands(fx32.commands(fx31.commands(fx29.commands(fx28.commands(fx27.commands(fx26.commands(fx25.commands(fx24.commands(fx23.commands(fx22.commands(fx21.commands(fx20.commands(fx19.commands(hp80.commands(xd80.commands(_commands_r14(_commands_r13(_commands(t))))))))))))))))))))))),"r8: same as /usr/share/doc/h96-base/COMMANDS.md; r20: h96-cec section; r21: merged copy; r24; r25; r26; r27; r28; r29; r31; r32; r33; r35; r39"),
-+    "/usr/local/share/h96/COMMANDS.md": (lambda t: fx39.commands(fx37.commands(fx36.commands(fx35.commands(fx33.commands(fx32.commands(fx31.commands(fx29.commands(fx28.commands(fx27.commands(fx26.commands(fx25.commands(fx24.commands(fx23.commands(fx22.commands(fx21.commands(fx20.commands(fx19.commands(hp80.commands(xd80.commands(_commands_r14(_commands_r13(_commands(t))))))))))))))))))))))), "r8: command locations after FHS move, panthor-revert path, h96-panthor-setup row dropped; r13: h96-wol, undervolt and kernel switch rules, restore wol category; r14: h96-wol status line, boot unit on eth0 device; r16: display lookup helper, h96-scale Wayland, h96-display revert on Wayland, h96-game-mode status, steam-arm-setup recommended; r17: h96-hdmi-hotplug section, hotplug unit row; r19: h96-vrr section and code line; r20: h96-cec on by default, TV input, turn off, key map, unit rows; r21: merged with PRODUCTION v8.0 COMMANDS.md (tools/repo-fixes/COMMANDS.md); r22: wake wait, h96-wol addresses, waydroid status row; r24: Plasma Wayland session option; r25: h96-vulkan-wsi section, kernel-switch same release sentence, Wayland range limitation; r26: modules-load, rpc_pipefs and lxc-net notes; r27: rpc_pipefs unmasked, module tree mismatch note; r28: CEC media keys through MPRIS; r29: no round labels, generation reuse, h96-cec keys, h96-vrr wording; r31: box session text (seek, EDID switch, VRR, vulkan-wsi caution); r32: panthor timeout note in Gaming and Wayland session; r33: MPRIS loader; r35: EDID switch TV resync note; r39: Steam ARM 3.1"),
-+    "/etc/skel/Desktop/COMMANDS.md": (lambda t: fx39.commands(fx37.commands(fx36.commands(fx35.commands(fx33.commands(fx32.commands(fx31.commands(fx29.commands(fx28.commands(fx27.commands(fx26.commands(fx25.commands(fx24.commands(fx23.commands(fx22.commands(fx21.commands(fx20.commands(fx19.commands(hp80.commands(xd80.commands(_commands_r14(_commands_r13(_commands(t))))))))))))))))))))))), "r8: same as /usr/share/doc/h96-base/COMMANDS.md; r20: h96-cec section; r21: merged copy; r24; r25; r26; r27; r28; r29; r31; r32; r33; r35; r39"),
+-    "/usr/local/share/h96/COMMANDS.md": (lambda t: fx40.commands(fx39.commands(fx37.commands(fx36.commands(fx35.commands(fx33.commands(fx32.commands(fx31.commands(fx29.commands(fx28.commands(fx27.commands(fx26.commands(fx25.commands(fx24.commands(fx23.commands(fx22.commands(fx21.commands(fx20.commands(fx19.commands(hp80.commands(xd80.commands(_commands_r14(_commands_r13(_commands(t)))))))))))))))))))))))),"r8: command locations after FHS move, panthor-revert path, h96-panthor-setup row dropped; r13: h96-wol, undervolt and kernel switch rules, restore wol category; r14: h96-wol status line, boot unit on eth0 device; r16: display lookup helper, h96-scale Wayland, h96-display revert on Wayland, h96-game-mode status, steam-arm-setup recommended; r17: h96-hdmi-hotplug section, hotplug unit row; r19: h96-vrr section and code line; r20: h96-cec on by default, TV input, turn off, key map, unit rows; r21: merged with PRODUCTION v8.0 COMMANDS.md (tools/repo-fixes/COMMANDS.md); r22: wake wait, h96-wol addresses, waydroid status row; r24: Plasma Wayland session option; r25: h96-vulkan-wsi section, kernel-switch same release sentence, Wayland range limitation; r26: modules-load, rpc_pipefs and lxc-net notes; r27: rpc_pipefs unmasked, module tree mismatch note; r28: CEC media keys through MPRIS; r29: no round labels, generation reuse, h96-cec keys, h96-vrr wording; r31: box session text (seek, EDID switch, VRR, vulkan-wsi caution); r32: panthor timeout note in Gaming and Wayland session; r33: MPRIS loader; r35: EDID switch TV resync note; r39: Steam ARM 3.1; r40: prose"),
+-    "/etc/skel/Desktop/COMMANDS.md": (lambda t: fx40.commands(fx39.commands(fx37.commands(fx36.commands(fx35.commands(fx33.commands(fx32.commands(fx31.commands(fx29.commands(fx28.commands(fx27.commands(fx26.commands(fx25.commands(fx24.commands(fx23.commands(fx22.commands(fx21.commands(fx20.commands(fx19.commands(hp80.commands(xd80.commands(_commands_r14(_commands_r13(_commands(t)))))))))))))))))))))))),"r8: same as /usr/share/doc/h96-base/COMMANDS.md; r20: h96-cec section; r21: merged copy; r24; r25; r26; r27; r28; r29; r31; r32; r33; r35; r39; r40"),
++    "/usr/local/share/h96/COMMANDS.md": (lambda t: fx40.commands(fx39.commands(fx37.commands(fx36.commands(fx35.commands(fx33.commands(fx32.commands(fx31.commands(fx29.commands(fx28.commands(fx27.commands(fx26.commands(fx25.commands(fx24.commands(fx23.commands(fx22.commands(fx21.commands(fx20.commands(fx19.commands(hp80.commands(xd80.commands(_commands_r14(_commands_r13(_commands(t)))))))))))))))))))))))), "r8: command locations after FHS move, panthor-revert path, h96-panthor-setup row dropped; r13: h96-wol, undervolt and kernel switch rules, restore wol category; r14: h96-wol status line, boot unit on eth0 device; r16: display lookup helper, h96-scale Wayland, h96-display revert on Wayland, h96-game-mode status, steam-arm-setup recommended; r17: h96-hdmi-hotplug section, hotplug unit row; r19: h96-vrr section and code line; r20: h96-cec on by default, TV input, turn off, key map, unit rows; r21: merged with PRODUCTION v8.0 COMMANDS.md (tools/repo-fixes/COMMANDS.md); r22: wake wait, h96-wol addresses, waydroid status row; r24: Plasma Wayland session option; r25: h96-vulkan-wsi section, kernel-switch same release sentence, Wayland range limitation; r26: modules-load, rpc_pipefs and lxc-net notes; r27: rpc_pipefs unmasked, module tree mismatch note; r28: CEC media keys through MPRIS; r29: no round labels, generation reuse, h96-cec keys, h96-vrr wording; r31: box session text (seek, EDID switch, VRR, vulkan-wsi caution); r32: panthor timeout note in Gaming and Wayland session; r33: MPRIS loader; r35: EDID switch TV resync note; r39: Steam ARM 3.1; r40: prose"),
++    "/etc/skel/Desktop/COMMANDS.md": (lambda t: fx40.commands(fx39.commands(fx37.commands(fx36.commands(fx35.commands(fx33.commands(fx32.commands(fx31.commands(fx29.commands(fx28.commands(fx27.commands(fx26.commands(fx25.commands(fx24.commands(fx23.commands(fx22.commands(fx21.commands(fx20.commands(fx19.commands(hp80.commands(xd80.commands(_commands_r14(_commands_r13(_commands(t)))))))))))))))))))))))), "r8: same as /usr/share/doc/h96-base/COMMANDS.md; r20: h96-cec section; r21: merged copy; r24; r25; r26; r27; r28; r29; r31; r32; r33; r35; r39; r40"),
      "/usr/lib/systemd/system/h96-undervolt-trial.service": (undervolt_80.unit, undervolt_80.UNIT_WHY),
      "/usr/local/sbin/h96-undervolt": (undervolt_80.undervolt, undervolt_80.UV_WHY),
      "/usr/local/share/h96-undervolt-README.md": (undervolt_80.readme, undervolt_80.README_WHY),
 --- a/tools/gen-pkgs.py
 +++ b/tools/gen-pkgs.py
-@@ -36,6 +36,14 @@
+@@ -37,6 +37,14 @@
  R14, R13, R12, R11, R10, R9, R8 = "8.0.0~r14", "8.0.0~r13", "8.0.0~r12", "8.0.0~r11", "8.0.0~r10", "8.0.0~r9", "8.0.0~r8"
  ALPHA2, PREV = "8.0.0~alpha2", "8.0.0~alpha1"
  DIST = "resolute"
@@ -63,8 +63,8 @@
 +    VERSION = ED.DEB_VERSION
  MAINT = "Scrumpper <190908034+Scrumpper@users.noreply.github.com>"  # owner decision 2
  MAINT_OLD = "H96 MAX V58 Unofficial Armbian <h96-max-v58@noreply.invalid>"
- DATE = "Tue, 27 Oct 2026 00:00:00 +0000"
-@@ -570,6 +578,8 @@
+ DATE = "Tue, 27 Oct 2026 06:00:00 +0000"
+@@ -573,6 +581,8 @@
  STD_MODES = ("0o644", "0o755")
  CMDS = transform("/usr/local/share/h96/COMMANDS.md", open(ROOTFS + "/usr/local/share/h96/COMMANDS.md").read(), MV)
  assert CMDS == transform("/etc/skel/Desktop/COMMANDS.md", open(ROOTFS + "/etc/skel/Desktop/COMMANDS.md").read(), MV)
@@ -73,7 +73,7 @@
  MAN_DESC = {"play-with-mpv": "Opens a URL or file in mpv; browser hand-off target.",
              "fex-emu": "Entry point of FEX x86 emulator; link into its portable install.",
              "h96-xpad-dedup": "Unbinds xpad from duplicate headset interface of third-party pads; idempotent."}
-@@ -640,16 +650,29 @@
+@@ -643,16 +653,29 @@
              with open(srcf, "rb") as fh:
                  raw = fh.read()
          if src.startswith("EXTRA:"):
@@ -105,7 +105,7 @@
              if txt.encode() != raw:
                  v72sum[dst] = hashlib.sha256(raw).hexdigest()
              with open(out, "w") as fh:
-@@ -689,6 +712,8 @@
+@@ -692,6 +715,8 @@
      arch = "arm64" if has_elf else "all"
      dep = [] if name == "h96-base" else [f"h96-base (= {VERSION})"]
      dep += EXTRA_DEPENDS.get(name, [])
@@ -114,7 +114,7 @@
      if any(s.startswith("python3") for s in shebangs) and "python3" not in dep:
          dep.append("python3")
      for s in sorted(shebangs):
-@@ -704,8 +729,12 @@
+@@ -707,8 +732,12 @@
              + f"Description: {short}\n{longtxt}\n")
      open(os.path.join(deb, "control"), "w").write(ctrl)
      entry = lambda cs: "".join("  * " + "\n    ".join(textwrap.wrap(c, 70, break_on_hyphens=False)) + "\n" for c in cs)
@@ -125,10 +125,10 @@
      open(os.path.join(deb, "changelog"), "w").write(
 -        f"{name} ({VERSION}) {DIST}; urgency=medium\n\n"
 +        top + f"{name} ({UBU_VERSION}) {DIST}; urgency=medium\n\n"
-         + entry(fx39.CHANGES.get(name, [fx39.BUMP]))
+         + entry(fx40.CHANGES.get(name, [fx40.BUMP]))
          + f"\n -- {MAINT}  {DATE}\n\n"
-         f"{name} ({R38}) {DIST}; urgency=medium\n\n"
-@@ -994,3 +1023,5 @@
+         f"{name} ({R39}) {DIST}; urgency=medium\n\n"
+@@ -1000,3 +1029,5 @@
  if unresolved:
      print("UNRESOLVED links:", *unresolved, sep="\n  ")
      sys.exit(1)

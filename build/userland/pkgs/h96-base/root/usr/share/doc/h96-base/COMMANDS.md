@@ -8,7 +8,7 @@ Every command and service added by this build. Nothing here exists on stock Armb
 ## Highlights
 
 > **Released image is console only.** It includes no desktop and no user account. Install
-> desktop on demand with `armbian-config` (System, Desktop) or `apt install
+> desktop later with `armbian-config` (System, Desktop) or `apt install
 > kde-plasma-desktop`. `h96-autologin.service` then sets lightdm autologin on
 > `plasmax11` (X11) session at next boot, one time; `sudo h96-autologin-setup` applies it at
 > once, `--off` turns it off.
@@ -21,7 +21,7 @@ Every command and service added by this build. Nothing here exists on stock Armb
   `0@300000000Hz` at idle and 50 percent at 1000 MHz under UI activity, `boot_completed` in
   about 8 seconds. cgroup v1 tmpfs shims are applied only on legacy Android 11 path.
 - **GPU emulator suite (v5.0).** `h96-emulators` installs eight systems as GPU-accelerated
-  emulators: seven native arm64 Flatpaks through PanVK and Panfrost, plus `cemu` under box64.
+  emulators: seven native arm64 Flatpaks through PanVK and Panfrost, with `cemu` under box64.
   `install` wires each Flatpak sandbox to Mali-G610 and reads renderer string back out;
   automatic probe verifies four of seven as `Mali-G610 MC4 (Panfrost)`.
 - **zram self-heal (v5.0).** Fresh flash was measured booting with no swap at all.
@@ -30,7 +30,7 @@ Every command and service added by this build. Nothing here exists on stock Armb
 - **Flashing without pinhole (v5.0).** `reboot loader` over SSH puts running box into
   flashing mode; flasher converts Loader to Maskrom itself. Pinhole stays as fallback
   for box that will not boot.
-- **Android in container (v5.0).** `h96-waydroid` runs Waydroid in nested Weston window
+- **Android in container (v5.0).** `h96-waydroid` runs Waydroid in its own nested Weston window
   on X11. This is why kernel is rebuilt with `CONFIG_PSI=y`. Android images are not
   bundled and window is fixed-size on purpose.
 - **Emulator suite (v5.0).** `h96-emulators` installs eight GPU-accelerated emulators
@@ -49,12 +49,12 @@ Every command and service added by this build. Nothing here exists on stock Armb
   measures all 3 (about 1.29 TOPS aggregate). Note: on this board NPU is memory-bandwidth-bound
   and single CPU core outruns it for most work, so it is exposed for NPU-shaped INT8
   models, not as general accelerator.
-- **Display detection (v6.2).** On by default: `h96-display detect` reads connected
+- **Display detection (v6.2).** On unless switched off: `h96-display detect` reads connected
   display's EDID at boot and on hotplug and lists its modes in KDE System Settings →
   Display, up to 8K; KDE remembers choice per display. HDMI 2.0 tier (1440p120/144,
   4K60) is on by default; modes wider than 4096 px and FRL tier are listed but untested.
   Colour format and range are set per display with `sudo h96-display color` and `range`,
-  each with confirm-or-revert. Pick refresh rate HDMI cable can carry: 120/144 Hz and
+  each with confirm-or-revert. Pick refresh rate HDMI cable supports: 120/144 Hz and
   4K60 need Premium or Ultra High Speed cable.
 - **Screen wake.** Blanked screen that never returned on keypress is fixed:
   daemon re-drives HDMI output when connector is stuck `connected` but
@@ -85,7 +85,7 @@ h96-brightness down 10    lower by 10
 SoC's HDMI DDC i2c controller does not complete transactions on this kernel, so
 v6.2 device tree exposes two DDC pins as kernel i2c bus named `i2c-ddc` at 100 kHz
 (earlier releases used `h96-ddc-i2c-gpio` overlay). Kernel reads EDID and drives SCDC
-over it, and ddcutil drives DDC/CI over it. ddcutil is installed automatically at first boot from
+over it, and ddcutil handles DDC/CI over it. ddcutil is installed automatically at first boot from
 offline repo (no manual step); `sudo apt install ddcutil` also resolves offline if needed. Display must accept DDC/CI writes: most PC monitors do (enable
 "DDC/CI" in monitor menu if brightness does not change). Measured on Dell P2419H:
 setting 30/75/15/60 tracked exactly with visible change. Most TVs gate DDC/CI behind
@@ -103,19 +103,19 @@ h96-scale 1.25       125%, and so on (0.5 to 3.0)
 
 **LOG OUT AND BACK IN IS REQUIRED for scale change to reach all apps.** On
 X11, scale applies only to newly-started apps, so running session ignores both
-Plasma's Global Scale slider and h96-scale until re-login. h96-scale restarts
+h96-scale and Plasma's Global Scale slider until re-login. h96-scale restarts
 Plasma shell so panel and desktop update right away, but open apps and
-consistent scale across session still need log out/in.
+scale consistency across session still need log out/in.
 
-Plasma's own Global Scale slider (System Settings, Display) writes correct config
+Global Scale slider in Plasma's own System Settings (Display) writes correct config
 but gives no hint that re-login is needed, which is why it appears to do nothing.
-h96-scale writes same config (`kdeglobals` ScaleFactor + ScreenScaleFactors,
+h96-scale writes identical config (`kdeglobals` ScaleFactor + ScreenScaleFactors,
 `kcmfonts` forceFontDPI) and sets live X font DPI. Acts on caller's own Plasma session;
-with sudo or as root, on active seat0 session (logind), so second desktop user is never
+with sudo or as root, on active seat0 session (logind), so no other desktop user is
 changed by mistake. Unknown argument exits 2. Once autologin is set (`h96-autologin.service` at boot, or
 `sudo h96-autologin-setup`), lightdm autologins desktop
 user into `plasmax11` session, so logout returns to scaled desktop with no password
-step. In Plasma Wayland session (experimental, `h96-autologin-setup --session plasma`) h96-scale sets output scale through `kscreen-doctor`
+step. In Plasma Wayland session (experimental, `h96-autologin-setup --session plasma`) h96-scale changes output scale through `kscreen-doctor`
 (live for all apps, no log out), reads it back and exits 1 when scale did not change;
 font DPI and `kdeglobals` stay untouched there. X11 stays default session.
 
@@ -123,7 +123,7 @@ font DPI and `kdeglobals` stay untouched there. X11 stays default session.
 HDMI display detection, colour format and range, and forced boot mode. On-chip HDMI
 DDC controller never completes transfers (RK3588 BSP driver limitation). Kernel (since
 v6.2) reads EDID over GPIO I2C bus on same pins (`i2c-ddc`), and `detect` turns connected
-display's EDID into KDE's mode list. Console and first mode before KDE applies its own
+display's EDID into KDE's mode list. Console, and first mode before KDE applies its own,
 still use forced default of `1920x1080@60`. Display tools (`h96-display`, `h96-scdc`,
 `h96-audio-passthrough`, `h96-hdr`, `h96-cast`, `h96-vm`, `h96-waydroid`) find X display and
 auth of active seat0 session through `/usr/lib/h96/h96-xdisplay`: X11 on any display
@@ -148,7 +148,7 @@ Read-only verbs (`status`, `color status`, `range status`, `show`) run as normal
 through full path, `/usr/sbin/h96-display status`; `wire` and `scdc` clock readings
 in `status` need root; as normal user they read `unknown (needs root)`. `detect --help` lists detect options.
 
-**Modes.** `detect` lists modes up to 600 MHz TMDS plus FRL tier, progressive only, up
+**Modes.** `detect` lists progressive modes only, up to 600 MHz TMDS plus FRL tier, up
 to 8K. KDE System Settings → Display lists them; KDE asks to keep new mode and
 remembers choice per display across replug and reboot. `detect` sets no mode itself.
 HDMI 2.0 tier (340 to 600 MHz: 2560x1440 at 120 and 144 Hz, 3840x2160 at 60 Hz) uses
@@ -159,8 +159,8 @@ at 340 MHz and stops service. Modes wider than 4096 px and FRL tier (above 600 M
 display and cable, and failed link training reverts. `frl off` removes them. `hdmi20`
 and `frl` apply to every display.
 
-**DVI displays.** Display whose EDID has no CTA-861 block (DVI monitor, often through
-HDMI-to-DVI adapter) keeps its own EDID: driver sends DVI signal, no HDMI audio. Detection
+**DVI displays.** When EDID has no CTA-861 block (DVI monitor, often through
+HDMI-to-DVI adapter), display keeps its own EDID: driver sends DVI signal, no HDMI audio. Detection
 runs about 15 s into boot and re-sets text console mode for DVI signal. Detect also
 removes image-default `drm.edid_firmware` and `video=` tokens from `/boot/armbianEnv.txt`, so
 from next boot kernel reads display EDID and console starts in display's own mode from
@@ -174,7 +174,7 @@ output moves to next sink (Bluetooth, S/PDIF). `hdmi20` and `frl` do not apply;
 
 **Colour and range, command line only.** `color rgb` (default), `ycbcr` (YCbCr 4:4:4
 where display lists it, else RGB) or `auto` (driver picks 4:4:4, then 4:2:2, then RGB).
-`range full` (default, 0-255), `limited` (16-235) or `auto` (driver default). YCbCr
+`range full` (default, 0-255), `limited` (16-235) or `auto` (driver's choice). YCbCr
 always uses limited range, display engine limit; range setting applies to RGB only.
 New value applies live, then asks `Keep this ...? Reverting in 15 s [y/N]`. Only `y`
 keeps it; timeout, other keys, Ctrl-C or closed terminal revert. `--yes` keeps without
@@ -214,12 +214,12 @@ line directly from another machine with boot partition mounted. See
 **`auto`**: SoC's HDMI DDC i2c controller never completes transaction on this
 kernel, which is why forced mode exists at all. Wires themselves work (stock
 Android firmware reads EDID over them), so `auto` reads display's EDID over
-`i2c-ddc` kernel bus (same bus brightness feature uses), falling back to direct
+`i2c-ddc` kernel bus (shared with brightness feature), falling back to direct
 GPIO read when that bus is absent. It validates EDID (header, checksums), picks display's
 preferred mode capped at this box's limits, and sets it through same trial/`keep`
-mechanism as manual mode. On any read or parse failure (cable unplugged, display off,
+procedure as manual mode. On any read or parse failure (cable unplugged, display off,
 corrupt EDID) it prints reason and leaves current mode unchanged. Measured on
-hardware: 256-byte EDID read takes 1.5 s and does not disturb running display.
+hardware: 256-byte EDID read takes 1.5 s and does not interrupt running display.
 
 **`autodetect`.**
 
@@ -258,8 +258,8 @@ hotplug while blanked). `h96-display-wake.service` runs same re-drive
 automatically on any key or button press, and udev rule runs it after
 hotplug, so this is rarely needed by hand. Normal screen blanking still works:
 daemon acts only in stuck state. Measured: one keypress, picture back in
-about 4 s. Hotplug and keypress runs first wait up to 8 s for output to return by itself
-(TV wake, desktop DPMS-on) and re-drive only when it stays `connected` but disabled; journal
+about 4 s. On hotplug and keypress, daemon first waits up to 8 s for output to return by itself
+(TV wake, desktop DPMS-on) and re-drives only when it stays `connected` but disabled; journal
 tag `h96-display-wake` names each decision. Re-drive drops RandR output for about 1 s, and
 some X clients exit on that.
 
@@ -299,7 +299,7 @@ sudo h96-vrr off                 # default
 
 ### `h96-scdc`  (`/usr/sbin`, needs root)
 HDMI 2.0 scrambling check and HDMI 2.1 FRL link check behind `h96-scdc.service`. After
-every modeset above 340 MHz it writes sink SCDC scrambling register over `i2c-ddc` and
+every modeset above 340 MHz it writes display's SCDC scrambling register over `i2c-ddc` and
 verifies scrambler, clock and lane lock; without lock it switches back to last working
 mode through KDE, at most once per 15 s. `h96-display hdmi20 off` stops service.
 
@@ -326,7 +326,7 @@ sudo h96-wifi-connect                 # no arguments: scan and list visible netw
 wpa_cli -i wlan0 status               # current association and IP
 ```
 
-Tray applet (`wpa_gui`) is also started automatically on KDE for same purpose.
+KDE also starts tray applet (`wpa_gui`) automatically, for same purpose.
 
 ### `h96-wifi-diag`
 Collect WiFi diagnostics in one shot: interface state, driver and firmware, association
@@ -389,8 +389,8 @@ queue (`vd-queue-enable=yes`, `vd-queue-max-samples=8`) holds 4K60. YouTube in m
 8-bit VP9, then AV1 SDR, then other codecs. Fullscreen
 video bypasses KWin compositing (`x11-bypass-compositor=fs-only`). Measured on 1920x1080
 TV: YouTube 4K60 VP9 8-bit, 1 dropped frame in 30 s; 4K60 H.264 file, 2 dropped frames in
-30 s. RGA filters `scale_rkrga` (ffmpeg, mpv) and `vpp_rkrga` (ffmpeg) run from v7.1
-kernel on; `overlay_rkrga` not yet tested.
+30 s. RGA filters work from v7.1 kernel on: `scale_rkrga` (ffmpeg, mpv) and `vpp_rkrga`
+(ffmpeg); `overlay_rkrga` not yet tested.
 
 mpv started while X11 display sleeps (DPMS off) wakes display when file with video track
 loads: `/etc/mpv/scripts/h96-dpms-wake.lua` (`xset dpms force on`; skipped for audio-only
@@ -434,7 +434,7 @@ h96-encode clip.mkv out.mp4 -c hevc -b 6M   # HEVC
 h96-encode clip.mkv small.mp4 -s 1280x720   # scale on RGA, then encode
 ```
 
-If audio stream cannot be copied into target container it is re-encoded to AAC
+If target container cannot take audio stream as is, it is re-encoded to AAC
 automatically. Requires `/dev/mpp_service`, which is present in this image.
 
 ### `h96-upscale`
@@ -515,7 +515,7 @@ scrumptop --interval 0.5   # custom refresh
 scrumptop --snapshot       # print one frame and exit (for scripts/SSH captures)
 ```
 
-Panels: CPU per-core (A76 = CPU1-4, A55 = CPU0,5,6,7; each bar carries its cluster's
+Panels: CPU per-core (big A76 = 1-4, little A55 = 0,5,6,7; each bar carries its cluster's
 temperature gauge), memory, GPU, NPU (3 cores), network (Ethernet link speed and rates,
 WiFi, Bluetooth, IR remote activity), system (disk, eMMC I/O rates, swap, load, uptime,
 peripheral batteries).
@@ -551,7 +551,7 @@ Logs land in `/var/log/h96-bench/`.
 > `h96-undervolt` below, which edits device tree. See **Known Limitations** in
 > `README.md`.
 
-### Thermal trip points and throttling
+### Thermal limits and throttling
 
 What `h96-bench` and `scrumptop` are reading. From `/sys/class/thermal/` on this box:
 
@@ -566,13 +566,13 @@ What `h96-bench` and `scrumptop` are reading. From `/sys/class/thermal/` on this
 | `npu-thermal`        | 75 °C        |                     | 115 °C   |
 
 Registered cooling devices: `cpufreq-cpu0`, `cpufreq-cpu1`, `cpufreq-cpu3`,
-`devfreq-fb000000.gpu`. Passive trip scales frequency down, CPU clusters through cpufreq
-and GPU through devfreq. 115 °C critical trip triggers emergency shutdown.
+`devfreq-fb000000.gpu`. Passive trip scales frequency down (cpufreq on CPU, devfreq on
+GPU). 115 °C critical trip triggers emergency shutdown.
 
 **Measured on this board:** idle about 52 to 61 °C. Sustained all-core load under
 `performance` governor reached 85 °C, above 80 °C `soc-thermal` passive trip, so
-box throttles under sustained all-core load. Expected for this SoC in this chassis, not
-fault. `h96-bench --combined --soak` (180 s) is mode that reproduces it.
+box throttles under sustained all-core load. Expected for this SoC in this chassis;
+nothing is faulty. `h96-bench --combined --soak` (180 s) reproduces it.
 
 Related: `scrumptop` for live per-cluster temperatures with session min/max, `h96-perf`
 and power profiles for CPU and GPU governors that set how much heat load makes,
@@ -739,7 +739,7 @@ Frequency argument is validated against kernel's own OPP list, so typo cannot se
 something hardware does not support. On this board: driver `v0.9.8`, IOMMU mode, 8 OPPs
 from 300 to 1000 MHz, kernel default governor `rknpu_ondemand` (image default `powersave`),
 exposed as `/dev/dri/renderD129`.
-default user is already in `render` group, so inference does not need root.
+Default user is already in `render` group, so inference does not need root.
 
 **`power` (v5.0).** Sets NPU devfreq governor, validated against kernel's own
 `available_governors` list, and drops `/etc/udev/rules.d/99-h96-npu-power.rules` so
@@ -753,11 +753,11 @@ h96-npu power status             current governor, frequency, what boot restores
 ```
 
 On 7.x kernels `rknpu_ondemand` idles at 300 MHz while no NPU job runs (measured); earlier
-kernels held 1000 MHz for whole uptime, which is why profile exists. Image default is
+kernels held 1000 MHz for whole uptime; that is why profile exists. Image default is
 `powersave` (rule written at build), parked at 300 MHz; `balanced` hands NPU back to kernel
 default. Switch to `performance` before running inference.
 
-**`power sync`.** System power profile (`h96-perf`, panel applet) covers CPU and GPU
+**`power sync`.** System power profile (`h96-perf`, desktop applet) covers CPU and GPU
 only. `power sync` reads active profile (`powerprofilesctl get`, governors as fallback)
 and matches NPU to it: `performance` for performance, `powersave` for power-saver,
 `balanced` otherwise.
@@ -772,14 +772,14 @@ sudo h96-npu power sync off   stop following the power profile
 (`sudo h96-perf ...`) runs sync itself after every profile change; `h96-perf` without
 root and panel applet leave NPU alone. `sync off` deletes file.
 
-**`could not find sram resource!` in `dmesg` is expected and is not fault.** RK3588 system
+**`could not find sram resource!` in `dmesg` is expected and harmless.** RK3588 system
 SRAM is allocated in full to two video decoders (`0x78000 + 0x77000 = 0xEF000`, whole
 region, zero free). NPU runs from DRAM. Giving it SRAM would mean taking it from hardware
 video decode.
 
 ### `h96-npu-setup`  (`/usr/sbin`, needs root)
 
-Installs Rockchip RKNN inference runtime **on demand**.
+Installs RKNN inference runtime **on demand**, fetched from Rockchip.
 
 ```
 sudo h96-npu-setup                     interactive; shows the licence first
@@ -1010,7 +1010,7 @@ no firmware adds it. Non-DRM video is unaffected. Verified on hardware: Chromium
 `h96-subtitles live` is present but **not finished**. Each piece is verified separately:
 streaming ASR runs at **2.5× realtime** with about 3.2 hypothesis updates/sec, and mpv overlay
 renderer is protocol-verified (5/5 repeat draws on one persistent socket; mpv destroys
-overlay moment its IPC client disconnects, so that persistence is whole design).
+overlay as soon as its IPC client disconnects, so design hinges on keeping that socket open).
 
 What is missing is environment: **PipeWire is not running on headless image** and
 renderer needs display. Install desktop first. Command refuses with actionable errors
@@ -1049,7 +1049,7 @@ KWin for DPMS on (no X modeset re-drive); HDMI detect asks KWin to re-read conne
 `vo=dmabuf-wayland` (auto profile `h96-wayland` in `/etc/mpv/mpv.conf`); `h96-waydroid start`
 runs Android natively in KWin window that can be resized (stop with "Stop Android (Waydroid)").
 Known issue: 4K60 video drops frames on every Wayland output path. Proton games: KWin resets its GPU
-context on panthor job timeouts (short freezes); play Proton titles in Plasma X11 session (see **Gaming**).
+context on panthor job timeouts (short freezes); run Proton titles in Plasma X11 session (see **Gaming**).
 
 Drop-in: `/etc/lightdm/lightdm.conf.d/70-h96-autologin.conf`. Boot service runs `--boot`
 once: it sets autologin when desktop account and Plasma session exist and records
@@ -1064,7 +1064,7 @@ acts on SDDM files, not on this LightDM drop-in.
 flash does not get locked out of their own TV box after idling. It is skeleton default:
 it seeds new users only, and never overwrites setting existing user has already chosen.
 
-Turn it back on in System Settings, Screen Locking, or by setting `Autolock=true` in your own
+Turn it back on from Screen Locking page in System Settings, or with `Autolock=true` in your own
 `~/.config/kscreenlockerrc`.
 
 ### `h96-desktop-fixup.sh`  (`/usr/lib/h96`, needs root)
@@ -1098,7 +1098,7 @@ Desktop install in `armbian-config` ends by starting display manager. Drop-ins
 `h96-gnome-configure.service`) runs first, and install's last step waits until it finishes,
 with progress shown in `armbian-config` terminal (SSH or local console).
 
-- KDE: SDDM start is skipped; desktop starts on LightDM with autologin. SDDM is masked after
+- KDE: SDDM does not start; desktop starts on LightDM with autologin. SDDM is masked after
   hand-off ends.
 - GNOME: GDM starts once H96 GNOME setup is done.
 - Other display manager starts (restart, autologin change, removal) pass straight through.
@@ -1114,7 +1114,7 @@ session remains installed. PipeWire, Bluetooth and GPU libraries stay. Log:
 `/var/log/h96-desktop-cleanup.log`. Both helpers are internal and hidden from `h96` index.
 
 ### `settings-launch`
-Wrapper that starts GNOME Control Center with cairo renderer, and clears any stuck
+Wrapper that starts GNOME Control Center with renderer set to cairo, and clears any stuck
 instance first. Used by desktop's own Settings launcher.
 
 ---
@@ -1173,7 +1173,7 @@ seat user only. Watcher stays running only while `h96-cec.service` is enabled or
 disabled CEC leaves no session poller; after `sudo systemctl enable --now h96-cec.service`,
 display wake starts at next login. `standby-on-blank on` sends TV to standby when display goes DPMS off.
 Settings are flag files, `/etc/h96/cec-wake.off` and `/etc/h96/cec-standby-on-blank`,
-read per request (no restart) and kept by `h96-backup`.
+read at each call (no restart) and kept by `h96-backup`.
 
 Physical address comes from `h96-display detect`; service sets it before daemon starts.
 On DVI monitor (EDID without CTA extension) `h96-cec status` reports
@@ -1298,7 +1298,7 @@ files exist: `active.txt` becomes named preset (or `flat`), old main-daemon conf
 tmpfiles entry are removed.
 
 ### `h96-bt-speaker`
-Box as Bluetooth A2DP sink: pair phone, its audio plays out box HDMI.
+Box as Bluetooth A2DP sink: pair phone, and its audio comes out box HDMI.
 
 ```bash
 sudo h96-bt-speaker on [SECONDS]   # discoverable + pairable (0 = until off, default)
@@ -1323,7 +1323,7 @@ h96-cast status
 ```
 
 Receivers run as user of active seat0 session (logind); with no active seat session, as user
-who called `sudo`. `h96-cast status` run as root reads that user's default sink.
+who called `sudo`. `h96-cast status` under `sudo` reads that user's default sink.
 
 ### `h96-transcode-server`
 Opt-in network **hardware transcode node**. Drop video into watch folder and
@@ -1343,7 +1343,7 @@ h96-transcode-server logs           # follow job log
 Drop files over SFTP into `/srv/h96-transcode/in/` (or Samba/NFS-export that folder);
 results land in `/srv/h96-transcode/out/`, originals move to `done/`. Settings in
 `/etc/h96/transcode.conf` (codec hevc/h264/mjpeg, bitrate, container, optional scale).
-This is box's strength, low-power always-on transcode appliance, not AI
+This is box's strength: low-power, always-on transcode appliance, not AI
 upscaler.
 
 ---
@@ -1401,7 +1401,7 @@ Emulated route installs Valve `steam-launcher` 1.0.0.81 into x86-64 root filesys
 SHA-256 check; its work files sit in private root-only directory, never in fixed `/tmp` path.
 
 Both install into desktop user's account and keep separate Steam libraries, so one box can
-carry both. Run one client at time: two clients compete for controller and for `steam://`
+carry both. Never run both clients together: they compete for controller and for `steam://`
 links. Native route starts from application menu entry "Steam ARM" or `steam-arm`;
 emulated route from "Steam" or `steam-fex`.
 
@@ -1441,12 +1441,12 @@ and `page-size` (Raspberry Pi only; hidden on this box). Emulated route adds `mu
 Install, re-run, component changes and package upgrades keep installed games, sign-in and
 settings.
 
-Titles protected by anti-cheat do not run on either route: those components require system
-call filter emulator does not implement.
+Titles protected by anti-cheat do not run on either route: those components need system
+call filter, which emulator does not implement.
 
 Native client's launcher, `steam-arm`, takes `--desktop` to start client in its desktop interface and `--bigpicture` to force Deck interface; `STEAM_ARM_UI=desktop` in `/etc/steam-arm/steam-arm.conf` makes desktop default. Either option switches running client: it closes through its own shutdown and starts again in that interface; power menu's Switch to Desktop does same. `steam-arm-tray` places Steam icon in panel's system tray, with menu to open client in either interface, stop it, or quit tray; installer's `tray` component installs it with autostart entry.
 
-Launch handler, `/usr/local/lib/steam-arm-handler.py`, runs inside Valve's emulation tool before each Linux x86 title starts and sets it up with no launch options: x86 Steam overlay core, MangoHud when title asks for it (`mangohud %command%` or `MANGOHUD=1 %command%`), OpenGL renderer with GL 3.3 report for Godot 4 titles, and for Unity titles Vulkan renderer (`-force-vulkan`) where player carries it, else GL 4.5 report; 32-bit Unity players start with Steam overlay off. 32-bit titles lose `-vulkan` and `-force-vulkan` (Vulkan forwarding is 64-bit only); start scripts (Source engine style) are followed to binary they start; Source 2 titles are logged. Graphics: forwarding to host GPU drivers by default; with `gpu-in-emulation`, titles that fail on forwarding (Java titles, 32-bit titles started with `-vulkan`) switch to Mali drivers inside emulation by themselves. Title profiles, one app id per line, later files override earlier ones:
+Launch handler, `/usr/local/lib/steam-arm-handler.py`, runs inside Valve's emulation tool before each Linux x86 title starts and sets it up with no launch options: x86 Steam overlay core, MangoHud when title asks for it (`mangohud %command%` or `MANGOHUD=1 %command%`), OpenGL renderer with GL 3.3 report for Godot 4 titles, and for Unity titles Vulkan renderer (`-force-vulkan`) where player carries it, else GL 4.5 report; 32-bit Unity players start with Steam overlay off. 32-bit titles lose `-vulkan` and `-force-vulkan` (Vulkan forwarding is 64-bit only); shell wrappers (as in Source engine titles) are followed to binary they start; Source 2 titles are logged. Graphics: forwarding to host GPU drivers by default; with `gpu-in-emulation`, titles that fail on forwarding (Java titles, 32-bit titles started with `-vulkan`) switch to Mali drivers inside emulation by themselves. Title profiles, one app id per line, later files override earlier ones:
 
 ```
 /usr/local/share/steam-arm/titles.conf   included with installer
@@ -1461,7 +1461,7 @@ Launch handler, `/usr/local/lib/steam-arm-handler.py`, runs inside Valve's emula
   gfx=b       Mali drivers inside emulation;  gfx=a  forwarding;  unset = automatic
 ```
 
-`GFX_DEFAULT` in `/etc/steam-arm/steam-arm.conf` sets route for titles without `gfx=`: `auto` (default), `a` or `b`. `steam-arm-config` sets both (Graphics). `overlay=vulkan` adds arm64 overlay core and arm64 overlay Vulkan layer, for Vulkan titles. Launch options `STEAM_ARM_OVERLAY=x86|vulkan|off` and `STEAM_ARM_PRELOAD_KEEP=a,b` override profiles. Handler does not run for Proton titles; there MangoHud and arm64 overlay layer stop title at device creation, so leave `MANGOHUD` unset for them. For Proton titles launcher sets `PROTON_DXVK_D3D8=1`, so Direct3D 8 titles run through DXVK, and it clears shared-memory segments Steam overlay leaves in `/dev/shm`; overlay buffers client still maps are freed within about 2 minutes once no game runs.
+`GFX_DEFAULT` in `/etc/steam-arm/steam-arm.conf` sets route for titles without `gfx=`: `auto` (default), `a` or `b`. `steam-arm-config` sets both (Graphics). `overlay=vulkan` adds arm64 overlay core and arm64 overlay Vulkan layer, for Vulkan titles. Launch options `STEAM_ARM_OVERLAY=x86|vulkan|off` and `STEAM_ARM_PRELOAD_KEEP=a,b` override profiles. Handler does not run for Proton titles; there MangoHud and arm64 overlay layer stop title at device creation, so leave `MANGOHUD` unset for them. For Proton titles launcher sets `PROTON_DXVK_D3D8=1`, so Direct3D 8 titles run through DXVK, and it removes shared memory in `/dev/shm` that Steam overlay leaves behind; overlay buffers client still maps are freed within about 2 minutes once no game runs.
 
 `steam-arm-remoteplay` pins two Remote Play client settings this box requires, hardware decoding off and HEVC off, in client's stored configuration. Streaming client decodes through Vulkan Video, which Mali driver does not provide, so with hardware decoding advertised session can sit on launch screen and never finish negotiating; with it off host keeps to H.264 and software decoder. Launcher runs it before each start, and it runs on its own with `--check` to report without changing anything.
 
@@ -1507,7 +1507,7 @@ would fall back to llvmpipe software rendering rather than letting it fail quiet
 `h96-emulators gpu` re-runs that report on demand. Pick backend shown by `list` inside
 each emulator's own settings.
 
-Fresh flash has no flatpak. Install auto-bootstraps it (apt `flatpak` plus Flathub
+Image carries no flatpak. Install auto-bootstraps it (apt `flatpak` plus Flathub
 remote) after warning, or run `h96-emulators bootstrap` first. Both need internet. Full
 install is about 5 GB including shared Flatpak runtimes.
 
@@ -1666,7 +1666,7 @@ size; it is not run by hand.
   `GLES: Mesa, Mali-G610 (Panfrost), OpenGL ES 3.1 Mesa 24.0.5`, GPU load 27 to 41 percent
   at 300 to 700 MHz. First cold boot takes 1 to 2 minutes. Against official image it is
   older Android (11 against 13), older Mesa (24.0.5 against 26.0.1), unsigned, third-party,
-  and abandoned since April 2024 (author WillzenZou, repos frozen). It also needs cgroup
+  and unmaintained since April 2024 (author WillzenZou, repos frozen). It also needs cgroup
   v1 tmpfs shims, pins itself to 960x512 display that has to be overridden, and Vulkan
   never worked on it. Do not choose it for new installs.
 - **`custom <dir>`** takes image you supply. It must be arm64 Waydroid-style
@@ -1733,8 +1733,8 @@ sudo h96-waydroid state load before-update
 sudo h96-waydroid state delete before-update
 ```
 
-It stops session first, and archives with `tar --numeric-owner -p` because Android app
-identity depends on per-app uids and archive that flattens them breaks every installed
+It stops session first, then archives with `tar --numeric-owner -p`: Android app
+identity depends on per-app uids, and archive that flattens them breaks every installed
 app. **It refuses cross-profile restore**: restoring Android 11 data onto Android 13
 crashes `system_server` with PackageManager NPE, so profile is recorded with each
 snapshot and checked on load. Measured: 27 MB `/data` produced 7.8 MB archive, and
@@ -1745,7 +1745,7 @@ are not part of image.
 written for you:
 
 - **cgroup v2 delegation.** Container's `/sys/fs/cgroup` is mounted read-only by
-  default, so Android `init` cannot create its per-app cgroups and lmkd and every service
+  default, so Android `init` cannot make its per-app cgroups, and lmkd and every service
   fail. Drop-in delegates writable cgroup to `waydroid-container.service`, enables
   controllers at cgroup root before it starts, and LXC's `config_base` is switched from
   `cgroup:ro` to `cgroup:rw`.
@@ -1768,7 +1768,7 @@ written for you:
 - **Kernel driver naming is confusing on purpose:** kernel driver is `panthor`, Mesa
   Gallium driver is still called `panfrost`. Both names refer to same GPU stack.
 - **Do not shadow `/dev/kmsg`.** Binding `/dev/null` over container's `dev/kmsg` mounts
-  cleanly, and container then never starts: LXC state stays STOPPED and Android never
+  cleanly, and container then never starts: LXC state remains STOPPED and Android never
   reaches "Android with user 0 is ready". Android `init` requires writable kmsg.
   Tested and rejected; quiet journal with journald limits instead.
 
@@ -1788,7 +1788,7 @@ h96-vm status                       # install state, KVM, VM list
 sudo h96-vm remove [--yes]          # purge qemu packages and all VM data
 ```
 
-`create` downloads base cloud image (cached, checked against vendor SHA256SUMS or
+`create` downloads base cloud image (cached, verified against vendor SHA256SUMS or
 SHA512SUMS), makes qcow2 overlay and cloud-init seed with your SSH key, or prints generated
 password once when no key is found. Image is refused when checksum list cannot be fetched
 or has no entry for it; `--insecure` uses it unverified.
@@ -1800,7 +1800,7 @@ or has no entry for it; `--insecure` uses it unverified.
 Reflashing writes whole eMMC, so every on-demand feature installed on top of console
 base (desktop, emulators, Waydroid, Widevine, gaming stack, NPU runtime) and every config and
 save is gone after flash. `h96-backup` and `h96-restore` carry configured box across
-reflash. Both auto-elevate through `sudo` and detect desktop user dynamically; no username
+reflash. Both auto-elevate through `sudo` and find desktop user at run time; no username
 is hardcoded. Current version is v2.5 (`--version`). `h96-restore` reads backups made on
 v5.0.1 and every later release, and backward compatibility is kept for every future release.
 On 8.0 `h96-restore` changes program paths of earlier releases in restored `~/.config` text files
@@ -1892,12 +1892,12 @@ h96-restore <archive> --plan-json      print what the archive holds as JSON (nee
 ```
 
 Categories: `desktop`, `configs`, `emulators`, `waydroid`, `waydroid-images`, `widevine`, `gaming`, `npu`, `wifi`, `autologin`, `system`, `wol`, `vm`. `wol` (wake-on-LAN through `h96-wol`) is network state:
-restore applies it only when `--only` names it, never by default and never through `system`.
+restore applies it only when `--only` names it, not by default and not through `system`.
 Category selection filters both installer steps and data
 written; `--emulators` filters emulator list and their saves.
 
-Naming archive is optional. Argument takes folder as well as file, and folder
-gives up newest archive in it or one level below it, so mounted stick can be named
+Naming archive is optional. Argument takes file or folder; from folder, newest
+archive in it or one level below it is used, so mounted stick can be named
 instead of path. Run tool with no argument on terminal and it lists archives it
 finds on mounted media and in home folders, numbers them with their size and date, and
 asks which one; path typed at that prompt is accepted in place of number. `--list` prints
@@ -1918,7 +1918,7 @@ autologin is restored as setting through one drop-in,
 reflash can create different account name; archived lightdm files are never written back.
 Opt-in services are enabled only when backup had them enabled; `h96-leds` recorded off is
 switched off. Steam ARM settings carry owner choices only. Archive members with absolute or
-`..` paths, symlinks in system folders and symlinks leading outside target home are refused
+`..` paths, symlinks in system folders and links pointing outside target home are refused
 (wine drive links kept). Old home paths in `~/.config` text files, Steam library files and
 symlinks follow new home. v2.5 reads whole archive before writing anything (`checking archive
 ...`); damaged or incomplete archive exits 1 with `archive damaged or incomplete` and writes
@@ -1947,7 +1947,7 @@ stops display manager first and starts it again after, with output in
 
 Archive and Save-to fields take typed path as well as pick from list: give file
 to use that archive, or folder to search it, with outcome reported under field as it
-is typed. Every panel window opens, including file browser and confirmations, is
+is typed. Every window opened by panel, including file browser and confirmations, is
 drawn in same theme as window. Reading box and reading archive run on
 background thread with progress bar in status strip, so window keeps painting while
 they work; archive is read twice from v2.5 (full check, then contents), so reading takes
@@ -1964,7 +1964,7 @@ h96-backup-gui --selftest         print the command lines it would build
 Package depends on `python3-tk`, so window opens on first launch without download. All logic
 stays in CLIs; window only selects and launches.
 
-Older boxes: Boxes on v5.0.1 or earlier have no backup tool; `h96-migrate-kit.zip` (updated for v2.5) installs same three tools there (`sudo bash install.sh`, `--gui` for window, `--help` for usage) so box can be captured to USB stick before flash. Kit keeps newer tools already on box unless `--force` is given.
+Older boxes: v5.0.1 and earlier have no backup tool; `h96-migrate-kit.zip` (updated for v2.5) installs same three tools on those (`sudo bash install.sh`, `--gui` for window, `--help` for usage) so box can be captured to USB stick before flash. Kit keeps newer tools already on box unless `--force` is given.
 
 ---
 
@@ -2071,7 +2071,7 @@ measured boot time to 1min41s, of which 1min35s was this one unit. Log:
 ### `h96-protect-updates`  (`/usr/sbin`, needs root)
 
 Keeps H96 files in place when package updates carry same paths. Local dpkg diversions send
-package copy of each protected path to `/usr/lib/h96-distrib/<path>`; H96 file stays, and
+package copy of each protected file to `/usr/lib/h96-distrib/<path>`; H96 file stays, and
 other files of same package install and upgrade normally. Parked copies lie outside library
 search path and are never loaded.
 
@@ -2197,7 +2197,7 @@ kernel build and module tree differ (see `h96-kernel-switch status`, `repair-mod
 `sudo systemctl unmask rpcbind.service rpcbind.socket`.
 
 **Read `systemd-analyze`'s total carefully.** Measured: `graphical.target` is reached
-4.860 seconds into userspace, and critical chain contains nothing slower than 19 ms.
+4.860 seconds into userspace, and nothing in critical chain is slower than 19 ms.
 42 second figure `systemd-analyze` prints is time until last unit settles, and
 two units responsible are Bluetooth units deliberately ordered off boot path in
 v4.2. Boot speed was audited on this basis and left unchanged.

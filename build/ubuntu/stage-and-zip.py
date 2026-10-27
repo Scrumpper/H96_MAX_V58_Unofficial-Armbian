@@ -97,7 +97,7 @@ HOTFIX_VERSIONS = ("6.1.1", "6.2.1")
 # v8.0 on, image also carries a 6.12 kernel: 6.12.N-h96v58-<VER>. A build suffix (8.0r17) is never current.
 KREL_RE = re.compile(r"(?<![\w.-])6\.(?:1\.172|12\.\d+)-h96v58-(\d+\.\d+(?:r\d+)?)(?!\.?\d)")
 HISTORICAL_KRELS = ("6.1.172-h96v58-7.0", "6.1.172-h96v58-7.1")
-# Clinical gate (release-tools/clinical_gate.py) applies from this release on; older zips predate it.
+# Clinical gate (release-tools/clinical_gate.py) and alliteration gate apply from this release on; older zips predate it.
 CLINICAL_FROM = (7, 1)
 
 
@@ -170,6 +170,21 @@ def clinical_hits(name, body):
     return style_hits(name, body)
 
 
+def alliteration_hits(name, body):
+    # repo copy: tools/docs two levels up (build/ubuntu/../../tools/docs); MAIN copy: release-tools beside it
+    import importlib.util
+    here = os.path.dirname(os.path.abspath(__file__))
+    cands = [os.path.join(here, "..", "..", "tools", "docs"), os.path.join(here, "release-tools")]
+    gate = next((os.path.join(c, "check-alliteration.py") for c in cands
+                 if os.path.isfile(os.path.join(c, "check-alliteration.py"))), None)
+    if gate is None:
+        die("check-alliteration.py not found in tools/docs or release-tools beside this script")
+    spec = importlib.util.spec_from_file_location("check_alliteration", gate)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod.hits(name, body, mod.load_allow(mod.DEFAULT_ALLOW))
+
+
 def sha256(path):
     h = hashlib.sha256()
     with open(path, "rb") as f:
@@ -183,7 +198,7 @@ def die(msg):
 
 
 def doc_failures(d, body, clinical):
-    """Gate failures of one doc: dashes, sub-version leaks, stale kernel strings, clinical style."""
+    """Gate failures of one doc: dashes, sub-version leaks, stale kernel strings, clinical style, alliteration."""
     out = []
     if "\u2014" in body or "\u2013" in body:
         out.append(f"{d} contains an em-dash or en-dash")
@@ -203,6 +218,10 @@ def doc_failures(d, body, clinical):
         if hits:
             out.append(f"{d} fails the clinical gate ({len(hits)}): " +
                        "; ".join(f"{n} {rule} {w!r}" for n, rule, w, _ in hits[:8]))
+        allit = alliteration_hits(d, body)
+        if allit:
+            out.append(f"{d} fails the alliteration gate ({len(allit)}): " +
+                       "; ".join(f"{n} {w!r}" for n, w, _ in allit[:8]))
     return out
 
 
@@ -229,7 +248,7 @@ def gate_docs(fail):
             print(f"  ok  {d}  sha256 {sha256(p)[:16]}...")
     if not bad:
         print(f"  ok  {len(gated)} docs gated: no dashes, no sub-version leaks, no stale kernel string"
-              + (", clinical style" if clinical else ""))
+              + (", clinical style, no alliteration" if clinical else ""))
     return bad
 
 

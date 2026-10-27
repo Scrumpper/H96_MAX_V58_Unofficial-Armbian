@@ -13,7 +13,7 @@ Kernel release string: `6.12.69-h96v58-8.0`. Fallback kernel: `6.1.172-h96v58-8.
 #### Kernel 6.12.69, default
 
 - Rockchip vendor tree `rk-6.12-rkr1` (Armbian linux-rockchip) plus H96 patch series: cursor latch and window power-domain fixes, HDMI-CEC hardening and physical address, HDMI 2.0 modes over GPIO DDC bus, AVMUTE hold on RGB and YCbCr switch, audio infoframe check, IEC958 channel status, HDR 10-bit output, RGA bind and command buffer pool, H96 Max V58 board device tree.
-- Wi-Fi power pin and PCIe link handling for BCM43752 on 6.12 (power state set at both rfkill paths, no register access on switched-off controller, PTM only with routed interrupt).
+- PCIe link and Wi-Fi power pin handling for BCM43752 on 6.12 (power state set at both rfkill paths, no register access on switched-off controller, PTM only with routed interrupt).
 - Front power button (`rk805 pwrkey`) and panic reset after 10 s, as on 6.1.
 - Ethernet driver (`stmmac`, `dwmac-rockchip`) built into kernel.
 - Panthor GPU interface 1.5 (6.12 driver had 1.0): Vulkan timestamp period (`timestampPeriod` 41.67 ns), global priority query, innocent reset status, buffer labels, user MMIO offset ioctl. Per-process GPU memory in `/proc/<pid>/fdinfo`; GPU time and cycles per process when `/sys/devices/platform/fb000000.gpu/profiling` is non-zero (default 0).
@@ -21,7 +21,7 @@ Kernel release string: `6.12.69-h96v58-8.0`. Fallback kernel: `6.1.172-h96v58-8.
 - eMMC host software queue, as on 6.1 kernel (6.12 driver had none). Command queueing (CQE) stays off.
 - Kernel hardening: `LIST_HARDENED`, `RANDOM_KMALLOC_CACHES`, `SLAB_BUCKETS`.
 - Built in and idle until used: `sched_ext` (no scheduler loaded), HID-BPF (no program loaded), zram multi-algorithm support (recompression off).
-- Variable refresh (FreeSync over HDMI), kernel side: AMD refresh range read from display EDID, FreeSync infoframe sent and re-sent after display power-down and hotplug, no gaming VRR below display's lowest refresh. Desktop VRR in Plasma X11 session with `sudo h96-vrr on` (off by default): tested on FreeSync monitor at 2560x1440 144 Hz, 16 min game with FreeSync active and no blanking.
+- Variable refresh (FreeSync over HDMI), kernel side: AMD refresh range taken from display EDID, FreeSync infoframe sent and re-sent after display power-down and hotplug, no gaming VRR below display's lowest refresh. Desktop VRR in Plasma X11 session with `sudo h96-vrr on` (off by default): tested on FreeSync monitor at 2560x1440 144 Hz, 16 min game with FreeSync active and no blanking.
 - USB device mode: optional overlay `rk3588-h96-usb-otg.dtbo` in device tree package switches black USB2 port to device role. Not applied by image; untested.
 - Trimmed configuration: modules for hardware absent from this board left out (2,096 modules). Panfrost and Lima kernel drivers (other Mali GPUs) removed; Mali-G610 runs on Panthor. Mesa Panfrost GL driver unchanged.
 - HDMI EDID read again at every connector probe, and HDMI audio ELD sent again after it: replaced display or changed EDID override shows its modes and audio formats at next detect. EDID reload at runtime keeps kernel output and X mode; TV may blank for about one second while it resyncs.
@@ -32,13 +32,13 @@ Kernel release string: `6.12.69-h96v58-8.0`. Fallback kernel: `6.1.172-h96v58-8.
 #### Kernel 6.1.172, fallback
 
 - `6.1.172-h96v58-8.0` (`rk-6.1-rkr7.2`), same feature set as v7.2 kernel; installed beside 6.12.69 with own modules and device tree.
-- `h96-kernel-switch` selects kernel. `sudo h96-kernel-switch try 6.1.172-h96v58-8.0` boots it as trial; `sudo h96-kernel-switch confirm` in that boot keeps it; reboot without confirm returns to previous kernel. `rollback`, `list`, `status`, `prune`. Image, initramfs and device tree switch together through one link (`/boot/h96ks/cur`), so power loss never leaves mixed set. Boot guard returns to previous kernel at start of unconfirmed trial boot. Same release with new Image or device tree (kernel update under same release string) boots as trial generation (`<release>.g<n>`), with same guard and `confirm`.
+- `h96-kernel-switch` selects kernel. `sudo h96-kernel-switch try 6.1.172-h96v58-8.0` boots it as trial; `sudo h96-kernel-switch confirm` in that boot keeps it; reboot without confirm returns to previous kernel. `rollback`, `list`, `status`, `prune`. Image, initramfs and device tree move together behind one link (`/boot/h96ks/cur`), so power loss never leaves mixed set. Boot guard returns to previous kernel at start of unconfirmed trial boot. Same release with new Image or device tree (kernel update under same release string) boots as trial generation (`<release>.g<n>`), with same guard and `confirm`.
 - 6.1 kernel has no RAM scaling; power profiles skip DDR step there.
 - v7.2 kernel (`6.1.172-h96v58-7.1`, built for v7.1) removed from image.
 
 #### Boot firmware
 
-- U-Boot FIT at eMMC sector 16384 carries BL31 v1.37 (v7.2: v1.28); DDR init and U-Boot proper unchanged; previous FIT kept as copy at sector 20480. New boot firmware arrives with fresh flash of 8.0 image; upgrade without reflash keeps old boot firmware.
+- U-Boot FIT at eMMC sector 16384 carries BL31 v1.37 (v7.2: v1.28); DDR init and U-Boot proper unchanged; previous FIT kept as copy at sector 20480. New boot firmware arrives with reflash to 8.0 image; upgrade without reflash keeps old boot firmware.
 
 #### Packages
 
@@ -50,15 +50,15 @@ Kernel release string: `6.12.69-h96v58-8.0`. Fallback kernel: `6.1.172-h96v58-8.
 
 #### Power profiles
 
-- New Power Save: `schedutil` on all CPU clusters, CPU floor 408 MHz on big cores and 1008 MHz on little cores (little clock follows shared DSU clock), big cores capped at 1800 MHz, little cores at 1416 MHz, GPU 300 to 600 MHz, CPU deep idle on, RAM scaling on (v7.2: `powersave` governor pinned every core at 408 MHz and dropped frames at 4K60). Measured on box: 4K60 playback in mpv, 0 dropped frames in 60 s.
+- New Power Save: `schedutil` on every cluster, CPU floor 408 MHz on big cores and 1008 MHz on little cores (little clock follows shared DSU clock), big cores limited to 1800 MHz, little cores at 1416 MHz, GPU 300 to 600 MHz, CPU deep idle on, RAM scaling on (v7.2: `powersave` governor pinned every core at 408 MHz and dropped frames at 4K60). Measured on box: 4K60 playback in mpv, 0 dropped frames in 60 s.
 - Balanced: CPU and GPU settings unchanged, RAM scaling on. Performance: CPU and GPU settings unchanged, DDR pinned at 2112 MHz.
 
 #### Display and desktop
 
 - KDE Plasma installs on demand and runs on X11 with LightDM (default session).
-- Plasma (Wayland) session, experimental: login screen lists it beside Plasma (X11); `sudo h96-autologin-setup --session plasma` makes it autologin session, `--session plasmax11` returns to X11. In Wayland session `h96-scale`, `h96-display revert` and `native` work through `kscreen-doctor`, display wake asks KWin for DPMS on, HDMI detect asks KWin to re-read connectors, mpv uses `vo=dmabuf-wayland` (auto profile `h96-wayland`) and `h96-waydroid start` opens Android in resizable KWin window without Weston. `h96-display range` is not available there (KWin exposes no RGB range on HDMI under kernel 6.12); colour format applies through kernel EDID.
+- Plasma (Wayland) session, experimental: login screen lists it beside Plasma (X11); `sudo h96-autologin-setup --session plasma` makes it autologin session, `--session plasmax11` returns to X11. In Wayland session `h96-scale`, `h96-display revert` and `native` work through `kscreen-doctor`, display wake asks KWin for DPMS on, HDMI detect asks KWin to re-read connectors, mpv uses `vo=dmabuf-wayland` (auto profile `h96-wayland`) and `h96-waydroid start` opens Android in resizable KWin window and needs no Weston. `h96-display range` is not available there (KWin exposes no RGB range on HDMI under kernel 6.12); colour format applies through kernel EDID.
 - After kernel EDID reload KDE display settings list new mode set (modes added or dropped); X mode is set again only when current mode is no longer offered. EDID reload at runtime keeps kernel output and X mode; TV may blank for about one second while it resyncs.
-- Display wake waits up to 8 s for output to return on its own (`H96_WAKE_WAIT`) and re-drives HDMI only when output stays disabled; output that returns gets no mode set.
+- Display wake waits up to 8 s for output to come back by itself (`H96_WAKE_WAIT`) and re-drives HDMI only when output stays disabled; output that returns gets no mode set.
 - Merged kernel EDID keeps display's FreeSync block and HDMI VRR range by default (opt out with `/etc/h96/display-vrr-blocks.off`); KDE display settings start fresh once on VRR displays (new EDID bytes). `h96-vrr on|off` switches only Xorg `VariableRefresh` option; `h96-vrr status` reports EDID blocks.
 - Display tools find X display and auth of active desktop session through `/usr/lib/h96/h96-xdisplay`, so they work on any X display number (earlier builds used `:0` only): `h96-display` (colour, range, session apply), display wake, `h96-scdc`, `h96-audio-passthrough`, `h96-hdr`, `h96-cast` receivers, `h96-vm --gui`, `h96-waydroid`, `h96-emulators`, emulated Steam launcher.
 - `h96-display revert` and `native` print reason when mode switch fails (earlier builds exited 1 without message).
@@ -70,14 +70,14 @@ Kernel release string: `6.12.69-h96v58-8.0`. Fallback kernel: `6.1.172-h96v58-8.
 - "Silence (no microphone)" input ranks above output monitors of non-pro sinks and below Bluetooth and other capture devices: when last microphone leaves, input falls to silence, not HDMI output monitor.
 - HDMI sink priority 1200 (v7.2: 2000): still ahead of S/PDIF, Bluetooth and USB sinks.
 - Bluetooth profile stays where user sets it: no automatic switch between A2DP and headset profile when microphone opens; headset profile for voice is chosen in audio applet.
-- TV remote controls playback in mpv and Chromium: Play and Pause send separate media keys (`KEY_PLAYCD`, `KEY_PAUSECD`; earlier both sent play/pause toggle), Stop, Fast Forward and Rewind their own keys; KDE passes them to active media player over MPRIS (mpv carries MPRIS plugin; Fast Forward and Rewind seek about 8 s per press). Back, Return and Exit send Escape (Steam Big Picture and dialogs). TV remote power key runs power off when `/etc/h96/cec-power-standby.on` exists (off by default; same power-off behaviour as Known issues describe); otherwise it sends `KEY_POWER`.
+- TV remote controls playback in mpv and Chromium: Play and Pause send separate media keys (`KEY_PLAYCD`, `KEY_PAUSECD`; earlier both sent play/pause toggle), Stop, Fast Forward and Rewind their own keys; KDE forwards them over MPRIS to active player (mpv carries MPRIS plugin; Fast Forward and Rewind seek about 8 s per press). Back, Return and Exit send Escape (Steam Big Picture and dialogs). TV remote power key runs power off when `/etc/h96/cec-power-standby.on` exists (off by default; same power-off behaviour as Known issues describe); otherwise it sends `KEY_POWER`.
 - Desktop setup no longer rewrites packaged HDMI audio rule; it writes files only when content differs.
 
 #### Gaming and Steam
 
 - Steam ARM 3.1 installer from package `steam-arm-setup`; `h96-steam` front end from `h96-gaming`. `h96-gaming` recommends `steam-arm-setup`, so removing that package (for Steam ARM installed by its own script) keeps `h96-gaming`; `h96-steam` then runs installed copy `/usr/local/share/steam-arm/steam-arm-install.sh`.
-- Steam ARM 3.1 features included: Steam Frame category and Frame recommended runtime beside Steam Deck hint (settings menu Game header and Rules page, run report Upstream fields; read from client's appinfo cache, hint only, since Steam Frame has other GPU); run report row `Class` for Android-only, VR-only and Lepton route titles (2D titles get no row); hardware report block `== Valve tools` with versions and build ids of Valve FEX tool, Proton 11.0, Proton Experimental and Steam Linux Runtime 4.0, read from Steam library manifests; Valve Frame runtime, off by default (Graphics menu or `steam-arm-config frame-runtime auto`): launcher sets compatibility tool of installed titles with no tool chosen from Valve's Steam Frame recommended runtime, once per title, own choices and GE-Proton kept, native ARM64 client only.
-- Ubuntu-based image: `h96-vulkan-wsi` (package in offline repository, `sudo apt install h96-vulkan-wsi` after first boot, off by default): PanVK with Wayland presentation patch for Plasma Wayland session; Vulkan frames reach KWin without copy. `sudo h96-vulkan-wsi on` in Wayland session applies at next login; X11 logins keep stock driver. Pinned to image Mesa 26.1.4: switch refuses and package blocks other Mesa versions. Measured on box, vkmark 1920x1080 fullscreen in Wayland session: 1376 with patched driver, 612 with stock driver. `h96-game-mode` keeps patched driver while switch is on in Wayland session. Not provided in Debian Edition: package depends on exact Mesa 26.1.4 build; `h96-game-mode` uses stock Vulkan driver there.
+- Steam ARM 3.1 features included: Steam Frame category and Frame recommended runtime beside Steam Deck hint (settings menu Game header and Rules page, Upstream fields of run report; read from client's appinfo cache, hint only, since Steam Frame has other GPU); run report line `Class` for Android-only, VR-only and Lepton route titles (2D titles get no line); hardware report block `== Valve tools` with versions and build ids of Valve FEX tool, Proton 11.0, Proton Experimental and Steam Linux Runtime 4.0, read from Steam library manifests; Valve Frame runtime, off by default (Graphics menu or `steam-arm-config frame-runtime auto`): launcher sets compatibility tool for installed titles that have none chosen, from Valve's Steam Frame recommended runtime, once per title, own choices and GE-Proton kept, native ARM64 client only.
+- Ubuntu-based image: `h96-vulkan-wsi` (package in offline repository, `sudo apt install h96-vulkan-wsi` after first boot, off by default): PanVK driver carrying Wayland presentation patch, for Wayland session; Vulkan frames reach KWin without copy. `sudo h96-vulkan-wsi on` in Wayland session applies at next login; X11 logins keep stock driver. Pinned to image Mesa 26.1.4: switch refuses and package blocks other Mesa versions. Measured on box, vkmark 1920x1080 fullscreen in Wayland session: 1376 with patched driver, 612 with stock driver. `h96-game-mode` keeps patched driver while switch is on in Wayland session. Not provided in Debian Edition: package depends on exact Mesa 26.1.4 build; `h96-game-mode` uses stock Vulkan driver there.
 - `h96-game-mode status` prints Wine, DXVK, Vulkan driver and compositor state and installs nothing (earlier builds took `status` as game path and started Wine download). Missing game path is refused before first Wine download.
 
 #### Network
@@ -101,7 +101,7 @@ Kernel release string: `6.12.69-h96v58-8.0`. Fallback kernel: `6.1.172-h96v58-8.
 
 #### Flashing
 
-- Flasher reads whole image back after write (`--verify`, or answer `y` at prompt) and compares sha256 with `.img.sha256` before reboot. Slim presets follow 8.0 package paths.
+- Flasher reads whole image back after write (`--verify`, or answer `y` at prompt) and compares sha256 with `.img.sha256` before reboot. Slim presets follow 8.0 package locations.
 
 #### Tools
 
@@ -113,38 +113,38 @@ Kernel release string: `6.12.69-h96v58-8.0`. Fallback kernel: `6.1.172-h96v58-8.
 
 - `build/build-kernel-debs.sh` wraps kernel build outputs into `h96-kernel-<release>` (Image, System.map and config in `/usr/lib/h96-kernel/<release>/`, modules in `/usr/lib/modules/<release>/`) and `h96-dtb-<release>`; `PIN=1` (default) checks each input against pinned sha256. Optional `KCFLAGS` is recorded in kernel package changelog; value other than pinned build value needs `PIN=0` and higher `PKGVER`, so no version gets second content.
 - Board DTB built from vendor base DTB plus `patch/dt/h96-max-v58.dtso` and `patch/dt/h96-max-v58.delete`; tree diff against v7.2 DTB passes (`tools/dtb/`).
-- `h96-kernel-switch` package source (`packages/h96-kernel-switch/`, `build/build-kernel-switch-deb.sh`) and stub-root test suite (`tools/kernel-switch/`). Tool saves module tree of each staged kernel build; initramfs mounts saved tree of running build before `switch_root`, so revert to earlier build under same release string loads matching modules. See `docs/KERNEL-SWITCH.md`.
+- `h96-kernel-switch` package source (`packages/h96-kernel-switch/`, `build/build-kernel-switch-deb.sh`) and test suite against stub root (`tools/kernel-switch/`). Tool saves module tree of each staged kernel build; initramfs mounts saved tree of running build before `switch_root`, so revert to earlier build under same release string loads matching modules. See `docs/KERNEL-SWITCH.md`.
 - CI on GitHub-hosted arm64 runners: docs gates, shell and Python lint, backup kit on Python 3.7, kernel package build with lintian, DTB overlay tree diff. See `docs/CI.md`.
 - Package maintainer `Scrumpper <190908034+Scrumpper@users.noreply.github.com>`. Lintian clean; overrides only for tags that cannot be fixed, each with reason.
 
 ### Known issues
 
-- Plasma (Wayland) session is experimental: 4K60 video drops frames at 3840x2160 output; `h96-display range` not available; KWin Adaptive Sync (VRR) not supported (screen blanks, then goes black: display underrun). Use `h96-vrr on` in Plasma X11 session for VRR. Proton games freeze briefly there (next line).
-- Proton games on kernel 6.12 can log panthor GPU job timeouts; no visible effect in Plasma X11 session; in Plasma Wayland session KWin resets its GPU context repeatedly (short freezes). Play Proton titles in Plasma X11 session.
-- Waydroid legacy `init gpu` profile (Android 11 image) is untested on kernel 6.12 (cgroup v1 memory and cpuset controllers are off); `init vanilla` (Android 13) runs with GPU acceleration on 6.12.
+- Plasma (Wayland) session is experimental: 4K60 video drops frames at 3840x2160 output; `h96-display range` not available; KWin Adaptive Sync (VRR) does not work (screen blanks, then goes black: display underrun). Use `h96-vrr on` in Plasma X11 session for VRR. Proton games freeze briefly there (next line).
+- Proton games on kernel 6.12 can log panthor GPU job timeouts; no visible effect in Plasma X11 session; in Plasma Wayland session KWin resets its GPU context repeatedly (short freezes). Run Proton titles in Plasma X11 session.
+- Waydroid legacy `init gpu` profile (Android 11 image) is untested on kernel 6.12 (cgroup v1 `memory` and `cpuset` controllers are off); `init vanilla` (Android 13) runs with GPU acceleration on 6.12.
 - HDMI compressed audio (AC-3) is experimental and off by default: AC-3 5.1 bitstream through ALSA HDMI device decoded by TV; AV receiver not tested.
 - 10-bit video at 3840x2160 60 Hz in mpv (AV1 through libdav1d, HEVC Main10, VP9 profile 2) drops frames on default path.
 - `dpkg -V` lists `/etc/mpv/passthrough.conf` and `/etc/mpv/hdr.conf` once `h96-audio-passthrough` or `h96-hdr` rewrites them.
-- Power off: board enters firmware standby instead of cutting power and restarts about 45 s later (hardware watchdog), on both kernels, as in every release since v6.2. Unplug power after shutdown. Standby with remote wake planned for next release (needs newer boot firmware).
+- Power off: board enters firmware standby instead of cutting power and restarts about 45 s later (hardware watchdog), on both kernels, as in every release since v6.2. Unplug power after shutdown. Standby with remote wake planned for following release (needs newer boot firmware).
 
 ## v8.0 Debian Edition
 
-v8.0 Debian Edition is new image: `H96-MAX-V58_Unofficial-Armbian_v8.0-debian.img.xz`, flashed as in `FLASHING.md`. It is v8.0 built on Debian 13 trixie: root filesystem from Armbian 26.8.3 Rock 5B trixie `vendor` minimal image (sha256 and Armbian signature checked), brought to current Debian 13 point release and security updates at build time. Ubuntu-based v8.0 image is published on same release page. Both carry same kernels, same boot chain, same eight H96 packages (built from same sources with Debian overrides) and same command set (`COMMANDS.md`). Platform changes of 8.0 over v7.2 are listed in entry v8.0 above and in `CHANGELOG-v8.0.md`.
+v8.0 Debian Edition is new image: `H96-MAX-V58_Unofficial-Armbian_v8.0-debian.img.xz`, flashed as in `FLASHING.md`. It is v8.0 built on Debian 13 trixie: root filesystem from Armbian 26.8.3 Rock 5B trixie `vendor` minimal image (sha256 and Armbian signature checked), brought to current Debian 13 point release and security updates at build time. Ubuntu-based v8.0 image is published on same release page. Both carry same kernels, same boot chain, same eight H96 packages (built from one source tree with Debian overrides) and same command set (`COMMANDS.md`). Platform changes of 8.0 over v7.2 are listed in entry v8.0 above and in `CHANGELOG-v8.0.md`.
 
 Kernel release string: `6.12.69-h96v58-8.0`. Fallback kernel: `6.1.172-h96v58-8.0`.
 
 ### Base
 
 - Debian 13 trixie, Armbian 26.8.3. Only root filesystem of download is used: its partition layout, boot script, `/boot` files and U-Boot are discarded. Vendor kernel, DTB and U-Boot packages of download are purged.
-- Boot chain equals Ubuntu-based image: same raw loader area and GPT geometry, same `boot.scr`, `armbianEnv.txt` keys, device tree directory and `overlay-user` on partition 1, `/boot/Image` and `/boot/uInitrd` links, `h96-kernel-switch` generations. Boot firmware BL31 v1.37 written by fresh flash, as Ubuntu-based image.
+- Boot chain equals Ubuntu-based image: same raw loader area and GPT geometry, same `boot.scr`, `armbianEnv.txt` keys, device tree directory and `overlay-user` on partition 1, `/boot/Image` and `/boot/uInitrd` links, `h96-kernel-switch` generations. Boot firmware BL31 v1.37 written at flash time, as on Ubuntu-based image.
 - Board support package `armbian-bsp-cli-odroidn2-current` replaces Rock 5B vendor BSP (same package lineage as Ubuntu-based image); `/etc/armbian-release` names H96 Max V58 board, boot script update off. `armbian-firstlogin` copy rebased on Armbian BSP 26.8.3 file, H96 change kept (bounded wait for system start).
-- NetworkManager renders network (netplan file as Ubuntu-based image); `dhcpcd-base`, `irqbalance`, `rfkill`, `python3-tk`, `python3-dbus`, `python3-gi`, `qrencode`, `stress` and AP6275P Wi-Fi firmware installed. Console login as Ubuntu-based image: no automatic root login; `systemd-networkd` off; `systemd-gpt-auto-generator` masked.
+- NetworkManager is netplan renderer (same netplan file as Ubuntu-based image); `dhcpcd-base`, `irqbalance`, `rfkill`, `python3-tk`, `python3-dbus`, `python3-gi`, `qrencode`, `stress` and AP6275P Wi-Fi firmware installed. Console login as Ubuntu-based image: no automatic root login; `systemd-networkd` off; `systemd-gpt-auto-generator` masked.
 - Console banner and os-release `VARIANT` name Debian Edition; `/etc/h96-release` carries `H96_EDITION=debian`.
 
 ### Packages
 
 - Same kernel packages as Ubuntu-based image: 6.12.69 default, 6.1.172 fallback, `h96-kernel-switch`, `steam-arm-setup`.
-- Eight H96 userland packages from same sources with Debian overrides, read from `ID` in `/etc/os-release`: Mesa pin names Debian trixie-backports build (every Mesa binary package of that build), Mesa target in gaming setup, WirePlumber offline version, online extras host (`deb.debian.org`) and package list (`box64-rk3588` only), Steam FEX source (Ubuntu noble FEX build as deb822 source with pinned signing key, since `add-apt-repository` is absent), KDE X11 package set installed package by package (`plasma-session-x11` skipped where absent: Plasma 6.3 carries X11 session in `plasma-workspace`), video setup runtime package list.
+- Eight H96 userland packages from same sources with Debian overrides, read from `ID` in `/etc/os-release`: Mesa pin names Debian trixie-backports build (every Mesa binary package of that version), Mesa target in gaming setup, WirePlumber offline version, online extras host (`deb.debian.org`) and package list (`box64-rk3588` only), Steam FEX source (Ubuntu noble FEX build as deb822 source with pinned signing key, since `add-apt-repository` is absent), KDE X11 package set installed package by package (`plasma-session-x11` skipped where absent: Plasma 6.3 carries X11 session in `plasma-workspace`), video setup runtime package list.
 - `h96-media` carries video stack rebuilt against Debian 13 libraries: mpv 0.41.0 with PipeWire and PulseAudio audio outputs, ffmpeg-rockchip with same patches and feature list, mpv MPRIS plugin built against Debian 13 glib. Video setup installs `libpipewire-0.3-0t64` and `libpulse0` from offline repository.
 - Offline repository `/opt/h96-pkgs`, signed with offline repository key: Mesa 26.1.6 from trixie-backports, PipeWire 1.6.9 from trixie-backports, BlueZ, WirePlumber 0.5.18 rebuilt for trixie, cage, Vulkan and Mesa tools, video stack runtime libraries, Rockchip MPP and RGA packages, box64 fallback, with dependency closure against image state. Every Debian package matches signed Debian index (package, version, sha256).
 - `COMMANDS.md`: ophub update guard text states Debian Edition carries no ophub scripts (no `armbian-sync`); `h96-vulkan-wsi` section states package is not provided.
@@ -183,12 +183,12 @@ Debian Edition on H96 Max V58, HDMI 1080p TV and 1440x900 monitor:
 - GPU on kernel 6.12 and 6.1: Panfrost `Mali-G610 MC4`, PanVK Vulkan 1.4, KWin GLES compositing; glmark2 and vkmark within range of Ubuntu-based image on same kernel.
 - mpv: 60 s of 3840x2160 VP9 60 fps through rkmpp with drm_prime zero-copy, 3 dropped frames; MPRIS plugin loads only with usable session bus.
 - Chromium (Debian package) with `h96-widevine-setup`: DRM test stream plays; `chrome://gpu` WebGL and rasterization on GPU; in-browser decode on CPU.
-- Steam ARM: `steam-arm-setup --defaults` (FEX source, root filesystem, GL forwarding library built from Debian Mesa, Vulkan layer, pad rules), sign-in restored from backup, one native x86 title through FEX, one Windows title through ARM64 Proton with DXVK, `h96-game-mode --winecfg` in cage (Wine download, stripped DXVK).
+- Steam ARM: `steam-arm-setup --defaults` (FEX source, root filesystem, GL forwarding library built from Debian Mesa, Vulkan layer, pad rules), sign-in restored from backup, one native x86 title under FEX, one Windows game through ARM64 Proton with DXVK, `h96-game-mode --winecfg` in cage (Wine download, stripped DXVK).
 - `h96-kernel-switch try 6.1.172-h96v58-8.0`, reboot, return to 6.12 without confirm; 0 failed units on both.
 - `h96-restore` of archive taken with `h96-backup` on Ubuntu-based v8.0 image: accepted and replayed (desktop, Waydroid, gaming, Steam ARM home, services, configs).
 - Network: Ethernet DHCP, `h96-hotspot on|off`, Wi-Fi client, BBR.
 - On TV: HDMI sink default and audible, passthrough detection (PCM and AC-3 listed), HDMI-CEC remote (Enter, arrows, Play, Pause, Stop, Fast-forward, Rewind, Back, Home), Bluetooth headset codecs and microphone (voice chat with game running).
-- Not run on Debian Edition: HDR playback (`h96-hdr`), Plasma (Wayland) session, console-only Steam start, AV receiver passthrough.
+- Not run on Debian Edition: HDR playback (`h96-hdr`), console-only Steam start, Plasma (Wayland) session, AV receiver passthrough.
 
 ## v6.2 (2026-09-26)
 
@@ -220,7 +220,7 @@ Two ways to get it:
 - `h96-bt-a2dp-heal.service`: when connected Bluetooth headset loses its stereo (A2DP) link, for example after audio session manager restarts, service reconnects it within about 10 s. Checks BlueZ every 5 s; acts only when device advertises A2DP and has no A2DP endpoint for two checks.
 - EQ file self-repair: `/etc/tmpfiles.d/h96-eq.conf` restores flat `/etc/h96/eq/active.txt` at every boot if it is missing.
 - Wideband Bluetooth microphone (mSBC, 16 kHz) for headsets that support it; CVSD (8 kHz) remains fallback. Measured on box: mSBC link active, voice packets flowing, test signal picked up.
-- Classic Bluetooth codec allow-list removed: every A2DP and HFP codec PipeWire has installed is offered; each headset uses best one it supports. Playback: LDAC, aptX HD, aptX, aptX LL, AAC, AAC-ELD, SBC-XQ, SBC, FastStream, Opus. Microphone: LC3-SWB, mSBC, CVSD. AAC and AAC-ELD need package `libspa-0.2-modules-extra`, which `h96-online-extras` installs once box reaches network; it is not in offline repo. LE Audio (BAP) is not offered.
+- Classic Bluetooth codec allow-list removed: every A2DP and HFP codec PipeWire has installed is offered; each headset uses best one it supports. Playback: aptX HD, LDAC, aptX, SBC-XQ, aptX LL, SBC, AAC, FastStream, AAC-ELD, Opus. Microphone: LC3-SWB, mSBC, CVSD. AAC and AAC-ELD need package `libspa-0.2-modules-extra`, which `h96-online-extras` installs once box reaches network; it is not in offline repo. LE Audio (BAP) is not offered.
 - Launch handler, `/usr/local/lib/h96-steam-handler.py`. Valve's FEX compatibility tool runs it in place of its removal of `LD_PRELOAD`, before runtime container starts. It decides per title, with no launch options:
   - Steam overlay: x86 overlay core for Linux x86 titles by default. Title profile `overlay=vulkan` adds arm64 overlay core and arm64 overlay Vulkan layer, for Vulkan titles; `overlay=off` removes overlay.
   - MangoHud: `mangohud %command%` and `MANGOHUD=1 %command%` both work in Linux x86 titles, OpenGL and Vulkan.
@@ -228,7 +228,7 @@ Two ways to get it:
   - Unity titles, found from player next to game: 64-bit players that carry Vulkan renderer start with `-force-vulkan` and overlay for Vulkan titles; other Unity 5 and later players get GL 4.5 report, since their OpenGL core context asks for more than Panfrost's 3.1 and title stops with `GLXBadFBConfig`; 32-bit Unity players start with Steam overlay off, as title stops when overlay attaches. Profile key `unity=vulkan|gl`.
   - If handler fails, tool behaves as Valve wrote it.
 - Title profiles, one Steam app id per line: `/usr/local/share/h96/titles.conf` (packaged), `/etc/h96/titles.conf` (local), and `~/.config/steam-arm/titles.conf` in client home. Keys: `overlay`, `mangohud`, `godot`, `unity`, `env`, `args`, `gl32`, `vk32`. Launch options `STEAM_ARM_OVERLAY=x86|vulkan|off` and `STEAM_ARM_PRELOAD_KEEP=a,b` override profiles.
-- Steam ARM 1.2 handler rules: 32-bit titles lose `-vulkan` and `-force-vulkan`, since FEX forwards Vulkan for 64-bit code only (profile key `vk32=keep` keeps them); titles started through start script (Source engine style) are detected by binary script starts; profile key `gl32=off` runs title not detected as 64-bit on emulated x86 Mesa instead of forwarded host Mesa; profile `args` count for Unity and Godot renderer rules; Source 2 titles logged. Component checklist appears as desktop dialog when installer starts with no controlling terminal.
+- Steam ARM 1.2 handler rules: 32-bit titles lose `-vulkan` and `-force-vulkan`, since FEX forwards Vulkan for 64-bit code only (profile key `vk32=keep` keeps them); titles launched by shell wrapper (Source engine style) are identified by binary that wrapper runs; profile key `gl32=off` runs title not detected as 64-bit on emulated x86 Mesa instead of forwarded host Mesa; profile `args` count for Unity and Godot renderer rules; Source 2 titles logged. Component checklist appears as desktop dialog when installer starts with no controlling terminal.
 - arm64 Steam overlay Vulkan layer, which client includes but does not register, registered behind `STEAM_ARM_VK_OVERLAY`; handler sets it only for titles profiled `overlay=vulkan`.
 - Direct3D 8 titles under Proton run through DXVK's `d3d8`: launcher sets `PROTON_DXVK_D3D8=1`. Proton's default for Direct3D 8, wined3d on OpenGL, draws them wrong on Mali driver. Launch option `PROTON_DXVK_D3D8=0 %command%` restores default.
 - Launcher removes shared-memory segments no process maps from `/dev/shm`, at start and every minute. Steam overlay's 26 MB frame buffers stay mapped by `steamwebhelper` after game ends; with no game running, sweep frees their pages within about 2 minutes (hole punched, files and mappings kept).
@@ -255,11 +255,11 @@ Two ways to get it:
 ### Fixed
 
 - Native Steam installer stopped at RootFS step when earlier RootFS download was left behind (FEX's fetcher asked to overwrite it and aborted). Leftover download is removed before fetch. Packaged title profile list is empty; handler's engine rules cover Unity titles on Vulkan.
-- `h96-restore` created missing folders in desktop account's home owned by root, and restored symlinks as root: Steam and other programs then failed to write there. Folders and symlinks restore owned by desktop account.
+- `h96-restore` created missing folders in desktop account's home owned by root, and gave restored symlinks same owner: Steam and other programs then failed to write there. Folders and symlinks are now restored owned by desktop account.
 - Console text green on displays whose EDID lists YCbCr: loader set HDMI to YCbCr and kernel held it until desktop login. `h96-display-console.service` blanks console once at boot (about 2 s) when output is YCbCr; kernel then selects RGB.
 - Enabling mSBC removed Bluetooth headset profile: codec allow-list in `30-h96-bluetooth.conf` did not name HFP codecs, which PipeWire 1.6 loads as plugins, so negotiated mSBC codec was never found (`failed to get HFP codec 2`). Allow-list removed.
 - Choppy Bluetooth audio: at PipeWire's 512-sample cycle (10.7 ms) Bluetooth encoder and h96 EQ filter chain missed their deadline now and then (xruns). While Bluetooth headset plays, it now forces 2048-sample cycle (43 ms); other outputs keep low latency.
-- Bluetooth headsets powered off or disconnected after audio stopped: sink was suspended after 5 s idle, and headset then dropped link on its own timer. Bluetooth sinks no longer suspend (A2DP stream remains open with silence; costs some headset battery). BlueZ reconnects faster (`FastConnectable`) and retries dropped headset 15 times with backoff to 60 s (`/etc/bluetooth/main.conf`, original kept as `main.conf.orig`).
+- Bluetooth headsets powered off or disconnected after audio stopped: sink was suspended after 5 s idle, and headset then dropped link on its own timer. Bluetooth sinks are never suspended now (A2DP stream remains open, carrying silence; costs some headset battery). BlueZ reconnects faster (`FastConnectable`) and retries dropped headset 15 times with backoff to 60 s (`/etc/bluetooth/main.conf`, original kept as `main.conf.orig`).
 - Bluetooth headsets showed no audio device or microphone, and audio streams opened after it (Remote Play among them) got no output: h96 EQ filter chain reads `/etc/h96/eq/active.txt`, which only `h96-audio-eq` writes. PipeWire 1.6 stops filter graph when that file is missing, and failed node stalls WirePlumber, so no later device or stream is set up. Image now includes flat `active.txt` (0 dB).
 - Titles drew on CPU renderer (llvmpipe) after fresh install. Client downloads Valve's FEX tool at first title start, after launcher applied its settings, so GL and Vulkan forwarding stayed off until next client start. Launcher now applies them within one second of tool appearing or being replaced, and covers `/run/gfx/main`, where current runtimes mount graphics libraries.
 - Steam overlay UI (`gameoverlayui`) crashed on every start: client's helper programs open libraries from client's own directory, which launcher now puts on library path.
@@ -271,8 +271,8 @@ Two ways to get it:
 - Menu entry and desktop icon "Steam ARM" showed no icon: icon file carried wrong name.
 - Re-run keeps client home: installer reads `ARMHOME_DIR` from `/etc/h96/steam-arm.conf` that earlier run created, so re-run or fix script never moves client away from its games.
 - Kernel module tree `/lib/modules/6.1.115-h96v58v1` was owned by desktop account (uid 1000): module archive stored builder's owner and first boot kept it. Archive now stores root, and first boot extracts with `--no-same-owner`.
-- Persistent journal moved to `/var/log.hdd` every day, so `journalctl --list-boots` showed only current boot: `armbian-ramlog` is masked, but `ENABLED=true` in `/etc/default/armbian-ramlog` still made logrotate move logs and let `armbian-truncate-logs` wipe them at 75 % root use. Set to `false`.
-- `h96-audio-eq` state file was readable by root only, so `status` without sudo showed EQ off and `preset` without sudo lost its settings. State file now 0644, and every EQ file is written atomically.
+- Persistent journal moved to `/var/log.hdd` every day, so `journalctl --list-boots` showed only current boot: `armbian-ramlog` is masked, but `ENABLED=true` in `/etc/default/armbian-ramlog` still made logrotate move logs and allowed `armbian-truncate-logs` to wipe them at 75 % root use. Set to `false`.
+- `h96-audio-eq` state file was root-readable only, so `status` without sudo reported EQ off and `preset` without sudo lost its settings. State file now 0644, and every EQ file is written atomically.
 - `h96-audio-eq enable` always put EQ in front of HDMI, even with Bluetooth headset as default output. It now follows current default output (ALSA or Bluetooth); `--target <sink>` picks one.
 - Bluetooth adapter stayed discoverable to every nearby device: `h96-bt-attach.py` set inquiry scan after bluetoothd started. It now sets page scan only (connectable, paired devices reconnect).
 - HDMI codec rule `51-h96-iec958.conf` matched no output (exact name instead of pattern).
@@ -292,7 +292,7 @@ Two ways to get it:
 - `h96-steam` help drops two lines: route option note and "Steam on this box, installed on demand".
 - Menu icons: dark, grainy green disc with small tiles of vivid colour; chartreuse logo for Big Picture, bone logo for desktop mode.
 - `desktop` component includes menu entry and window frame rule only; desktop icons and tray are components of their own.
-- Launcher starts tray helper, so tray icon appears in same session as setup, not only after next login.
+- Launcher starts tray helper, so tray icon appears in session where setup ran, not only after next login.
 - Component checklist shows all twelve components without scrolling.
 
 ### Known issues
@@ -304,7 +304,7 @@ Two ways to get it:
 - Some native titles leave one thread behind on quit; client shows title as running until Stop.
 - Windows titles whose first start runs legacy PhysX installer (msiexec) stop there, and title does not start without it.
 - Windows titles that need Direct3D feature level 11_0, such as Unreal Engine 4 titles, do not start: DXVK on Mali driver offers 10_1.
-- After installer or fix script runs, restart Steam once (tray icon > Stop Steam, then open Steam ARM). Client left running across update can fail to start titles until then.
+- After installer or fix script runs, restart Steam once (tray icon menu: Stop Steam, then open it again from application menu). Client left running across update can fail to start titles until then.
 - Multichannel HDMI audio (5.1, 7.1) is not verified; no AV receiver tested.
 - Compressed passthrough (AC3/DTS) not supported yet: HDMI path sends it as PCM noise; stereo PCM works; multichannel PCM (5.1, 7.1) untested.
 - AV1 has no hardware decode path; YouTube in mpv excludes AV1.
@@ -323,15 +323,15 @@ as ARM program; titles built for x86 run through emulation tool client downloads
 and Windows titles through client's ARM64 Proton build. Emulated route installs
 x86-64 client under FEX-Emu on KDE desktop. Both install into desktop user's account
 and keep separate libraries, so one box can carry both; run one at time, because two clients
-compete for controller and for `steam://` links. Titles protected by anti-cheat do not run
+would both claim controller and `steam://` links. Titles protected by anti-cheat do not run
 on either route: those components require system call filter emulator does not implement.
-Both installers present checklist of components and remove component again when it is
+Both installers present component checklist and remove any item again when it is
 deselected on later run.
 
 **ARM64 client.** ARM64 client is build of Steam that Valve made for its ARM based
 VR headset, Steam Frame: native ARM program that runs title's x86 code through emulation
 tool client downloads. On this box that means client interface, overlay, input
-stack and download and shader systems run on CPU and GPU directly, only title itself
+stack, downloads and shader cache run on CPU and GPU directly, only title itself
 is emulated, and title's OpenGL and Vulkan calls reach Mali driver through
 forwarding libraries. Windows titles go through Valve's ARM64 Proton build, whose Direct3D layer
 reaches Mali Vulkan driver same way. Valve maintains this build for hardware of same
@@ -341,7 +341,7 @@ and launcher removes client's VR argument from streaming client. Emulated route
 runs x86-64 client under FEX-Emu, with every part of client emulated and its interface
 software rendered.
 
-`steam-arm --desktop` starts client in its desktop interface instead of Deck interface,
+`steam-arm --desktop` starts client in its desktop interface rather than Deck interface,
 `--bigpicture` forces Deck interface, and `H96_STEAM_ARM_UI=desktop` in
 `/etc/h96/steam-arm.conf` makes desktop default. Deck build of client registers no
 item in panel's system tray, so `desktop` component also installs `h96-steam-tray`,
@@ -477,7 +477,7 @@ correctness fix; benchmarking found no measurable change in throughput, and none
   prints installer commands for you to run yourself instead of running them; `--dry-run`
   lists plan and changes nothing. Both tools accept `--only` and `--skip` category lists
   and `--emulators`; `h96-backup-gui` presents same choices as checkboxes and runs
-  tools in terminal window. Boxes on v5.0.1 or earlier have no backup tool; migration kit (`h96-migrate-kit.zip` in release) installs same three tools there (`sudo bash install.sh`, `--gui` for window) so box can be captured to USB stick before flash.
+  tools in terminal window. Boxes on v5.0.1 or earlier have no backup tool; migration kit (`h96-migrate-kit.zip` in release) installs same three tools on those boxes (`sudo bash install.sh`, `--gui` for window) so box can be captured to USB stick before flash.
 - **`h96-undervolt` trial flow corrected.** Trial flow now works as documented: `set <mV>`,
   then reboot, and setting is active on that boot so you can test it under load; `test` runs
   SIMD load; `confirm` keeps it. Reboot without confirming and boot-time guard reverts to
@@ -485,8 +485,8 @@ correctness fix; benchmarking found no measurable change in throughput, and none
   had been boot on which to confirm it.
 - **Kernel: `CONFIG_SCHED_CLUSTER`.** Kernel now enables `CONFIG_SCHED_CLUSTER`, which
   represents RK3588 as its three CPU clusters instead of one flat group, so scheduler's
-  topology view matches hardware. On this board clusters are 4x Cortex-A55 (cpu0, cpu5,
-  cpu6, cpu7), 2x Cortex-A76 (cpu1, cpu2) and 2x Cortex-A76 (cpu3, cpu4); two A76 pairs are
+  topology view matches hardware. On this board clusters are 4x Cortex-A55 (`cpu0`, `cpu5`,
+  `cpu6`, `cpu7`), 2x Cortex-A76 (`cpu1`, `cpu2`) and 2x Cortex-A76 (`cpu3`, `cpu4`); two A76 pairs are
   separate DVFS clusters. This is topology-correctness change: benchmarking found no
   measurable change in throughput, and none is claimed.
 - **Kernel BTF type data.** Kernel carries BPF Type Format (BTF) data
@@ -560,7 +560,7 @@ Kernel Image and device tree unchanged since v4.3.
   cursor. Driver fix that lets cursor fade during playback and return on movement is
   deferred to v6.0.
 - `h96-waydroid` clean teardown. Closing Android window ends session and
-  container, releasing GPU container held. Sudoers drop-in lets desktop user run
+  container, releasing GPU that container held. Sudoers drop-in lets desktop user run
   `h96-waydroid stop` without password. Stop Android menu entry was added.
 - `h96-waydroid` borderless fullscreen. `h96-waydroid size fullscreen` opens window
   borderless at 0,0 filling screen. It opens at display size, so there is no output
@@ -613,13 +613,13 @@ Reflashing wipes existing desktop install.
   - `hw off` forces software rendering, as diagnostic and fallback; `hw on` re-applies
     GPU wiring and verifies it.
 
-  Correction to earlier claim in this changelog: official LineageOS 20 image was
+  Correction to earlier statement in this changelog: official LineageOS 20 image was
   described as carrying no Panfrost and software rendering through SwiftShader. That was
   wrong. Tool's own `init` was forcing `ro.hardware.egl=swiftshader` and deleting
   `drm_device`, so measurement described test configuration, not image. Upstream
   enables ARM drivers in `waydroid_arm64/BoardConfig.mk`
   (`BOARD_MESA3D_GALLIUM_DRIVERS += ... panfrost lima`, `BOARD_MESA3D_VULKAN_DRIVERS +=
-  ... panfrost`), not in the root `BoardConfig.mk`, which lists only llvmpipe, virgl and
+  ... panfrost`), not in root `BoardConfig.mk`, which lists only llvmpipe, virgl and
   friends. One constraint stands: HALIUM vendor images are stripped of Mesa GPU
   drivers, so MAINLINE vendor image is required, and MAINLINE is what these profiles
   fetch.
@@ -684,7 +684,7 @@ Reflashing wipes existing desktop install.
      `XAUTHORITY`, and this box is X11 on purpose, so no GL probe could reach display.
      After fix automatic probe verifies four of seven Flatpaks directly as
      `Renderer: Mali-G610 MC4 (Panfrost)`, Qt based ones where renderer tool exists
-     inside runtime. Other three report "renderer NOT verified" rather than claiming
+     inside runtime. Other three show "renderer NOT verified" rather than claiming
      hardware; hand testing from their own logs confirmed `retroarch` and `flycast` on
      hardware too, and PPSSPP only on its Vulkan backend.
   3. `gpu` quietly skipped `cemu` (`if kind != "flatpak": continue`), hiding entry most
@@ -692,7 +692,7 @@ Reflashing wipes existing desktop install.
   4. `elevate()` re-execs tool as root with `sudo -E`, which is deliberate so `DISPLAY`
      and `XAUTHORITY` survive for probe. But `-E` also carried `HOME=/home/<user>` into
      root process, and flatpak initialises per-user repo at
-     `$HOME/.local/share/flatpak` on almost any invocation. Run as root that repo landed in
+     `$HOME/.local/share/flatpak` on almost any invocation. With tool elevated to root, that repo landed in
      desktop user's home owned by root with mode 700, so every later `flatpak run` as
      that user failed with `Permission denied` and probe could only report `unknown`,
      which reads as missing GPU when GPU is fine. `elevate()` now pins `HOME=/root`
@@ -723,7 +723,7 @@ Reflashing wipes existing desktop install.
   for lock (`fuser` poll, pattern `h96-gaming-setup.sh` already used) and passes
   `DPkg::Lock::Timeout=600` on both apt calls.
 
-- **Flashing no longer needs pinhole button.** Box that still boots is put into Loader
+- **Flashing no longer needs pinhole button.** Running, reachable box is put into Loader
   mode with `reboot loader` over SSH, and flasher converts Loader to Maskrom itself.
   Pinhole method stays documented as fallback for box that will not boot.
 
@@ -740,7 +740,7 @@ on demand.
 
 - **Faster boot.** Bluetooth attach was moved off boot-critical path with
   `After=multi-user.target` drop-in on `h96-bt` and `bt-sco-hci`. `multi-user.target` is
-  reached in about 3 to 4 seconds, against about 44 seconds on v4.1 where attach blocked
+  reached in about 3 to 4 seconds; v4.1 took about 44 seconds because attach blocked
   it while BCM4362A2 firmware loaded. Bluetooth still attaches a few seconds into
   already-booted system.
 - **`h96-gaming-setup` retires after first boot.** Its completion flag was gated on wine
@@ -771,11 +771,11 @@ smaller than earlier releases: about 1.22 GB (full), 1.01 GB (nodesktop), and
    v4.1 includes `rfcomm.ko` built for this exact kernel (6.1.115), loads it before
    BlueZ, and re-enables Hands-Free / Headset roles. Headset mic shows up as
    input source under "Headset Head Unit" profile; apps that record can switch to
-   it. Codec is CVSD (call quality, narrowband). Wideband mSBC negotiates with
-   headset but its audio link will not carry over this box's Broadcom UART Bluetooth
-   radio, hardware limit, so CVSD is ceiling here. Selecting headset-mic
+   it. Codec is CVSD (narrowband, telephone quality). Wideband mSBC negotiates with
+   headset but its audio link will not carry over this box's UART-attached Broadcom
+   radio (hardware limit), so CVSD is ceiling here. Selecting headset-mic
    profile drops output to mono call quality until deselected; that is how classic
-   Bluetooth works, not bug.
+   Bluetooth works, not defect.
 
 2. Bluetooth headset profile now remains selected. WirePlumber used to revert
    manually chosen Hands-Free (mic) profile back to A2DP whenever no application was
@@ -787,8 +787,8 @@ smaller than earlier releases: about 1.22 GB (full), 1.01 GB (nodesktop), and
 
 3. AAC Bluetooth audio output. Headsets that advertise AAC now negotiate it instead
    of plain SBC. AAC plugin installs on first networked boot
-   (`libspa-0.2-modules-extra`). Codec preference: LDAC, aptX-HD, aptX, AAC, SBC-XQ,
-   SBC.
+   (`libspa-0.2-modules-extra`). Codec preference: LDAC first, aptX-HD and aptX next in line, AAC behind them, then SBC-XQ
+   and SBC.
 
 4. Bluetooth adapter reliability on boot. BlueZ could start before UART Bluetooth
    adapter finished attaching, then report no controller, so KDE showed no Bluetooth
@@ -800,7 +800,7 @@ smaller than earlier releases: about 1.22 GB (full), 1.01 GB (nodesktop), and
    CLI is only pulled in by desktop install, so headless boxes booted
    `degraded`. Service now skips when that CLI is absent and keeps sending SCO
    routing command on desktop images. Ordering race that let routing command
-   fire before adapter finished attaching is also fixed: service polls
+   fire before adapter had fully attached is also fixed: service polls
    adapter for `UP RUNNING` before sending, and retries send.
 
 6. USB game-controller dongles. Base kernel had no xpad driver, so X-input
@@ -838,7 +838,7 @@ smaller than earlier releases: about 1.22 GB (full), 1.01 GB (nodesktop), and
 1. Hardware video decode now works for desktop users and on clean flashes. It was
    root-only in every earlier release, and clean flashes could not install video
    stack at all.
-2. Desktop lists connected display's native resolutions and refresh rates,
+2. Desktop lists connected display's native resolutions and refresh frequencies,
    updates list when different display is plugged in. Off by default; enable with
    `sudo h96-display autodetect on`. `h96-display` also gains `auto`, `4k60`, and `8k`.
 3. Monitor backlight control over DDC/CI: `h96-brightness`, plus desktop's own
@@ -911,7 +911,7 @@ same way, indefinitely.
 
 **Fix.** `fontconfig-config` is now included in offline repo, with correctly generated
 `Packages` entry. Its own dependency (`fonts-dejavu-core`) was already in image, so that
-one package completes chain. Also: offline repo is now pinned low (priority 1) so its packages, some of which exist online at same version (fontconfig-config, usb.ids), are no longer offered as phantom updates in Discover that never finish. It stays fully usable for offline first-boot install.
+one package completes chain. Also: offline repo is now pinned low (priority 1): its packages that also exist online at same version (fontconfig-config, usb.ids) are no longer offered as phantom updates in Discover that never finish. It stays fully usable for offline first-boot install.
 
 **Verified on clean flash with nothing done by hand:** mpv v0.41.0 starts, ffmpeg starts,
 three hardware encoders present, and `h96-video-setup` finally sets its done-flag and skips on
@@ -930,7 +930,7 @@ clean flash.
 
 ### 2a. Display autodetect (opt-in): native mode lists
 
-Kernel cannot read display's EDID (DDC controller defect), so desktop lists only
+Kernel cannot read display's EDID (DDC controller fault), so desktop lists only
 baked default modes. `sudo h96-display autodetect on` turns on native-mode
 enumeration: service reads attached display's EDID over `i2c-ddc` bus and places
 it for desktop to read, and udev rule loads it again on cable hotplug. It enumerates
@@ -945,7 +945,7 @@ Measured on 2560x1440@144 monitor: native mode list present, output stays clean.
 output, 8K display, and certified cable).
 
 **Choosing refresh rate.** When autodetect is on and you pick higher resolution in
-Display Settings, also set refresh rate HDMI cable can carry. High refresh rates
+Display Settings, also set refresh rate that HDMI cable supports. High refresh rates
 (120 Hz, 144 Hz) and 4K at 60 Hz need Premium High Speed or Ultra High Speed HDMI cable;
 standard or TV-grade cable may show black screen at those rates while working at 60 Hz.
 On this box, 2560x1440 at 60 Hz was confirmed over standard cable; 120/144 Hz and
@@ -994,7 +994,7 @@ software gamma dim. SoC's HDMI DDC i2c controller does not complete transactions
 kernel, so `h96-ddc-i2c-gpio` device-tree overlay (enabled by default) exposes two
 DDC pins (GPIO4_B7=SCL, GPIO4_C0=SDA) as kernel i2c-gpio bus named `i2c-ddc` at 100 kHz,
 and ddcutil handles DDC/CI over it. 100 kHz rate is required: at 2 kHz monitor's
-DDC/CI controller could not clock value bytes and writes failed verification. Measured on
+DDC/CI controller missed value bytes and writes failed verification. Measured on
 Dell P2419H: brightness set to 30/75/15/60 tracked exactly with on-screen change. ddcutil installs
 automatically at first boot. Display must accept DDC/CI writes (most
 PC monitors; enable "DDC/CI" in monitor menu). Most TVs gate DDC/CI behind HDMI/CEC
@@ -1003,7 +1003,7 @@ shows brightness slider. Overlay source: `packages/bsp/h96-max-v58/overlays/`; C
 `packages/bsp/h96-max-v58/tools/h96-brightness`. Because overlay reassigns pins HDMI
 controller already holds, kernel prints two `WARNING` traces from `pinctrl-rockchip.c`
 (`rockchip_pmx_gpio_set_direction`, `pin 143 already requested by fde80000.hdmi` and `pin 144
-already requested by fde80000.hdmi`) at boot. They are harmless; the kernel sets its `W` taint
+already requested by fde80000.hdmi`) at boot. They are harmless; kernel sets its `W` taint
 flag and bus works.
 
 ### 4. `scrumptop` system monitor
@@ -1014,8 +1014,7 @@ load and temperature ramps). Panels:
 - CPU: per-core bars using RK3588's non-contiguous topology (A76 = CPU1-4,
   A55 = CPU0,5,6,7); each bar carries its cluster's temperature gauge
 - GPU and NPU (3 cores): load, frequency, temperature gauges
-- Network: Ethernet link speed and byte rates, WiFi state and signal, Bluetooth state
-  and connection count, IR remote last activity
+- Network: Ethernet link speed and byte rates, WiFi state and signal, Bluetooth with connection count, IR remote last activity
 - System: disk usage, eMMC I/O rates, swap, load average, uptime, and batteries of
   wireless peripherals that report one
 
@@ -1035,7 +1034,7 @@ are rewritten each tick). Measured at 1 s refresh: 0.66% of one core, 20 MB resi
 
 Armbian base rootfs has `/etc/shadow` owned `root:root`. Required ownership is
 `root:shadow`: PAM helper `unix_chkpwd` is setgid `shadow` and reads file via
-group permission. Display managers run as root and read file directly, so login
+group permission. Display managers run as root and open file directly, so login
 worked. Lock screens (Plasma, GNOME, XFCE) run as logged-in user, authenticate
 through `unix_chkpwd`, and reject correct password. `useradd` and `chpasswd` preserve
 existing group on rewrite, so ownership does not correct itself. Present in every
@@ -1086,7 +1085,7 @@ Model conversion (`.onnx`/`.pt` → `.rknn`) has always run on PC, not on box.
 
 ### 6c. `could not find sram resource!` is expected here; do not "fix" it
 
-NPU logs this at boot and it is **correct behaviour on this board**. RK3588 system SRAM
+NPU logs this at boot and it is **expected behaviour on this hardware**. RK3588 system SRAM
 is already allocated in full to two video decoders, with no gap:
 
 | region                | offset    | size                  |
@@ -1099,13 +1098,13 @@ is already allocated in full to two video decoders, with no gap:
 taking it from hardware video decode, which is whole point of TV box. Rockchip's own
 in-tree RK3588 device trees do not wire NPU SRAM either. NPU runs from DRAM and works.
 
-Malformed `rockchip,sram` phandle here would be worse than warning: overlapping
+Malformed `rockchip,sram` phandle here would do more harm than warning: overlapping
 rkvdec allocation hands same physical SRAM to two drivers, which is data corruption
 with no error reported, rather than immediate failure.
 
 ### 6d. Hardware video encode, exposed
 
-Encode was enabled entire time and never surfaced: `RKVENC`/`RKVENC2`/`JPGENC` in
+Encode was on all along and never surfaced: `RKVENC`/`RKVENC2`/`JPGENC` in
 kernel, both `rkvenc-core` nodes `status = "okay"` in device tree, `/dev/mpp_service`
 present, and bundled ffmpeg already carrying `h264_rkmpp`, `hevc_rkmpp` and
 `mjpeg_rkmpp`.
@@ -1203,7 +1202,7 @@ is memory bandwidth (~21 GB/s), not core frequency.
    effect being measured.
 
 **Useful direction is opposite one.** 2400 MHz ran stable at 975 mV while vendor
-assigns 962.5 mV at 2208 for this chip, so there functions voltage headroom at stock speed.
+assigns 962.5 mV at 2208 for this chip, so voltage headroom exists at stock speed.
 Undervolting buys lower heat and power at identical performance, which on fanless box is
 worth more than any clock increase.
 
@@ -1293,7 +1292,7 @@ platform HDMI-A-1: Direct firmware load for edid/h96-1080p-audio.bin failed with
 [drm:edid_load] *ERROR* Requesting EDID firmware "edid/h96-1080p-audio.bin" failed (err=-2)
 ```
 
-Blob is present in rootfs (256 bytes, CTA block intact), but DRM probe runs at
+Blob is present in rootfs (256 bytes, CTA block intact), and yet DRM probe runs at
 about 4.1 s, while system is still on initramfs, and that initramfs contains **zero**
 `lib/firmware` entries. `request_firmware()` therefore cannot find it, on v3.4 or v4.0.
 
@@ -1449,7 +1448,7 @@ used day to day, on top of v3.1:
   newly flashed boxes were affected. WiFi unit now runs
   `rfkill unblock wifi` before starting.
 - **WiFi** uses standalone `wpa_supplicant` with tray applet, because
-  NetworkManager cannot complete this chip's multi-AKM association.
+  NetworkManager fails to finish this chip's multi-AKM association.
 - **Hardware video** completes its first-boot setup headless, with no desktop
   installed.
 - **Desktop installs keep tier** (`minimal` / `mid` / `full`) chosen in
@@ -1479,7 +1478,7 @@ published here, so building from these sources reproduces v3.1 feature set
   node, pair with `bcmdhd` PCIe (or mainline `brcmfmac`) + firmware.
 - **Hardware video** via mpv + Rockchip MPP (VPU decode).
 - **Reduced boot output.** Disabled unused `es8311` codec + `i2s0` sound, dropped
-  serial `dmas` that emitted repeated errors, and lowered kernel log level
+  serial `dmas` that emitted repeated errors, and reduced kernel log level
   (`printk 3 4 1 7`, `loglevel=3`).
 - **IR** as userspace-learnable `gpio-ir-receiver` overlay (see `patch/overlays/`).
 
