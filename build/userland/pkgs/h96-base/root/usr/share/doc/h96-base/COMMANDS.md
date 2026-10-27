@@ -3,7 +3,7 @@
 > Type **`h96`** on box for categorized index of main commands, or `h96 <command>` for its help.
 
 
-Every command and service added by this build. Nothing here exists on stock Armbian.
+Every command and service added by this build; stock Armbian has none of them.
 
 ## Highlights
 
@@ -47,7 +47,7 @@ Every command and service added by this build. Nothing here exists on stock Armb
 - **NPU.** `h96-npu` reports and tunes 3-core NPU (image default `powersave`, 300 MHz); `sudo h96-npu-setup` installs
   runtime on demand; `h96-npu bench` measures one core (about 625 GOPS), `h96-npu bench all`
   measures all 3 (about 1.29 TOPS aggregate). Note: on this board NPU is memory-bandwidth-bound
-  and single CPU core outruns it for most work, so it is exposed for NPU-shaped INT8
+  and one A76 core outruns it for most work, so it is exposed for NPU-shaped INT8
   models, not as general accelerator.
 - **Display detection (v6.2).** On unless switched off: `h96-display detect` reads connected
   display's EDID at boot and on hotplug and lists its modes in KDE System Settings →
@@ -63,7 +63,7 @@ Every command and service added by this build. Nothing here exists on stock Armb
   so dark screen was always this stuck output. Manual: `sudo h96-display wake`.
 
 Commands in `/usr/bin` are on your `PATH` and run as normal user unless noted.
-Commands in `/usr/sbin` are administrative: call them with `sudo`. Helper scripts in
+`/usr/sbin` holds administrative commands: call them with `sudo`. Helper scripts in
 `/usr/lib/h96` run from systemd units; sections below give full path where one is run by hand.
 Most administrative commands also run from systemd, so manual calls are rare.
 
@@ -267,7 +267,7 @@ some X clients exit on that.
 Follows display change without reboot. On HDMI hotplug, `h96-hdmi-hotplug.service` waits until
 connector state holds for 2 s, reads display EDID over `i2c-ddc` and compares it with display of
 last detect and with EDID kernel uses. Same display with its EDID loaded: nothing done (TV
-standby, DPMS off, resume, cable wiggle). Disconnected or EDID unreadable: nothing done. New
+standby, DPMS off, resume, cable wiggle). Disconnected or EDID unreadable: left alone. New
 display, or kernel EDID lost: `h96-display detect` (kernel EDID with display's modes, HDMI audio
 layouts and passthrough, CEC physical address), desktop re-probe (Wayland: change event on DRM
 card; X11: detect re-probes X, so KDE display settings list new modes; current mode set again
@@ -329,7 +329,7 @@ wpa_cli -i wlan0 status               # current association and IP
 KDE also starts tray applet (`wpa_gui`) automatically, for same purpose.
 
 ### `h96-wifi-diag`
-Collect WiFi diagnostics in one shot: interface state, driver and firmware, association
+Collect all WiFi diagnostics at once: interface state, driver and firmware, association
 status, DHCP, and relevant service logs. Run this first if WiFi is not working, and
 include its output in any bug report.
 
@@ -449,7 +449,7 @@ sudo h96-upscale off      remove it again
 h96-upscale test [file]   time playback with the shader on vs off (needs connected display)
 ```
 
-`test` exits 1 with mpv's error when mpv does not start or does not play clip. `test` refuses
+`test` exits 1 with mpv's error when mpv does not start or does not play clip, and refuses
 with exit 1 when no display is connected: mpv then renders about one frame per second, so
 timings are not valid. Shader engages only when output is above 1.41x of video size in both
 directions; below that, `test` prints note, and on and off times match.
@@ -459,7 +459,7 @@ directions; below that, `test` prints note, and on and off times match.
 byte-for-byte. Both are idempotent.
 
 **Measured on this board** (720p clip, `--untimed`): no shader 3.81 s → ravu 4.31 s, about
-**10-13% more GPU time**. Shader compiles clean on Panfrost with zero GLSL errors.
+**10-13% more GPU time**. Shader compiles clean on Panfrost with no GLSL errors.
 
 **Why this shader and not well-known ones.** G610 measures around 470 GFLOPS, roughly
 9-19× below desktop cards FSRCNNX and nnedi3 are usually demonstrated on; neither fits
@@ -774,7 +774,7 @@ root and panel applet leave NPU alone. `sync off` deletes file.
 
 **`could not find sram resource!` in `dmesg` is expected and harmless.** RK3588 system
 SRAM is allocated in full to two video decoders (`0x78000 + 0x77000 = 0xEF000`, whole
-region, zero free). NPU runs from DRAM. Giving it SRAM would mean taking it from hardware
+region, none free). NPU runs from DRAM. Giving it SRAM would mean taking it from hardware
 video decode.
 
 ### `h96-npu-setup`  (`/usr/sbin`, needs root)
@@ -813,7 +813,7 @@ and fallback kernel `6.1.172-h96v58-8.0`, staged by packages `h96-kernel-<releas
 `/usr/lib/modules/<release>/`). Kernel packages never write `/boot`. `try` writes kernel,
 fresh `uInitrd` and device tree into generation directory `/boot/h96ks/<release>.g<n>`;
 `/boot/Image`, `/boot/uInitrd` and (once device tree differs) board DTB link through
-`/boot/h96ks/cur`, so one rename switches all three and power loss never leaves mixed set.
+`/boot/h96ks/cur`, so renaming that link switches all three and power loss never leaves mixed set.
 Boot guard points `h96ks/cur` back to previous generation at start of trial boot unless
 `confirm` runs in that boot; guard also completes interrupted `confirm` and `rollback`.
 Never writes `boot.scr` or `armbianEnv.txt`; refuses short `/boot` free space, existing
@@ -822,7 +822,7 @@ Same release, new content: `try` makes new generation (`<release>.g<n>`, lowest 
 numbers are reused after `prune`) when staged Image
 or DTB differs from in-boot generation, and refuses when both are equal; `list`, `status`,
 `in-use` and `prune` name generations.
-Module tree per kernel build: builds of one release share
+Module tree per kernel build: builds of same release share
 `/usr/lib/modules/<release>`, and package upgrade replaces it. Tool keeps tree of each staged
 build under `/var/lib/h96-kernel-switch/modules` (hard links; apt saves it before dpkg runs).
 At boot, before udev, `h96-kernel-switch-modules.service` mounts saved tree of running build
@@ -852,13 +852,13 @@ default, trial or rollback kernel. Coexists with `h96-undervolt` (see below). Ma
 
 ### `h96-undervolt`  (`/usr/sbin`, needs root)
 Lowers CPU voltage **for your specific chip**. RK3588 measures every individual chip
-at boot and assigns it one of eight voltage bins, so there is no single value that could
-be baked into shared image. This tool reads your bin, takes vendor's voltage for
+at boot and assigns it one of eight voltage bins, so no value that could be baked into
+shared image fits every chip. This tool reads your bin, takes vendor's voltage for
 that bin, and subtracts your offset from it. It edits device tree, which is only
 place this voltage can be changed from.
 
-**Nothing is undervolted unless you ask for it.** Out of box tool has done
-nothing.
+**Nothing is undervolted unless you ask for it.** Fresh flash leaves voltages at
+vendor values.
 
 ```bash
 sudo h96-undervolt status      # your bin, its vendor voltage, floor, headroom (read-only)
@@ -978,7 +978,7 @@ sudo h96-subtitles-setup --uninstall  remove everything it installed
 
 Fetches **prebuilt** `sherpa-onnx` (28 MB) and model into `/var/lib/h96/subtitles`:
 English model 310 MB, bilingual `zh-en` model 510 MB. Size is only reason they are not
-bundled; all are Apache-2.0. **No compiler is needed.** Each archive is checked against
+bundled; all are Apache-2.0. **Compiler is not required.** Each archive is checked against
 SHA-256 pinned in tool before extraction and recorded for later re-checks. Unknown
 argument prints usage and exits 2 with no download.
 
@@ -1070,13 +1070,13 @@ Turn it back on from Screen Locking page in System Settings, or with `Autolock=t
 ### `h96-desktop-fixup.sh`  (`/usr/lib/h96`, needs root)
 Installs desktop pieces Armbian's `APT::Install-Recommends "0"` policy leaves out.
 Every Debian/Ubuntu desktop metapackage puts large share of its function in Recommends,
-so plain install on this image produces skeleton: no PipeWire session manager and
-therefore no audio sinks at all, no network applet, no printer or Bluetooth module, and no
-polkit agent, which is what makes Discover unable to install anything.
+so plain install on this image produces skeleton: PipeWire session manager (and with it
+every audio sink), network applet, printer and Bluetooth modules and polkit agent are
+left out; without polkit agent, Discover cannot install anything.
 
 It is called automatically by `h96-kde-configure.service` and
-`h96-gnome-configure.service`. It is idempotent and safe to run by hand on existing
-install:
+`h96-gnome-configure.service`. Running it by hand on existing install is safe and
+idempotent:
 
 ```bash
 sudo /usr/lib/h96/h96-desktop-fixup.sh            # auto-detect installed desktop
@@ -1086,7 +1086,7 @@ sudo /usr/lib/h96/h96-desktop-fixup.sh --none     # desktop-independent pieces o
 ```
 
 It waits for dpkg lock rather than failing, reports every package individually instead
-of hiding failures, and logs to `/var/log/h96-desktop-fixup.log`. It also installs
+of hiding failures, and logs to `/var/log/h96-desktop-fixup.log`. Also installed:
 `nvtop`, `bluez`, and PipeWire and Bluetooth-codec packages.
 
 ### Desktop install and removal through `armbian-config`
@@ -1122,8 +1122,8 @@ instance first. Used by desktop's own Settings launcher.
 ## Media suite (opt-in)
 
 Every media tool includes command plus its config only. First `enable` installs its
-apt packages (from box's arm64 repos) and activates its service. Nothing auto-starts,
-nothing is enabled at flash. Full mechanism: `docs/MEDIA-FEATURES.md` in GitHub repo
+apt packages (from box's arm64 repos) and activates its service. No service auto-starts
+or is enabled at flash. Full mechanism: `docs/MEDIA-FEATURES.md` in GitHub repo
 source (not installed on box).
 
 ### `h96-cec`
@@ -1132,8 +1132,8 @@ in standby and wakes it. Verified on Sony TV. `h96-cec.service` runs `h96-cecd`,
 maps CEC remote keys to uinput key events. On by default: remote works out of box with
 CEC TV (CEC enabled in TV settings, named by brand, such as Bravia Sync, Anynet+ or
 SimpLink). TV must show box's HDMI input: box claims active source on display wake and on
-`h96-cec on`; TV on other input keeps remote keys. Unit starts when `/dev/cec0` appears
-(enable link under `dev-cec0.device`): no CEC adapter, no start; no CEC TV, daemon idles.
+`h96-cec on`; TV on other input keeps remote keys. Unit starts only when `/dev/cec0`
+appears (enable link under `dev-cec0.device`); with TV that lacks CEC, daemon idles.
 Boot does not wait for it. Package enables unit once at install (marker
 `/var/lib/h96/cec-default-on`); `systemctl disable` stays in effect across upgrades.
 Key map: `/etc/h96/cec-keymap.conf` (CEC key name = `KEY_` symbol, only overrides needed;
@@ -1200,7 +1200,7 @@ without HDR (PQ) in display EDID or without VP0 overlay plane; SIGTERM to `h96-h
 with SIGTERM and restores SDR output.
 
 ### `h96-motion`
-mpv built-in frame interpolation (judder reduction), GPU-side, zero deps
+mpv built-in frame interpolation (judder reduction), GPU-side, no added packages
 (`video-sync=display-resample; interpolation=yes; tscale=oversample`). SVP/MVTools path
 is intentionally not used: vapoursynth + mvtools have no arm64 build in box repos.
 
@@ -1313,7 +1313,7 @@ Settings in `/etc/h96/bt-speaker.conf`.
 
 ### `h96-cast`
 AirPlay audio (shairport-sync) + screen mirror (uxplay) + DLNA renderer
-(gmediarender). AirPlay 2 downgrades to AirPlay 1 (nqptp has no arm64 build). Google
+(gmediarender). Without arm64 build of nqptp, AirPlay 2 downgrades to AirPlay 1. Google
 Cast reception is not openly possible; DLNA is substitute.
 
 ```bash
@@ -1328,8 +1328,8 @@ who called `sudo`. `h96-cast status` under `sudo` reads that user's default sink
 ### `h96-transcode-server`
 Opt-in network **hardware transcode node**. Drop video into watch folder and
 VPU transcodes it (rkmpp hardware decode + encode, about 7.5x realtime at 1080p with CPU
-idle) to output folder. No extra packages: it reuses image's rkmpp ffmpeg and
-`/dev/mpp_service`, so it adds nothing until enabled. **Disabled** by default.
+idle) to output folder. Needs no package of its own: it reuses image's rkmpp ffmpeg and
+`/dev/mpp_service`, and stays inert until enabled. **Disabled** by default.
 
 ```bash
 sudo h96-transcode-server enable    # create folders + start the watch service
@@ -1359,8 +1359,8 @@ reporting work (verified with 8BitDo Ultimate 2C Wireless Controller and its don
 before v6.0 such dongle enumerated and bound but sent no input), and rumble is available
 on xpad-driven controllers. Module is autoloaded at boot, and udev catch-all
 (`99-h96-xpad.rules`) force-binds any X-input-interface device to xpad, so unlisted
-dongles bind too. No command needed: plug in, it appears as joystick
-(`/dev/input/js0`). Verify with `evtest` or `jstest`.
+dongles bind too. Plug in and it appears as joystick
+(`/dev/input/js0`) with no command to run. Verify with `evtest` or `jstest`.
 
 ---
 
@@ -1378,7 +1378,7 @@ effect; in Plasma Wayland session KWin resets its GPU context repeatedly (short 
 Plasma X11 session.
 
 ### `h96-steam`
-Steam, installed on demand. New in v6.1; native route is Steam ARM 3.1 from package `steam-arm-setup` in v8.0. Installs nothing by default and bundles no game code.
+Steam, installed on demand. New in v6.1; native route is Steam ARM 3.1 from package `steam-arm-setup` in v8.0. Client downloads only on request, and image carries no game code.
 
 ```bash
 h96-steam                          print usage: subcommands, options, examples
@@ -1400,13 +1400,13 @@ steam-arm-config                   Steam ARM settings menu: components, graphics
 Emulated route installs Valve `steam-launcher` 1.0.0.81 into x86-64 root filesystem after
 SHA-256 check; its work files sit in private root-only directory, never in fixed `/tmp` path.
 
-Both install into desktop user's account and keep separate Steam libraries, so one box can
-carry both. Never run both clients together: they compete for controller and for `steam://`
+Both install into desktop user's account and keep separate Steam libraries, so they
+coexist. Never run both clients together: they compete for controller and for `steam://`
 links. Native route starts from application menu entry "Steam ARM" or `steam-arm`;
 emulated route from "Steam" or `steam-fex`.
 
-Each route installs x86-64 root filesystem of about 2 GB on first run, and each Steam
-library is separate, so disk is practical limit on carrying both.
+Each route installs x86-64 root filesystem of about 2 GB on first run, and Steam libraries
+stay separate, so disk is practical limit on carrying both.
 
 Native route runs Steam ARM 3.1 installer, `/usr/lib/h96/steam/steam-arm-install.sh`;
 its `README.md` sits beside it. On 8.0 both are links into package `steam-arm-setup`, which
@@ -1468,8 +1468,8 @@ Launch handler, `/usr/local/lib/steam-arm-handler.py`, runs inside Valve's emula
 This project is not affiliated with, endorsed by or sponsored by Valve Corporation. Steam, Proton, Steam Deck and Steam Frame are trademarks of Valve Corporation. No Valve artwork is included in image.
 
 ### `h96-emulators`
-Opt-in game-emulator suite, GPU-accelerated. New in v5.0. Installs nothing by default and
-bundles no game code, no BIOS and no ROM.
+Opt-in game-emulator suite, GPU-accelerated. New in v5.0. Emulators are fetched only on
+request; image carries no game code, BIOS or ROM.
 
 ```bash
 h96-emulators                     interactive multi-select menu
@@ -1498,7 +1498,7 @@ Eight entries, all of them systems that offload 3D rendering to Mali-G610:
 
 Seven are native ARM64 Flatpaks and render through PanVK/Panfrost. Cemu has no ARM build,
 so it runs x86-64 build under box64; its files land under invoking desktop user's
-home and it gets `h96-cemu` launcher. Cemu AppImage is checked against SHA-256 digest
+home and it gets `h96-cemu` launcher. Its AppImage is checked against SHA-256 digest
 GitHub lists for release asset; release without digest is refused.
 
 `install` runs GPU wiring and verification pass: it exposes Mali render node and
@@ -1531,11 +1531,11 @@ install is about 5 GB including shared Flatpak runtimes.
 GraphicsBackend = 3
 ```
 
-in `ppsspp.ini`, which works. Nothing else in suite needs backend change.
+in `ppsspp.ini`, which works. No other emulator in suite needs backend change.
 
 **mGBA and ScummVM are deliberately not in this suite.** They are 2D: they do not
-meaningfully use Mali GPU, so this tool's GPU wiring has nothing to do for them. They
-are not missing from box. Install them from software store (Discover) as
+meaningfully use Mali GPU, so this tool's GPU wiring has nothing to do for them. Both
+remain available: install them from software store (Discover) as
 aarch64 Flatpaks `io.mgba.mGBA` and `org.scummvm.ScummVM`, or from apt as `mgba-qt` and
 `scummvm`. They run on CPU and are fine there.
 
@@ -1566,11 +1566,11 @@ DXVK builds (stripped 2.7.1, Sarek 1.12) are in image under `/usr/lib/h96/gaming
 if Wine is absent, tool downloads Kron4ek Wine 11.12 staging-tkg amd64-wow64 (about 100 MB)
 from github.com/Kron4ek/Wine-Builds, checks its sha256, unpacks it to `/opt/h96-gaming/wine`, then proceeds.
 `/etc/h96/wine.url` selects other Wine build; `/etc/h96/wine.sha256` holds its sha256 (64 hex
-digits) and is required with it. Missing or mismatching sha256: tool refuses, nothing written.
+digits) and is required with it. Missing or mismatching sha256: tool refuses and writes nothing.
 When address does not answer HTTP 200, tool prints address, status, `--wine-file` and `wine.url` options, and
-exits with code 2; nothing is written. Later runs skip download. Wine Mono and Gecko install dialogs are suppressed
+exits with code 2, disk untouched. Later runs skip download. Wine Mono and Gecko install dialogs are suppressed
 (`WINEDLLOVERRIDES=mscoree,mshtml=d`, unless set by caller).
-Wine stays out of image for majority who do not game.
+Most users do not game, so Wine stays out of image.
 
 x86 emulation: wine runs under explicit `box64`, and box64 starts wine's x86 child
 processes itself. While Steam ARM is installed, FEX owns x86 binfmt entries and
@@ -1650,7 +1650,7 @@ size; it is not run by hand.
 
 - **`gapps` / `vanilla`** fetch latest official Waydroid LineageOS 20
   (`lineage-20.0-20260403-VANILLA-waydroid_arm64`, Android 13, vendor type MAINLINE, about
-  900 MB). Download-and-go, no files to supply. This is DEFAULT and recommended profile,
+  900 MB). You supply no files. This is DEFAULT and recommended profile,
   and it wires GPU: `drm_device=/dev/dri/renderD130`, `ro.hardware.gralloc=gbm`,
   `ro.hardware.egl=mesa`, with `renderD130` and `card2` nodes bound into container.
   **Measured on this board:** `waydroid shell dumpsys SurfaceFlinger` reports
@@ -1719,7 +1719,7 @@ apply on next container start.
 Verified on this box: `ro.product.model` read `Pixel 7` inside Android after
 `h96-waydroid spoof pixel7`, and `spoof off` restored every original prop.
 
-**It changes availability only. It does NOT pass Play Integrity or SafetyNet.** Those attest
+**It changes availability only and does NOT pass Play Integrity or SafetyNet.** Those attest
 hardware-backed key and verified-boot state; container has neither. Banking apps,
 DRM playback, and some games will still refuse to run, and no spoof profile changes that.
 
@@ -1735,7 +1735,7 @@ sudo h96-waydroid state delete before-update
 
 It stops session first, then archives with `tar --numeric-owner -p`: Android app
 identity depends on per-app uids, and archive that flattens them breaks every installed
-app. **It refuses cross-profile restore**: restoring Android 11 data onto Android 13
+app. **Cross-profile restore is refused**: restoring Android 11 data onto Android 13
 crashes `system_server` with PackageManager NPE, so profile is recorded with each
 snapshot and checked on load. Measured: 27 MB `/data` produced 7.8 MB archive, and
 Android booted from restored copy. Snapshots live in `/var/lib/waydroid-snapshots` and
@@ -1749,7 +1749,7 @@ written for you:
   fail. Drop-in delegates writable cgroup to `waydroid-container.service`, enables
   controllers at cgroup root before it starts, and LXC's `config_base` is switched from
   `cgroup:ro` to `cgroup:rw`.
-- **cgroup v1 tmpfs shims** in `config_nodes` (`/acct`, `/dev/stune`, `/dev/cpuset`,
+- **tmpfs shims for cgroup v1** in `config_nodes` (`/acct`, `/dev/stune`, `/dev/cpuset`,
   `/dev/memcg`), which legacy Android 11 image expects on cgroup-v2 host. Applied on
   Android 11 path only. Android 13 is cgroup v2 and needs none of them.
 - **`LXC_USE_NFT=false`** as service `Environment=`. nftables breaks Waydroid LXC
@@ -1773,7 +1773,7 @@ written for you:
   Tested and rejected; quiet journal with journald limits instead.
 
 ### `h96-vm` (v6.2, off by default)
-KVM virtual machines under QEMU, hardware-accelerated. Nothing downloads or installs until
+KVM virtual machines under QEMU, hardware-accelerated. QEMU and firmware arrive only with
 `install`. Slim installer's `vm` layer removes tool.
 
 ```bash
@@ -1810,7 +1810,7 @@ and old one does not. Binary files keep their bytes. Restore never writes under 
 `/bin`, `/sbin` or `/lib`.
 
 ### `h96-backup`  (needs root, auto-elevates)
-Capture configured box into one archive: manifest of which on-demand features are present
+Capture configured box as archive: manifest of which on-demand features are present
 plus passive data that cannot be re-downloaded.
 
 ```bash
@@ -1833,8 +1833,8 @@ categories archive holds.
 It probes each feature (any absent one is skipped cleanly): desktop environment
 (`kde-plasma-desktop` or `gnome-shell`), installed emulators (Flatpak apps in
 `h96-emulators` catalog, plus `cemu` box64 build), Waydroid profile and which image
-stashes exist, Widevine, gaming wine prefix, NPU runtime, and WiFi credentials and networks. It
-then writes `manifest.json` and passive data into one archive: tar plus zstd when `zstd` is
+stashes exist, Widevine, gaming wine prefix, NPU runtime, and WiFi credentials and networks.
+`manifest.json` and passive data then form archive: tar plus zstd when `zstd` is
 present (`.tar.zst`), otherwise gzip (`.tar.gz`). `h96-restore` reads `.tar.zst` through `zstd`, else
 through Python built-in zstd module.
 
@@ -1902,18 +1902,18 @@ instead of path. Run tool with no argument on terminal and it lists archives it
 finds on mounted media and in home folders, numbers them with their size and date, and
 asks which one; path typed at that prompt is accepted in place of number. `--list` prints
 same list and stops. Anywhere without terminal, such as systemd unit, argument is
-still required. `--dry-run` reports one line per category with file count and byte total,
-then sample of destinations under each, rather than one line per file.
+still required. `--dry-run` prints per-category summary (file count and byte total),
+then sample of destinations under each, rather than listing every file.
 
 It reads `manifest.json` from head of archive, reinstalls desktop if absent, then
 re-runs recorded installers (`h96-emulators install`, `h96-waydroid init`,
 `h96-widevine-setup`, `h96-npu-setup`) and restores data; Wine downloads on first
-`h96-game-mode` run as desktop user. It is
+`h96-game-mode` run as desktop user. Restore is
 idempotent: config file already present and newer than archived copy is kept and noted,
 not overwritten. WiFi confs and NetworkManager or netplan WiFi files restore as `root:root`
 mode 0600 (`netplan generate` runs after netplan files); user files are chowned to
 detected desktop user; Waydroid `/data` restores with its recorded numeric owner; and
-autologin is restored as setting through one drop-in,
+autologin is restored as setting through drop-in
 `/etc/lightdm/lightdm.conf.d/70-h96-autologin.conf`, for detected desktop user, because
 reflash can create different account name; archived lightdm files are never written back.
 Opt-in services are enabled only when backup had them enabled; `h96-leds` recorded off is
@@ -2063,7 +2063,7 @@ take others down, and retries on next boot for anything still missing. It sets
 `/var/lib/h96-online-extras-done` only when everything is present, and it exits 0 on every
 path, so it can never appear in `systemctl --failed`.
 
-It is started by timer, deliberately, and has no `[Install]` section. Pulling it into
+Timer start is deliberate, and unit has no `[Install]` section. Pulling it into
 `multi-user.target` put its connectivity wait inside boot transaction and pushed
 measured boot time to 1min41s, of which 1min35s was this one unit. Log:
 `/var/log/h96-online-extras.log`.
@@ -2186,7 +2186,7 @@ systemd-analyze             # see the note below before reading its total
 systemd-analyze critical-chain graphical.target
 ```
 
-In v5.0, `systemctl --failed` reports zero. Two units failed on every boot before that
+In v5.0, `systemctl --failed` lists no unit. Two units failed on every boot before that
 release: `h96-rfcomm` (its `rfcomm.ko` was 0 byte file and self-heal guard tested with
 `-f`, which passes for empty file; it now uses `-s`) and `systemd-modules-load`
 (`brcmfmac` was requested alongside `bcmdhd`, which owns WiFi chip, and `rknpu`
