@@ -4,7 +4,7 @@
 
 ---
 
-Unofficial Armbian for **H96 Max V58** TV box (Rockchip **RK3588**, Mali-G610 MC4, 8 GB RAM,
+Unofficial Armbian for **H96 Max V58** TV box (Rockchip **RK3588**, Mali-G610 MC4,
 64 GB eMMC). GPU runs open **Panthor** kernel driver with **Mesa** (Panfrost GL, PanVK
 Vulkan); no closed Mali blob. Video decodes and encodes on Rockchip VPU, onboard WiFi 6 runs
 on PCIe beside Ethernet, front-panel display shows clock and status icons.
