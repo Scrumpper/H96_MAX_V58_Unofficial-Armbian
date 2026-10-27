@@ -43,9 +43,10 @@ PHRASES = re.compile(r"\b(one (release|click|script|installer|command|step|file|
 OPENER_SKIP = set("a an the and or to in on for with from by of at as if when then so not no or yes none same "
                   "see run use set".split())
 BULLET = re.compile(r"^(\s*)([-*+]|\d+[.)])\s+(.*)$")
-LEAD = re.compile(r"^[\s*_~\[\]()\"'“”‘’!?]+")
+LEAD = re.compile(r"^[\s*_~\[\]()\"'“”‘’!?\u2190-\u2BFF\u2600-\u27BF\uFE0F\U0001F000-\U0001FAFF]+")
 OWORD = re.compile(r"[A-Za-z][\w.'/+-]*")
-OSENT = re.compile(r"(?<=[.!?])\s+")
+# sentence end, also when bold, parenthesis or quote closes after the stop ("**Default.** Next")
+OSENT = re.compile(r"(?:(?<=[.!?])|(?<=[.!?][*_)\]\"”’])|(?<=[.!?][*_)\]\"”’]{2}))\s+")
 CLAUSE = re.compile(r"[;,]\s+")
 # clause openers that read as a refrain when repeated ("one X, one Y"; "nothing bundled, nothing installed")
 CLAUSE_WORDS = {"one", "nothing", "every", "each", "single", "all", "no", "same", "first", "zero", "only", "any"}
@@ -80,11 +81,10 @@ def _words(sent, phrases, singles):
 
 def opener(s):
     """First word of a bullet, sentence or clause, lower case; None when it starts with code, a link or no word."""
-    s = LEAD.sub("", s.strip())
+    s = re.sub(r"^[\s*_~]+", "", s)
     if not s or s[0] in "`[<":
         return None
-    s = re.sub(r"^\*\*|^__", "", s)
-    m = OWORD.match(s)
+    m = OWORD.match(LEAD.sub("", s))
     return m.group(0).lower().rstrip(".") if m else None
 
 
@@ -115,6 +115,7 @@ def _opener_hits(text, allowed):
         para.clear()
 
     for n, line in enumerate(text.split("\n"), 1):
+        line = re.sub(r"^(\s*>)+ ?", "", line)   # quote block prose counts
         if line.strip().startswith("```"):
             fenced = not fenced
             flush()
@@ -122,13 +123,16 @@ def _opener_hits(text, allowed):
             continue
         if fenced or line.startswith("|") or line.startswith("    ") and not para:
             flush()
+            if line.startswith("|"):   # top-level table ends list
+                prev_bullet.clear()
             continue
         plain = PROTECT.sub(" ", line)
         for m in PHRASES.finditer(plain):
             found.append((n, f"phrase '{m.group(0)}'", line.strip()[:110]))
         if not line.strip() or line.lstrip().startswith("#"):
             flush()
-            prev_bullet.clear()
+            if line.strip():   # heading ends every list; blank line keeps a loose list together
+                prev_bullet.clear()
             continue
         b = BULLET.match(line)
         if b:
@@ -145,7 +149,7 @@ def _opener_hits(text, allowed):
                 del prev_bullet[k]
             para.append((n, text_b))
         else:
-            if not para:
+            if not para and not line[:1].isspace():   # plain paragraph ends list; indented text continues it
                 prev_bullet.clear()
             para.append((n, line.strip()))
     flush()
@@ -196,8 +200,9 @@ def main(argv):
             continue
         files.append(argv[i])
         i += 1
-    if not files:
-        sys.exit(__doc__)
+    if not files or "-h" in files or "--help" in files or not all(os.path.isfile(f) and os.access(f, os.R_OK) for f in files):
+        print(__doc__.rstrip(), file=sys.stderr)
+        return 2
     allow, openers_allow = load_allow(allow_path), load_allow(openers_path)
     total = 0
     for path in files:
