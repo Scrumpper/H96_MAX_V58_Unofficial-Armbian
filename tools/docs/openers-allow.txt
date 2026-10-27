@@ -1,0 +1,2 @@
+# check-alliteration.py opener allow-list: words that may open two neighbouring bullets, sentences or clauses.
+# Proper or product names only, one per line: word  # justification. Never a common word.
