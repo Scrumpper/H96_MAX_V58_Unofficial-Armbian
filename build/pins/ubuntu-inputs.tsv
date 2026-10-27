@@ -46,4 +46,4 @@ flash.py	https://github.com/Scrumpper/H96_MAX_V58_Unofficial-Armbian/releases (v
 offline-repo-public.gpg	repo: keys/offline-repo-public.gpg (fingerprint 97E5DA90A046ECDC7CE5637131869ED166A6D9EC)	9f22ed8821cc2abb37b5161fc8e54f64d7ad60e4d6fa1ba817479cb800059f82	233	offline-repo signing public key
 H96-MAX-V58_Unofficial-Armbian_v8.0.img	derived: xz -dc of v8.0 .img.xz	8d7903bb225336bb3cb1d5de499a5ac8585ab77f3c8122b5d072418c9deb1317	-	output: v8.0 Ubuntu image
 H96-MAX-V58_Unofficial-Armbian_v8.0.img.xz	https://github.com/Scrumpper/H96_MAX_V58_Unofficial-Armbian/releases (v8.0 release asset, inside release zip)	2141887975144d6a660735ee3c1b5e2f3edd76b733347536a18e8e42f24fbedc	-	output: v8.0 Ubuntu image, xz
-Unofficial.Armbian.v8.0.zip	https://github.com/Scrumpper/H96_MAX_V58_Unofficial-Armbian/releases (v8.0 release asset)	8cb0413feb7f30deedcda42b015e85397865139da83c559400931e1cacc0d964	-	output: v8.0 Ubuntu release zip
+Unofficial.Armbian.v8.0.zip	https://github.com/Scrumpper/H96_MAX_V58_Unofficial-Armbian/releases (v8.0 release asset)	fcffec2413e8b31ec114f070c2ae59b42b3a675943ea67b71ac594a7fb4c34db	-	output: v8.0 Ubuntu release zip
