@@ -13,7 +13,7 @@ Kernel release string: `6.12.69-h96v58-8.0`. Fallback kernel: `6.1.172-h96v58-8.
 #### Kernel 6.12.69, default
 
 - Rockchip vendor tree `rk-6.12-rkr1` (Armbian linux-rockchip) plus H96 patch series: cursor latch and window power-domain fixes, HDMI-CEC hardening and physical address, HDMI 2.0 modes over GPIO DDC bus, AVMUTE hold on RGB and YCbCr switch, audio infoframe check, IEC958 channel status, HDR 10-bit output, RGA bind and command buffer pool, H96 Max V58 board device tree.
-- Wi-Fi enable pin and PCIe link handling for BCM43752 on 6.12 (power state set at both rfkill paths, no register access on switched-off controller, PTM only with routed interrupt).
+- PCIe link and Wi-Fi power pin handling for BCM43752 on 6.12 (power state set at both rfkill paths, no register access on switched-off controller, PTM only with routed interrupt).
 - Front power button (`rk805 pwrkey`) and panic reset after 10 s, as on 6.1.
 - Ethernet driver (`stmmac`, `dwmac-rockchip`) built into kernel.
 - Panthor GPU interface 1.5 (6.12 driver had 1.0): Vulkan timestamp period (`timestampPeriod` 41.67 ns), global priority query, innocent reset status, buffer labels, user MMIO offset ioctl. Per-process GPU memory in `/proc/<pid>/fdinfo`; GPU time and cycles per process when `/sys/devices/platform/fb000000.gpu/profiling` is non-zero (default 0).
@@ -121,7 +121,7 @@ Kernel release string: `6.12.69-h96v58-8.0`. Fallback kernel: `6.1.172-h96v58-8.
 
 - Plasma (Wayland) session is experimental: 4K60 video drops frames at 3840x2160 output; `h96-display range` not available; KWin Adaptive Sync (VRR) does not work (screen blanks, then goes black: display underrun). Use `h96-vrr on` in Plasma X11 session for VRR. Proton games freeze briefly there (next line).
 - Proton games on kernel 6.12 can log panthor GPU job timeouts; no visible effect in Plasma X11 session; in Plasma Wayland session KWin resets its GPU context repeatedly (short freezes). Run Proton titles in Plasma X11 session.
-- Waydroid legacy `init gpu` profile (Android 11 image) is untested on kernel 6.12 (cgroup v1 has no memory or cpuset controller there); `init vanilla` (Android 13) runs with GPU acceleration on 6.12.
+- Waydroid legacy `init gpu` profile (Android 11 image) is untested on kernel 6.12 (cgroup v1 `memory` and `cpuset` controllers are off); `init vanilla` (Android 13) runs with GPU acceleration on 6.12.
 - HDMI compressed audio (AC-3) is experimental and off by default: AC-3 5.1 bitstream through ALSA HDMI device decoded by TV; AV receiver not tested.
 - 10-bit video at 3840x2160 60 Hz in mpv (AV1 through libdav1d, HEVC Main10, VP9 profile 2) drops frames on default path.
 - `dpkg -V` lists `/etc/mpv/passthrough.conf` and `/etc/mpv/hdr.conf` once `h96-audio-passthrough` or `h96-hdr` rewrites them.
